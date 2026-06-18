@@ -431,6 +431,13 @@ class FeatureManagerApp(ttk.Frame):
                 "are handled per repository (delete, commit, or move to the new "
                 "branch) before the branch is created.",
             ),
+            (
+                "Commit all changes as savepos",
+                self._action_commit_savepos,
+                "For every selected repository: commits all uncommitted changes "
+                "as a 'savepos' commit on the current branch. Repositories on "
+                "master are skipped with an error.",
+            ),
         ]
         for label, command, hint in actions:
             button = ttk.Button(middle, text=label, command=command)
@@ -890,6 +897,63 @@ class FeatureManagerApp(ttk.Frame):
         if not ok:
             return False, f"{name}: {out}"
         ok, out = run_git(path, ["checkout", "-b", new_branch])
+        if not ok:
+            return False, f"{name}: {out}"
+
+        return True, ""
+
+    # -- Commit all changes as savepos ------------------------------------- #
+    def _action_commit_savepos(self):
+        """Commit uncommitted changes as 'savepos' for each selected repo."""
+        repos = self._all_selected_repos()
+        if not repos:
+            return
+
+        self.errors.clear()
+        self.progress.set_repos([name for name, _ in repos])
+        threading.Thread(
+            target=self._run_commit_savepos, args=(repos,), daemon=True
+        ).start()
+
+    def _run_commit_savepos(self, repos):
+        """Worker: commit savepos for each repo, updating the UI live."""
+        all_ok = True
+        for name, path in repos:
+            self.after(0, self.progress.status, name, "in-progress")
+
+            ok, message = self._commit_savepos_one(name, path)
+            if ok:
+                self.after(0, self.progress.status, name, "done")
+            else:
+                all_ok = False
+                self.after(0, self.progress.status, name, "error")
+                self.after(0, self.errors.add, message)
+
+        if all_ok:
+            self.after(0, self.progress.show_completion,
+                       "All changes committed successfully.")
+
+    def _commit_savepos_one(self, name, path):
+        """Commit one repo's changes as 'savepos'. Returns (ok, error_message).
+
+        Repos on master are rejected; repos with nothing to commit are an error
+        so the user can see which ones had no changes.
+        """
+        if not os.path.isdir(os.path.join(path, ".git")):
+            return False, f"{name}: not a git repository"
+
+        if git_current_branch(path) == "master":
+            return False, (
+                f"{name} is on master. cannot commit changes on master"
+            )
+
+        if not git_has_changes(path):
+            return False, f"{name}: no changes to commit"
+
+        ok, out = run_git(path, ["add", "-A"])
+        if not ok:
+            return False, f"{name}: {out}"
+        ok, out = run_git(path, ["commit", "-m", "savepos"])
         if not ok:
             return False, f"{name}: {out}"
 
