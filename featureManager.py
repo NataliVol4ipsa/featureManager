@@ -16,6 +16,7 @@ actions or panels can be added later with minimal effort.
 """
 
 import os
+import json
 import subprocess
 import threading
 import tkinter as tk
@@ -30,6 +31,9 @@ REPOS_ROOT = r"D:/Repositories"
 
 # Sub-folder used to populate the "Nugets" tab.
 NUGETS_ROOT = os.path.join(REPOS_ROOT, "Shared")
+
+# Folder where generated VS Code workspace files are written.
+WORKSPACES_ROOT = r"D:/Workspaces/features"
 
 # Folder names that must never appear in the "Services" tab (case-insensitive).
 EXCLUDED_FOLDERS = {"ibs", "shared", "wiki"}
@@ -438,6 +442,13 @@ class FeatureManagerApp(ttk.Frame):
                 "as a 'savepos' commit on the current branch. Repositories on "
                 "master are skipped with an error.",
             ),
+            (
+                "Create feature workspace",
+                self._action_create_workspace,
+                "Creates a VS Code '.code-workspace' file in D:/Workspaces from "
+                "the selected repositories, named after the feature name you "
+                "enter.",
+            ),
         ]
         for label, command, hint in actions:
             button = ttk.Button(middle, text=label, command=command)
@@ -769,19 +780,19 @@ class FeatureManagerApp(ttk.Frame):
         self.wait_window(dialog)
         return choice["value"]
 
-    def _ask_branch_name(self):
-        """Modal with a fixed 'feature/' prefix and a required name field.
+    def _ask_branch_name(self, title="Create feature branch", prefix="feature/"):
+        """Modal with a fixed *prefix* label and a required name field.
 
         Returns the entered name (without prefix), or None if cancelled.
         """
         dialog = tk.Toplevel(self)
-        dialog.title("Create feature branch")
+        dialog.title(title)
         dialog.transient(self.winfo_toplevel())
         dialog.resizable(False, False)
 
         row = ttk.Frame(dialog)
         row.pack(padx=16, pady=(16, 4))
-        ttk.Label(row, text="feature/").pack(side="left")
+        ttk.Label(row, text=prefix).pack(side="left")
         entry = ttk.Entry(row, width=30)
         entry.pack(side="left")
         entry.focus_set()
@@ -958,6 +969,52 @@ class FeatureManagerApp(ttk.Frame):
             return False, f"{name}: {out}"
 
         return True, ""
+
+    # -- Create feature workspace ------------------------------------------ #
+    def _action_create_workspace(self):
+        """Create a VS Code workspace file from the selected repositories."""
+        repos = self._all_selected_repos()
+        if not repos:
+            return
+
+        feature_name = self._ask_branch_name(
+            title="Create feature workspace", prefix="feature/"
+        )
+        if not feature_name:
+            return
+
+        self.errors.clear()
+        self.progress.set_repos([name for name, _ in repos])
+
+        ok, message = self._write_workspace(feature_name, repos)
+        if ok:
+            for name, _ in repos:
+                self.progress.status(name, "done")
+            self.progress.show_completion(message)
+        else:
+            self.errors.add(message)
+
+    def _write_workspace(self, feature_name, repos):
+        """Write the .code-workspace file. Returns (ok, message).
+
+        Folder paths are stored relative to WORKSPACES_ROOT (e.g.
+        "../Repositories/<repo>") to match the existing workspace files.
+        """
+        folders = []
+        for _, path in repos:
+            rel = os.path.relpath(path, WORKSPACES_ROOT).replace("\\", "/")
+            folders.append({"path": rel})
+
+        content = {"folders": folders, "settings": {}}
+        target = os.path.join(WORKSPACES_ROOT, f"{feature_name}.code-workspace")
+
+        try:
+            os.makedirs(WORKSPACES_ROOT, exist_ok=True)
+            with open(target, "w", encoding="utf-8") as handle:
+                json.dump(content, handle, indent=4)
+            return True, f"Workspace created: {target}"
+        except OSError as exc:
+            return False, f"could not create workspace: {exc}"
 
 
 def main():
