@@ -8,6 +8,7 @@ import os
 import re
 import json
 import subprocess
+import urllib.parse
 
 from config import REPOS_ROOT, NUGETS_ROOT, WORKSPACES_ROOT, EXCLUDED_FOLDERS
 
@@ -303,6 +304,100 @@ def commit_all(name, path, message):
     if not ok:
         return False, f"{name}: {out}"
     return True, ""
+
+
+def git_push(name, path):
+    """Push one repo's current branch to origin. Returns (ok, error).
+
+    Uses ``push -u origin HEAD`` so the remote branch is created and tracking
+    is set up automatically when it does not exist yet, with no interaction.
+    Repos that are not git repos or are in a detached HEAD state are reported
+    as errors.
+    """
+    if not is_git_repo(path):
+        return False, f"{name}: not a git repository"
+    branch = git_current_branch(path)
+    if not branch:
+        return False, f"{name}: not on a branch (detached HEAD)"
+    ok, out = run_git(path, ["push", "-u", "origin", "HEAD"])
+    if not ok:
+        return False, f"{name}: {out}"
+    return True, ""
+
+
+def git_remote_url(repo_path, remote="origin"):
+    """Return the configured URL for *remote* (e.g. origin), or "" if none."""
+    ok, out = run_git(repo_path, ["remote", "get-url", remote])
+    if not ok:
+        return ""
+    return out.strip()
+
+
+def _branch_web_url(remote_url, branch):
+    """Translate a git *remote_url* + *branch* into a browser URL, or "".
+
+    Handles the common HTTPS and SSH forms for Azure DevOps, GitHub, GitLab and
+    Bitbucket. Falls back to the repository's https URL when the host is not
+    recognised, and returns "" when the remote URL cannot be parsed.
+    """
+    url = remote_url.strip()
+    if url.endswith(".git"):
+        url = url[:-4]
+
+    host, path = "", ""
+    if url.startswith("git@"):
+        # SSH short form: git@host:path
+        rest = url[len("git@"):]
+        if ":" in rest:
+            host, path = rest.split(":", 1)
+    elif "://" in url:
+        parsed = urllib.parse.urlparse(url)
+        host = parsed.hostname or ""
+        path = parsed.path.lstrip("/")
+    if not host or not path:
+        return ""
+
+    path = path.strip("/")
+    branch_q = urllib.parse.quote(branch, safe="/")
+
+    # Azure DevOps SSH: ssh.dev.azure.com with path v3/org/project/repo
+    if host == "ssh.dev.azure.com":
+        parts = path.split("/")
+        if len(parts) >= 4 and parts[0] == "v3":
+            org, project, repo = parts[1], parts[2], parts[3]
+            return (f"https://dev.azure.com/{org}/{project}/_git/{repo}"
+                    f"?version=GB{branch_q}")
+        return ""
+
+    # Azure DevOps HTTPS: dev.azure.com/org/project/_git/repo (or *.visualstudio.com)
+    if host == "dev.azure.com" or host.endswith(".visualstudio.com"):
+        return f"https://{host}/{path}?version=GB{branch_q}"
+
+    if host == "github.com":
+        return f"https://github.com/{path}/tree/{branch_q}"
+
+    if host == "bitbucket.org":
+        return f"https://bitbucket.org/{path}/branch/{branch_q}"
+
+    if "gitlab" in host:
+        return f"https://{host}/{path}/-/tree/{branch_q}"
+
+    # Unknown host: link to the repository over https as a best effort.
+    return f"https://{host}/{path}"
+
+
+def git_branch_url(repo_path, branch, remote="origin"):
+    """Return a browser URL to view *branch* on the remote host, or "".
+
+    Returns "" when there is no such remote, no branch, or the URL cannot be
+    derived (callers simply omit the link in that case).
+    """
+    if not branch:
+        return ""
+    url = git_remote_url(repo_path, remote)
+    if not url:
+        return ""
+    return _branch_web_url(url, branch)
 
 
 def create_feature_branch(name, path, branch_name, decision):

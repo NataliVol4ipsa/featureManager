@@ -8,8 +8,10 @@ import threading
 from tkinter import ttk
 
 from widgets import Tooltip, ProgressPanel, ErrorList
-from gitutils import is_git_repo, git_current_branch, commit_all
-from dialogs import ask_change_decision, ask_commit_message
+from gitutils import (
+    is_git_repo, git_current_branch, commit_all, git_push, git_branch_url,
+)
+from dialogs import ask_change_decision, ask_commit_message, ask_branch_warning
 
 
 class ActionTabBase(ttk.Frame):
@@ -144,6 +146,40 @@ class ActionTabBase(ttk.Frame):
             "All changes committed successfully.",
         )
 
+    def push_all(self, repos):
+        """Push every selected repo's current branch to origin.
+
+        Shows the Details table for the repos. If the selected repos are not all
+        on the same branch a warning modal is shown to confirm; otherwise the
+        push runs with no modals. Remote branches that do not exist yet are
+        created automatically without any interaction.
+        """
+        self.errors.clear()
+        if not repos:
+            return
+
+        self.show_repos_async(repos, with_status=False)
+
+        # Only show a modal when the repos are on different branches; otherwise
+        # push straight away with no interaction.
+        branches = {
+            git_current_branch(path)
+            for _, path in repos
+            if is_git_repo(path)
+        }
+        branches.discard("")  # ignore repos whose branch could not be read
+        if len(branches) > 1:
+            if not ask_branch_warning(self, len(repos)):
+                return
+
+        self.run_repo_action(
+            repos,
+            git_push,
+            "All branches pushed successfully.",
+            link_fn=lambda n, p: git_branch_url(p, git_current_branch(p)),
+        )
+
+
     # -- Generic background runner ----------------------------------------- #
     def repo_rows(self, repos):
         """Return [(name, branch), ...], querying each repo's current branch."""
@@ -184,7 +220,8 @@ class ActionTabBase(ttk.Frame):
         if self._branch_scan_token == token:
             self.progress.set_branch(name, branch)
 
-    def run_repo_action(self, repos, per_repo_fn, success_msg, on_complete=None):
+    def run_repo_action(self, repos, per_repo_fn, success_msg, on_complete=None,
+                        link_fn=None):
         """Run *per_repo_fn(name, path)* for each repo off the UI thread.
 
         *per_repo_fn* must return (ok, error_message). The table shows each
@@ -192,18 +229,23 @@ class ActionTabBase(ttk.Frame):
         re-read after each repo in case the action changed it). The green banner
         shows only when every repo succeeds. *on_complete(all_ok)*, if given,
         runs on the UI thread afterwards (used to chain a follow-up step such as
-        writing a workspace file).
+        writing a workspace file). *link_fn(name, path)*, if given, returns a URL
+        shown as a clickable link in an extra "Link" column after the repo's
+        action succeeds.
         """
         self.errors.clear()
         self.progress.show_repos(
-            [(name, "...") for name, _ in repos], with_status=True
+            [(name, "...") for name, _ in repos], with_status=True,
+            with_link=link_fn is not None,
         )
         threading.Thread(
-            target=self._worker, args=(repos, per_repo_fn, success_msg, on_complete),
+            target=self._worker,
+            args=(repos, per_repo_fn, success_msg, on_complete, link_fn),
             daemon=True,
         ).start()
 
-    def _worker(self, repos, per_repo_fn, success_msg, on_complete=None):
+    def _worker(self, repos, per_repo_fn, success_msg, on_complete=None,
+                link_fn=None):
         all_ok = True
         for name, path in repos:
             self.after(0, self.progress.status, name, "in-progress")
@@ -217,8 +259,14 @@ class ActionTabBase(ttk.Frame):
             # The action may have changed the branch (e.g. checkout); refresh it.
             branch = git_current_branch(path) if is_git_repo(path) else ""
             self.after(0, self.progress.set_branch, name, branch)
+            # Add a clickable branch link once the action has succeeded.
+            if ok and link_fn is not None:
+                url = link_fn(name, path)
+                if url:
+                    self.after(0, self.progress.set_link, name, url)
 
         if all_ok and success_msg:
             self.after(0, self.progress.show_completion, success_msg)
         if on_complete is not None:
             self.after(0, on_complete, all_ok)
+

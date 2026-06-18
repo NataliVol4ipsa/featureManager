@@ -217,3 +217,52 @@ def ask_commit_message(parent, repo_count, branch_warning=None):
     dialog.grab_set()
     parent.wait_window(dialog)
     return result["message"]
+
+
+def ask_branch_warning(parent, repo_count, title="Push all changes",
+                       action_label="Push"):
+    """Modal warning that the selected repos are not all on the same branch.
+
+    Used by actions (e.g. push) that otherwise need no input: it is only shown
+    when a warning applies. Returns True if the user confirms, False otherwise.
+    """
+    dialog = tk.Toplevel(parent)
+    dialog.title(title)
+    dialog.transient(parent.winfo_toplevel())
+    dialog.resizable(False, False)
+
+    tk.Label(
+        dialog,
+        text=f"{action_label} {repo_count} selected "
+             f"{'repository' if repo_count == 1 else 'repositories'}.",
+        justify="left",
+    ).pack(padx=16, pady=(16, 4), anchor="w")
+
+    warn = ttk.Frame(dialog)
+    warn.pack(padx=16, pady=(0, 4), anchor="w")
+    tk.Label(warn, text="\u26A0", foreground="#c0392b",
+             font=("", 11, "bold")).pack(side="left", padx=(0, 4))
+    tk.Label(warn, text="The selected repositories are not all on the same branch.",
+             foreground="#c0392b", justify="left", wraplength=360).pack(side="left")
+
+    result = {"ok": False}
+
+    def _ok():
+        result["ok"] = True
+        dialog.destroy()
+
+    def _cancel():
+        result["ok"] = False
+        dialog.destroy()
+
+    bar = ttk.Frame(dialog)
+    bar.pack(padx=16, pady=12)
+    ttk.Button(bar, text=action_label, command=_ok).pack(side="left", padx=4)
+    ttk.Button(bar, text="Cancel", command=_cancel).pack(side="left", padx=4)
+
+    dialog.protocol("WM_DELETE_WINDOW", _cancel)
+    _center_over_parent(dialog, parent)
+    dialog.grab_set()
+    parent.wait_window(dialog)
+    return result["ok"]
+

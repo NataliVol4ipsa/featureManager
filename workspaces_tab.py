@@ -130,6 +130,15 @@ class WorkspacesTab(ActionTabBase):
                 "the repos with changes are on different branches, a warning is "
                 "shown before committing.",
             ),
+            (
+                "Git push",
+                self._action_push,
+                "For the selected workspace's repositories: pushes the current "
+                "branch to origin, creating the remote branch automatically if "
+                "it does not exist yet. No prompts are shown unless the repos "
+                "are on different branches, in which case a warning is shown "
+                "first.",
+            ),
         ]
 
     # -- Helpers ----------------------------------------------------------- #
@@ -278,6 +287,16 @@ class WorkspacesTab(ActionTabBase):
                 self.errors.add(repos)
             return
         self.commit_all_changes(repos)
+
+    # -- Git push ---------------------------------------------------------- #
+    def _action_push(self):
+        ok, workspace, repos = self._selected_repos()
+        self.errors.clear()
+        if not ok:
+            if workspace is not None:
+                self.errors.add(repos)
+            return
+        self.push_all(repos)
 
     # -- Create feature branch --------------------------------------------- #
     def _action_create_feature_branch(self):

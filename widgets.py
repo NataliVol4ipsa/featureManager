@@ -2,6 +2,7 @@
 
 import os
 import tkinter as tk
+import webbrowser
 from datetime import datetime
 from tkinter import ttk
 
@@ -81,20 +82,26 @@ class ProgressPanel(ttk.Frame):
         # both can be updated live during an action.
         self._indicators = {}
         self._branch_labels = {}
+        self._link_labels = {}
         self._with_status = False
+        self._with_link = False
 
-    def show_repos(self, rows, with_status=False):
+    def show_repos(self, rows, with_status=False, with_link=False):
         """(Re)build the table from *rows* (each a (name, branch) pair).
 
         When *with_status* is True the status column shows a 'pending' circle
-        per row; otherwise it is left blank (plain selection view).
+        per row; otherwise it is left blank (plain selection view). When
+        *with_link* is True an extra "Link" column is added whose cells stay
+        empty until set_link() fills them with a clickable branch link.
         """
         self.clear_completion()
         for child in self._inner.winfo_children():
             child.destroy()
         self._indicators = {}
         self._branch_labels = {}
+        self._link_labels = {}
         self._with_status = with_status
+        self._with_link = with_link
 
         # Let the name/branch columns share the spare width.
         self._inner.columnconfigure(1, weight=1)
@@ -110,6 +117,10 @@ class ProgressPanel(ttk.Frame):
         ttk.Label(self._inner, text="Branch", font=("", 9, "bold")).grid(
             row=0, column=2, sticky="w", padx=4, pady=(2, 4)
         )
+        if with_link:
+            ttk.Label(self._inner, text="Link", font=("", 9, "bold")).grid(
+                row=0, column=3, sticky="w", padx=4, pady=(2, 4)
+            )
 
         for index, (name, branch) in enumerate(rows, start=1):
             symbol, color = STATUS_STYLES["pending"]
@@ -125,6 +136,11 @@ class ProgressPanel(ttk.Frame):
             branch_label.grid(row=index, column=2, sticky="w", padx=4, pady=1)
             self._indicators[name] = indicator
             self._branch_labels[name] = branch_label
+            if with_link:
+                # Empty placeholder cell; set_link() turns it into a link.
+                link_label = tk.Label(self._inner, text="")
+                link_label.grid(row=index, column=3, sticky="w", padx=4, pady=1)
+                self._link_labels[name] = link_label
 
     # Backwards-compatible alias: a plain name list with no branch/status.
     def set_repos(self, names):
@@ -144,6 +160,23 @@ class ProgressPanel(ttk.Frame):
         label = self._branch_labels.get(name)
         if label is not None:
             label.config(text=branch)
+
+    def set_link(self, name, url, text="View branch"):
+        """Turn a repo's Link cell into a clickable link that opens *url*.
+
+        Only works when the table was built with with_link=True. A falsy *url*
+        leaves the cell blank (e.g. when no remote URL could be derived).
+        """
+        label = self._link_labels.get(name)
+        if label is None or not url:
+            return
+        label.config(
+            text=text, foreground="#0a6cff", cursor="hand2",
+            font=("", 9, "underline"),
+        )
+        # Rebind to the latest URL (avoid stacking handlers if called twice).
+        label.unbind("<Button-1>")
+        label.bind("<Button-1>", lambda _e, u=url: webbrowser.open(u))
 
     def show_completion(self, text):
         """Reveal the green completion banner above the repo list."""

@@ -96,6 +96,15 @@ class ManualTab(ActionTabBase):
                 "warning is shown before committing.",
             ),
             (
+                "Git push",
+                self._action_push,
+                "For every selected repository: pushes the current branch to "
+                "origin, creating the remote branch automatically if it does "
+                "not exist yet. No prompts are shown unless the selected repos "
+                "are on different branches, in which case a warning is shown "
+                "first.",
+            ),
+            (
                 "Create feature workspace and branches",
                 self._action_create_workspace_and_branches,
                 "For every selected repository: first creates a 'feature/<name>' "
@@ -243,6 +252,10 @@ class ManualTab(ActionTabBase):
     # -- Commit all changes (custom message) ------------------------------- #
     def _action_commit_all(self):
         self.commit_all_changes(self._all_selected_repos())
+
+    # -- Git push ---------------------------------------------------------- #
+    def _action_push(self):
+        self.push_all(self._all_selected_repos())
 
     # -- Create feature workspace ------------------------------------------ #
     def _action_create_workspace(self):
