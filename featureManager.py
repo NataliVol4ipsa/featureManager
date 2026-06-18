@@ -98,6 +98,15 @@ def git_has_changes(repo_path):
     return ok and bool(out)
 
 
+def git_rebase_in_progress(repo_path):
+    """Return True if an unfinished rebase already exists in the repo."""
+    git_dir = os.path.join(repo_path, ".git")
+    return (
+        os.path.isdir(os.path.join(git_dir, "rebase-merge"))
+        or os.path.isdir(os.path.join(git_dir, "rebase-apply"))
+    )
+
+
 # --------------------------------------------------------------------------- #
 # Reusable UI components
 # --------------------------------------------------------------------------- #
@@ -406,6 +415,14 @@ class FeatureManagerApp(ttk.Frame):
                 "For every selected repository: checks out the 'master' branch "
                 "and pulls the latest changes from the remote.",
             ),
+            (
+                "Rebase current branch on master",
+                self._action_rebase_on_master,
+                "For every selected repository: updates master (checkout + pull), "
+                "returns to the feature branch and rebases it onto master. "
+                "Uncommitted changes are committed first (with confirmation) and "
+                "restored afterwards on a clean rebase.",
+            ),
         ]
         for label, command, hint in actions:
             button = ttk.Button(middle, text=label, command=command)
@@ -504,6 +521,161 @@ class FeatureManagerApp(ttk.Frame):
         ok, out = run_git(path, ["pull"])
         if not ok:
             return False, f"{name}: {out}"
+
+        return True, ""
+
+    # -- Rebase current branch on master ----------------------------------- #
+    def _action_rebase_on_master(self):
+        """Rebase each selected repo's feature branch onto an updated master."""
+        repos = self._all_selected_repos()
+        if not repos:
+            return
+
+        # Reset shared UI areas for a fresh run.
+        self.errors.clear()
+        self.progress.set_repos([name for name, _ in repos])
+
+        # Pre-scan: find repos with uncommitted changes. Nothing is processed
+        # until the user decides how to handle them, so the whole batch waits.
+        dirty = [name for name, path in repos
+                 if os.path.isdir(os.path.join(path, ".git"))
+                 and git_has_changes(path)]
+
+        if dirty:
+            if not self._ask_commit_or_abort(dirty):
+                # User aborted: leave every repo untouched.
+                self.progress.set_repos([])
+                return
+
+        # At this point uncommitted changes (if any) are approved for commit.
+        threading.Thread(
+            target=self._run_rebase_on_master, args=(repos,), daemon=True
+        ).start()
+
+    def _ask_commit_or_abort(self, repo_names):
+        """Modal asking whether to commit & rebase or abort. Returns True=commit."""
+        dialog = tk.Toplevel(self)
+        dialog.title("Uncommitted changes")
+        dialog.transient(self.winfo_toplevel())
+        dialog.resizable(False, False)
+
+        message = (
+            "There are uncommitted changes in following repositories:\n"
+            f"{', '.join(repo_names)}.\n\n"
+            "Do you want to commit and rebase, or to abort operation?"
+        )
+        tk.Label(dialog, text=message, justify="left", wraplength=380).pack(
+            padx=16, pady=12
+        )
+
+        # Holds the user's choice; default is abort (safe) if window is closed.
+        choice = {"commit": False}
+
+        def _commit():
+            choice["commit"] = True
+            dialog.destroy()
+
+        def _abort():
+            choice["commit"] = False
+            dialog.destroy()
+
+        button_bar = ttk.Frame(dialog)
+        button_bar.pack(padx=16, pady=(0, 12))
+        ttk.Button(button_bar, text="Commit and rebase", command=_commit).pack(
+            side="left", padx=4
+        )
+        ttk.Button(button_bar, text="Abort operation", command=_abort).pack(
+            side="left", padx=4
+        )
+
+        dialog.protocol("WM_DELETE_WINDOW", _abort)
+        dialog.grab_set()              # make it modal
+        self.wait_window(dialog)       # block until a choice is made
+        return choice["commit"]
+
+    def _run_rebase_on_master(self, repos):
+        """Worker: rebase each repo onto master, updating the UI live."""
+        all_ok = True
+        for name, path in repos:
+            self.after(0, self.progress.status, name, "in-progress")
+
+            ok, message = self._rebase_one(name, path)
+            if ok:
+                self.after(0, self.progress.status, name, "done")
+            else:
+                all_ok = False
+                self.after(0, self.progress.status, name, "error")
+                self.after(0, self.errors.add, message)
+
+        if all_ok:
+            self.after(0, self.progress.show_completion,
+                       "All repositories rebased successfully.")
+
+    def _rebase_one(self, name, path):
+        """Rebase one repo's feature branch onto master. Returns (ok, error_message).
+
+        Flow: optionally commit local changes, update master, return to the
+        feature branch and rebase. On a clean rebase any pre-rebase commit is
+        undone so the changes return to their uncommitted state.
+        """
+        if not os.path.isdir(os.path.join(path, ".git")):
+            return False, f"{name}: not a git repository"
+
+        # A rebase already underway must be finished/aborted by hand.
+        if git_rebase_in_progress(path):
+            return False, (
+                f"{name}: a rebase is already in progress. cannot start a new "
+                f"rebase until it is resolved"
+            )
+
+        branch = git_current_branch(path)
+        if not branch or branch == "master":
+            return False, (
+                f"{name}: not on a feature branch (currently '{branch or '?'}'); "
+                f"nothing to rebase onto master"
+            )
+
+        # Preserve uncommitted work so master can be checked out safely. The
+        # commit is undone again after a clean rebase.
+        committed = False
+        if git_has_changes(path):
+            ok, out = run_git(path, ["add", "-A"])
+            if not ok:
+                return False, f"{name}: {out}"
+            ok, out = run_git(path, ["commit", "-m", "save changes before rebase"])
+            if not ok:
+                return False, f"{name}: {out}"
+            committed = True
+
+        # Update master.
+        ok, out = run_git(path, ["checkout", "master"])
+        if not ok:
+            return False, f"{name}: {out}"
+        ok, out = run_git(path, ["pull"])
+        if not ok:
+            return False, f"{name}: {out}"
+
+        # Back to the feature branch and rebase it onto the fresh master.
+        ok, out = run_git(path, ["checkout", branch])
+        if not ok:
+            return False, f"{name}: {out}"
+
+        ok, out = run_git(path, ["rebase", "master"])
+        if not ok:
+            # Conflicts (or any rebase failure) need a human; leave the repo
+            # mid-rebase for review and keep processing the other repos.
+            return False, (
+                f"{name}: rebase could not complete automatically. manual "
+                f"rebase review is needed.\n{out}"
+            )
+
+        # Clean rebase: drop the temporary commit so changes go back to being
+        # uncommitted (only our "save changes before rebase" commit, never the
+        # user's own commits).
+        if committed:
+            ok, out = run_git(path, ["reset", "HEAD~1"])
+            if not ok:
+                return False, f"{name}: {out}"
 
         return True, ""
 
