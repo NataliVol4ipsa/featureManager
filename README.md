@@ -8,6 +8,32 @@ Run it with:
 python featureManager.py
 ```
 
+## Configuration (config.json)
+
+Folder locations and exclusions are read from `config.json` (next to the code),
+so you can change them without editing Python. If the file is missing or a key
+is absent, built-in defaults are used.
+
+```json
+{
+    "repos_root": "D:/Repositories",
+    "nugets_root": "D:/Repositories/Shared",
+    "workspaces_root": "D:/Workspaces/features",
+    "exclusions": {
+        "repos": ["ibs", "shared", "wiki"],
+        "nugets": [],
+        "workspaces": []
+    }
+}
+```
+
+- `repos_root` — scanned for repositories (the "Services" tab).
+- `nugets_root` — sub-folders shown on the "Nugets" tab (defaults to
+  `<repos_root>/Shared` if omitted).
+- `workspaces_root` — where `.code-workspace` files are read from / written to.
+- `exclusions.repos` / `.nugets` / `.workspaces` — folder/workspace names to hide
+  from each list (case-insensitive).
+
 ## Work item linking (ADO_PAT)
 
 Creating a pull request links the work item referenced in the branch name

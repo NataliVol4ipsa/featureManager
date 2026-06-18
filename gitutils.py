@@ -13,7 +13,10 @@ import urllib.parse
 import urllib.request
 import urllib.error
 
-from config import REPOS_ROOT, NUGETS_ROOT, WORKSPACES_ROOT, EXCLUDED_FOLDERS
+from config import (
+    REPOS_ROOT, NUGETS_ROOT, WORKSPACES_ROOT,
+    EXCLUDED_FOLDERS, EXCLUDED_NUGETS, EXCLUDED_WORKSPACES,
+)
 
 
 # Base message for the generic "commit changes as savepos" commits. Using
@@ -49,8 +52,11 @@ def get_service_folders():
 
 
 def get_nuget_folders():
-    """Folders for the 'Nugets' tab: sub-folders of D:/Repositories/Shared."""
-    return list_subfolders(NUGETS_ROOT)
+    """Folders for the 'Nugets' tab: sub-folders of the nugets root, minus exclusions."""
+    return [
+        name for name in list_subfolders(NUGETS_ROOT)
+        if name.lower() not in EXCLUDED_NUGETS
+    ]
 
 
 def list_workspaces():
@@ -62,6 +68,7 @@ def list_workspaces():
         name[: -len(suffix)]
         for name in os.listdir(WORKSPACES_ROOT)
         if name.endswith(suffix)
+        and name[: -len(suffix)].lower() not in EXCLUDED_WORKSPACES
     )
 
 
@@ -78,11 +85,14 @@ def list_workspaces_detailed():
     for fname in os.listdir(WORKSPACES_ROOT):
         if not fname.endswith(suffix):
             continue
+        name = fname[: -len(suffix)]
+        if name.lower() in EXCLUDED_WORKSPACES:
+            continue
         try:
             info = os.stat(os.path.join(WORKSPACES_ROOT, fname))
         except OSError:
             continue
-        items.append((fname[: -len(suffix)], info.st_ctime, info.st_mtime))
+        items.append((name, info.st_ctime, info.st_mtime))
     # Freshest (most recently modified) on top.
     items.sort(key=lambda item: item[2], reverse=True)
     return items

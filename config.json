@@ -1,0 +1,10 @@
+{
+    "repos_root": "D:/Repositories",
+    "nugets_root": "D:/Repositories/Shared",
+    "workspaces_root": "D:/Workspaces/features",
+    "exclusions": {
+        "repos": ["ibs", "shared", "wiki"],
+        "nugets": [],
+        "workspaces": []
+    }
+}
