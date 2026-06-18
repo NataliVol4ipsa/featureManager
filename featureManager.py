@@ -423,6 +423,14 @@ class FeatureManagerApp(ttk.Frame):
                 "Uncommitted changes are committed first (with confirmation) and "
                 "restored afterwards on a clean rebase.",
             ),
+            (
+                "Create feature branch",
+                self._action_create_feature_branch,
+                "For every selected repository: updates master (checkout + pull) "
+                "and creates a new 'feature/<name>' branch. Uncommitted changes "
+                "are handled per repository (delete, commit, or move to the new "
+                "branch) before the branch is created.",
+            ),
         ]
         for label, command, hint in actions:
             button = ttk.Button(middle, text=label, command=command)
@@ -676,6 +684,214 @@ class FeatureManagerApp(ttk.Frame):
             ok, out = run_git(path, ["reset", "HEAD~1"])
             if not ok:
                 return False, f"{name}: {out}"
+
+        return True, ""
+
+    # -- Create feature branch --------------------------------------------- #
+    def _action_create_feature_branch(self):
+        """Create a new feature branch (off updated master) for each selected repo."""
+        repos = self._all_selected_repos()
+        if not repos:
+            return
+
+        # Pre-scan: for each dirty repo, ask (one modal per repo) what to do with
+        # its uncommitted changes. Closing any modal aborts the whole operation,
+        # so nothing is processed until every decision is made.
+        decisions = {}  # repo name -> "delete" | "commit" | "move"
+        for name, path in repos:
+            if not os.path.isdir(os.path.join(path, ".git")):
+                continue
+            if git_has_changes(path):
+                on_master = git_current_branch(path) == "master"
+                decision = self._ask_change_decision(name, on_master)
+                if decision is None:
+                    return  # user aborted
+                decisions[name] = decision
+
+        # Ask for the (required) feature branch name; "feature/" is fixed.
+        branch_name = self._ask_branch_name()
+        if not branch_name:
+            return
+
+        self.errors.clear()
+        self.progress.set_repos([name for name, _ in repos])
+        threading.Thread(
+            target=self._run_create_feature,
+            args=(repos, branch_name, decisions), daemon=True,
+        ).start()
+
+    def _ask_change_decision(self, name, on_master):
+        """Per-repo modal for handling uncommitted changes.
+
+        Returns "delete", "commit" or "move"; None if the user closes the modal.
+        Committing is not offered when the repo is on master.
+        """
+        dialog = tk.Toplevel(self)
+        dialog.title(f"Uncommitted changes - {name}")
+        dialog.transient(self.winfo_toplevel())
+        dialog.resizable(False, False)
+
+        message = (
+            f"Repository '{name}' has uncommitted changes.\n"
+            "What would you like to do with them?"
+        )
+        if on_master:
+            message += "\n\n(On master, committing is not allowed.)"
+        tk.Label(dialog, text=message, justify="left", wraplength=400).pack(
+            padx=16, pady=12
+        )
+
+        choice = {"value": None}
+
+        def _set(value):
+            choice["value"] = value
+            dialog.destroy()
+
+        bar = ttk.Frame(dialog)
+        bar.pack(padx=16, pady=(0, 12))
+        ttk.Button(bar, text="Delete changes",
+                   command=lambda: _set("delete")).pack(side="left", padx=4)
+        if not on_master:
+            ttk.Button(bar, text="Commit changes",
+                       command=lambda: _set("commit")).pack(side="left", padx=4)
+        ttk.Button(bar, text="Move to new feature branch",
+                   command=lambda: _set("move")).pack(side="left", padx=4)
+
+        dialog.protocol("WM_DELETE_WINDOW", lambda: _set(None))
+        dialog.grab_set()
+        self.wait_window(dialog)
+        return choice["value"]
+
+    def _ask_branch_name(self):
+        """Modal with a fixed 'feature/' prefix and a required name field.
+
+        Returns the entered name (without prefix), or None if cancelled.
+        """
+        dialog = tk.Toplevel(self)
+        dialog.title("Create feature branch")
+        dialog.transient(self.winfo_toplevel())
+        dialog.resizable(False, False)
+
+        row = ttk.Frame(dialog)
+        row.pack(padx=16, pady=(16, 4))
+        ttk.Label(row, text="feature/").pack(side="left")
+        entry = ttk.Entry(row, width=30)
+        entry.pack(side="left")
+        entry.focus_set()
+
+        error_label = tk.Label(dialog, text="", foreground="#c0392b")
+        error_label.pack(padx=16, anchor="w")
+
+        result = {"name": None}
+
+        def _ok():
+            name = entry.get().strip()
+            if not name:
+                error_label.config(text="Branch name is required.")
+                return
+            result["name"] = name
+            dialog.destroy()
+
+        def _cancel():
+            result["name"] = None
+            dialog.destroy()
+
+        bar = ttk.Frame(dialog)
+        bar.pack(padx=16, pady=12)
+        ttk.Button(bar, text="OK", command=_ok).pack(side="left", padx=4)
+        ttk.Button(bar, text="Cancel", command=_cancel).pack(side="left", padx=4)
+
+        entry.bind("<Return>", lambda _e: _ok())
+        dialog.protocol("WM_DELETE_WINDOW", _cancel)
+        dialog.grab_set()
+        self.wait_window(dialog)
+        return result["name"]
+
+    def _run_create_feature(self, repos, branch_name, decisions):
+        """Worker: create the feature branch for each repo, updating the UI live."""
+        all_ok = True
+        for name, path in repos:
+            self.after(0, self.progress.status, name, "in-progress")
+
+            ok, message = self._create_feature_one(
+                name, path, branch_name, decisions.get(name)
+            )
+            if ok:
+                self.after(0, self.progress.status, name, "done")
+            else:
+                all_ok = False
+                self.after(0, self.progress.status, name, "error")
+                self.after(0, self.errors.add, message)
+
+        if all_ok:
+            self.after(0, self.progress.show_completion,
+                       "All feature branches created successfully.")
+
+    def _create_feature_one(self, name, path, branch_name, decision):
+        """Create one repo's feature branch. Returns (ok, error_message).
+
+        *decision* (only set for dirty repos) controls how uncommitted changes
+        are handled: "delete", "commit" (savepos on the current branch) or
+        "move" (carried onto the new branch via a stash).
+        """
+        if not os.path.isdir(os.path.join(path, ".git")):
+            return False, f"{name}: not a git repository"
+
+        new_branch = f"feature/{branch_name}"
+
+        # Move: stash everything (including untracked), branch off master, then
+        # re-apply. Conflicts are surfaced without aborting other repos.
+        if decision == "move":
+            ok, out = run_git(
+                path, ["stash", "push", "-u", "-m", "move to feature branch"]
+            )
+            if not ok:
+                return False, f"{name}: {out}"
+            ok, out = run_git(path, ["checkout", "master"])
+            if not ok:
+                return False, f"{name}: {out}"
+            ok, out = run_git(path, ["pull"])
+            if not ok:
+                return False, f"{name}: {out}"
+            ok, out = run_git(path, ["checkout", "-b", new_branch])
+            if not ok:
+                return False, f"{name}: {out}"
+            ok, out = run_git(path, ["stash", "pop"])
+            if not ok:
+                return False, (
+                    f"{name}: changes were moved but applying them caused "
+                    f"conflicts. manual resolution needed.\n{out}"
+                )
+            return True, ""
+
+        # Delete: discard all staged/unstaged and untracked changes.
+        if decision == "delete":
+            ok, out = run_git(path, ["reset", "--hard"])
+            if not ok:
+                return False, f"{name}: {out}"
+            ok, out = run_git(path, ["clean", "-fd"])
+            if not ok:
+                return False, f"{name}: {out}"
+
+        # Commit: keep the changes as a savepos commit on the current branch.
+        elif decision == "commit":
+            ok, out = run_git(path, ["add", "-A"])
+            if not ok:
+                return False, f"{name}: {out}"
+            ok, out = run_git(path, ["commit", "-m", "savepos"])
+            if not ok:
+                return False, f"{name}: {out}"
+
+        # Update master and branch off it.
+        ok, out = run_git(path, ["checkout", "master"])
+        if not ok:
+            return False, f"{name}: {out}"
+        ok, out = run_git(path, ["pull"])
+        if not ok:
+            return False, f"{name}: {out}"
+        ok, out = run_git(path, ["checkout", "-b", new_branch])
+        if not ok:
+            return False, f"{name}: {out}"
 
         return True, ""
 
