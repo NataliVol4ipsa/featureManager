@@ -266,3 +266,93 @@ def ask_branch_warning(parent, repo_count, title="Push all changes",
     parent.wait_window(dialog)
     return result["ok"]
 
+
+def ask_pr_details(parent, repo_count):
+    """Modal collecting pull-request options for every selected repo.
+
+    The user can either auto-generate each PR title from that repo's own branch
+    name (e.g. ``feature/123_my_description`` -> ``feature(123) My description``)
+    or enter one custom title applied to every repo. A description is optional
+    and shared by all. Returns a dict {"mode", "title", "description"} where
+    *mode* is "auto" or "custom", or None if cancelled.
+    """
+    dialog = tk.Toplevel(parent)
+    dialog.title("Create pull requests")
+    dialog.transient(parent.winfo_toplevel())
+    dialog.resizable(False, False)
+
+    tk.Label(
+        dialog,
+        text=f"Create a pull request to master for {repo_count} selected "
+             f"{'repository' if repo_count == 1 else 'repositories'}.",
+        justify="left",
+    ).pack(padx=16, pady=(16, 8), anchor="w")
+
+    mode = tk.StringVar(value="auto")
+
+    # Title entry, only enabled in "custom" mode.
+    title_entry = ttk.Entry(dialog, width=46)
+
+    def _sync_title_state(*_args):
+        title_entry.configure(
+            state="normal" if mode.get() == "custom" else "disabled"
+        )
+
+    ttk.Radiobutton(
+        dialog, text="Auto-generate each title from its branch name",
+        variable=mode, value="auto", command=_sync_title_state,
+    ).pack(padx=16, anchor="w")
+    tk.Label(
+        dialog,
+        text="e.g. feature/123_my_description \u2192 feature(123) My description",
+        foreground="#666666",
+    ).pack(padx=36, anchor="w")
+
+    ttk.Radiobutton(
+        dialog, text="Use a custom title for all", variable=mode,
+        value="custom", command=_sync_title_state,
+    ).pack(padx=16, pady=(6, 0), anchor="w")
+    title_entry.pack(padx=36, pady=(0, 4), anchor="w", fill="x")
+
+    tk.Label(dialog, text="Description (optional):").pack(
+        padx=16, pady=(6, 0), anchor="w"
+    )
+    desc_text = tk.Text(dialog, width=46, height=4, wrap="word")
+    desc_text.pack(padx=16, pady=(0, 4), fill="x")
+
+    error_label = tk.Label(dialog, text="", foreground="#c0392b")
+    error_label.pack(padx=16, anchor="w")
+
+    _sync_title_state()
+
+    result = {"value": None}
+
+    def _ok():
+        chosen = mode.get()
+        title = title_entry.get().strip()
+        if chosen == "custom" and not title:
+            error_label.config(text="A custom title is required.")
+            return
+        result["value"] = {
+            "mode": chosen,
+            "title": title,
+            "description": desc_text.get("1.0", "end").strip(),
+        }
+        dialog.destroy()
+
+    def _cancel():
+        result["value"] = None
+        dialog.destroy()
+
+    bar = ttk.Frame(dialog)
+    bar.pack(padx=16, pady=12)
+    ttk.Button(bar, text="Create", command=_ok).pack(side="left", padx=4)
+    ttk.Button(bar, text="Cancel", command=_cancel).pack(side="left", padx=4)
+
+    dialog.protocol("WM_DELETE_WINDOW", _cancel)
+    _center_over_parent(dialog, parent)
+    dialog.grab_set()
+    parent.wait_window(dialog)
+    return result["value"]
+
+

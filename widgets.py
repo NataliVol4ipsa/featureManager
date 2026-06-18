@@ -59,9 +59,17 @@ class ProgressPanel(ttk.Frame):
     def __init__(self, master, **kwargs):
         super().__init__(master, **kwargs)
 
-        # Green completion banner, shown above the repo list (hidden by default).
-        self._banner = tk.Label(self, text="", foreground="#1a9e1a",
-                                font=("", 10, "bold"), anchor="w")
+        # Green completion banner (label + optional copy link), shown above the
+        # repo list and hidden by default.
+        self._banner_frame = ttk.Frame(self)
+        self._banner = tk.Label(self._banner_frame, text="",
+                                foreground="#1a9e1a", font=("", 10, "bold"),
+                                anchor="w")
+        self._banner.pack(side="left")
+        self._copy_button = ttk.Button(self._banner_frame, text="Copy all",
+                                       command=self._do_copy)
+        # The text to place on the clipboard when the copy button is clicked.
+        self._copy_payload = ""
 
         # Scrollable table area for repo rows.
         self._canvas = tk.Canvas(self, highlightthickness=0)
@@ -86,13 +94,16 @@ class ProgressPanel(ttk.Frame):
         self._with_status = False
         self._with_link = False
 
-    def show_repos(self, rows, with_status=False, with_link=False):
+    def show_repos(self, rows, with_status=False, with_link=False,
+                   show_branch=True, link_header="Link"):
         """(Re)build the table from *rows* (each a (name, branch) pair).
 
         When *with_status* is True the status column shows a 'pending' circle
         per row; otherwise it is left blank (plain selection view). When
-        *with_link* is True an extra "Link" column is added whose cells stay
-        empty until set_link() fills them with a clickable branch link.
+        *with_link* is True an extra link column (titled *link_header*) is added
+        whose cells stay empty until set_link() fills them with a clickable
+        link. Set *show_branch* to False to hide the Branch column (e.g. when
+        creating pull requests, where only the PR link is relevant).
         """
         self.clear_completion()
         for child in self._inner.winfo_children():
@@ -103,9 +114,16 @@ class ProgressPanel(ttk.Frame):
         self._with_status = with_status
         self._with_link = with_link
 
-        # Let the name/branch columns share the spare width.
+        # Assign column indices dynamically so hidden columns leave no gap.
+        branch_col = 2 if show_branch else None
+        link_col = (3 if show_branch else 2) if with_link else None
+
+        # Let the visible name and trailing columns share the spare width.
         self._inner.columnconfigure(1, weight=1)
-        self._inner.columnconfigure(2, weight=1)
+        if branch_col is not None:
+            self._inner.columnconfigure(branch_col, weight=1)
+        if link_col is not None:
+            self._inner.columnconfigure(link_col, weight=1)
 
         # Header row.
         ttk.Label(self._inner, text="", width=2).grid(
@@ -114,12 +132,13 @@ class ProgressPanel(ttk.Frame):
         ttk.Label(self._inner, text="Repository", font=("", 9, "bold")).grid(
             row=0, column=1, sticky="w", padx=4, pady=(2, 4)
         )
-        ttk.Label(self._inner, text="Branch", font=("", 9, "bold")).grid(
-            row=0, column=2, sticky="w", padx=4, pady=(2, 4)
-        )
-        if with_link:
-            ttk.Label(self._inner, text="Link", font=("", 9, "bold")).grid(
-                row=0, column=3, sticky="w", padx=4, pady=(2, 4)
+        if branch_col is not None:
+            ttk.Label(self._inner, text="Branch", font=("", 9, "bold")).grid(
+                row=0, column=branch_col, sticky="w", padx=4, pady=(2, 4)
+            )
+        if link_col is not None:
+            ttk.Label(self._inner, text=link_header, font=("", 9, "bold")).grid(
+                row=0, column=link_col, sticky="w", padx=4, pady=(2, 4)
             )
 
         for index, (name, branch) in enumerate(rows, start=1):
@@ -132,14 +151,19 @@ class ProgressPanel(ttk.Frame):
             ttk.Label(self._inner, text=name).grid(
                 row=index, column=1, sticky="w", padx=4, pady=1
             )
-            branch_label = ttk.Label(self._inner, text=branch)
-            branch_label.grid(row=index, column=2, sticky="w", padx=4, pady=1)
             self._indicators[name] = indicator
-            self._branch_labels[name] = branch_label
-            if with_link:
+            if branch_col is not None:
+                branch_label = ttk.Label(self._inner, text=branch)
+                branch_label.grid(
+                    row=index, column=branch_col, sticky="w", padx=4, pady=1
+                )
+                self._branch_labels[name] = branch_label
+            if link_col is not None:
                 # Empty placeholder cell; set_link() turns it into a link.
                 link_label = tk.Label(self._inner, text="")
-                link_label.grid(row=index, column=3, sticky="w", padx=4, pady=1)
+                link_label.grid(
+                    row=index, column=link_col, sticky="w", padx=4, pady=1
+                )
                 self._link_labels[name] = link_label
 
     # Backwards-compatible alias: a plain name list with no branch/status.
@@ -178,15 +202,35 @@ class ProgressPanel(ttk.Frame):
         label.unbind("<Button-1>")
         label.bind("<Button-1>", lambda _e, u=url: webbrowser.open(u))
 
-    def show_completion(self, text):
-        """Reveal the green completion banner above the repo list."""
+    def show_completion(self, text, copy_text=None):
+        """Reveal the green completion banner above the repo list.
+
+        When *copy_text* is given, a "Copy all" button is shown next to the
+        banner that copies that text to the clipboard (used to copy every repo's
+        PR link as "repo name - pr link" lines).
+        """
         self._banner.config(text=text)
-        self._banner.pack(fill="x", padx=6, pady=(4, 6), before=self._canvas)
+        if copy_text:
+            self._copy_payload = copy_text
+            self._copy_button.config(text="Copy all")
+            self._copy_button.pack(side="left", padx=(10, 0))
+        else:
+            self._copy_payload = ""
+            self._copy_button.pack_forget()
+        self._banner_frame.pack(fill="x", padx=6, pady=(4, 6), before=self._canvas)
+
+    def _do_copy(self, _event=None):
+        """Copy the stored payload to the clipboard and confirm on the button."""
+        self.clipboard_clear()
+        self.clipboard_append(self._copy_payload)
+        self._copy_button.config(text="Copied!")
 
     def clear_completion(self):
         """Hide the completion banner (e.g. when a new action starts)."""
         self._banner.config(text="")
-        self._banner.pack_forget()
+        self._copy_payload = ""
+        self._copy_button.pack_forget()
+        self._banner_frame.pack_forget()
 
 
 class ErrorList(ttk.Frame):

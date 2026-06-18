@@ -105,6 +105,15 @@ class ManualTab(ActionTabBase):
                 "first.",
             ),
             (
+                "Create pull request",
+                self._action_create_pr,
+                "For every selected repository: creates an Azure DevOps pull "
+                "request to master from the current branch (it must be pushed "
+                "first). You choose one custom title or let each title be "
+                "auto-generated from its branch name (feature/123_my_desc "
+                "\u2192 feature(123) My desc). A link to each new PR is shown.",
+            ),
+            (
                 "Create feature workspace and branches",
                 self._action_create_workspace_and_branches,
                 "For every selected repository: first creates a 'feature/<name>' "
@@ -256,6 +265,10 @@ class ManualTab(ActionTabBase):
     # -- Git push ---------------------------------------------------------- #
     def _action_push(self):
         self.push_all(self._all_selected_repos())
+
+    # -- Create pull request ----------------------------------------------- #
+    def _action_create_pr(self):
+        self.create_prs(self._all_selected_repos())
 
     # -- Create feature workspace ------------------------------------------ #
     def _action_create_workspace(self):

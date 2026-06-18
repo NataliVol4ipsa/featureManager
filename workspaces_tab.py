@@ -35,14 +35,18 @@ class WorkspacesTab(ActionTabBase):
         super().__init__(master)
         self._build_left()
         self.build_middle_actions(self._actions())
-        # The workspace table needs the room, so keep Details a fixed width and
-        # let the left panel absorb the rest of the window.
-        self.build_right_details(expand=False, width=360)
+        # Let the Details panel absorb the extra width when the window grows, so
+        # long branch/PR content on the right has room (the workspace list on
+        # the left keeps a fixed width).
+        self.build_right_details(expand=True)
 
     # -- Layout ------------------------------------------------------------ #
     def _build_left(self):
-        left = ttk.LabelFrame(self._top, text="Workspaces")
-        left.pack(side="left", fill="both", expand=True)
+        # Fixed width so widening the window grows the Details panel, not the
+        # workspace name column. Sized to fit the Name/Created/Modified columns.
+        left = ttk.LabelFrame(self._top, text="Workspaces", width=500)
+        left.pack(side="left", fill="y")
+        left.pack_propagate(False)
 
         self.workspace_list = WorkspaceList(
             left, self._workspace_items(), on_select=self._on_workspace_selected
@@ -138,6 +142,15 @@ class WorkspacesTab(ActionTabBase):
                 "it does not exist yet. No prompts are shown unless the repos "
                 "are on different branches, in which case a warning is shown "
                 "first.",
+            ),
+            (
+                "Create pull request",
+                self._action_create_pr,
+                "For the selected workspace's repositories: creates an Azure "
+                "DevOps pull request to master from the current branch (it must "
+                "be pushed first). You choose one custom title or let each title "
+                "be auto-generated from its branch name (feature/123_my_desc "
+                "\u2192 feature(123) My desc). A link to each new PR is shown.",
             ),
         ]
 
@@ -297,6 +310,16 @@ class WorkspacesTab(ActionTabBase):
                 self.errors.add(repos)
             return
         self.push_all(repos)
+
+    # -- Create pull request ----------------------------------------------- #
+    def _action_create_pr(self):
+        ok, workspace, repos = self._selected_repos()
+        self.errors.clear()
+        if not ok:
+            if workspace is not None:
+                self.errors.add(repos)
+            return
+        self.create_prs(repos)
 
     # -- Create feature branch --------------------------------------------- #
     def _action_create_feature_branch(self):

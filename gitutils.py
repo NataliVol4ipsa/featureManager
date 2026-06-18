@@ -7,8 +7,11 @@ own. ``run_git`` never raises; it returns ``(ok, combined_output)``.
 import os
 import re
 import json
+import base64
 import subprocess
 import urllib.parse
+import urllib.request
+import urllib.error
 
 from config import REPOS_ROOT, NUGETS_ROOT, WORKSPACES_ROOT, EXCLUDED_FOLDERS
 
@@ -398,6 +401,305 @@ def git_branch_url(repo_path, branch, remote="origin"):
     if not url:
         return ""
     return _branch_web_url(url, branch)
+
+
+# --------------------------------------------------------------------------- #
+# Azure DevOps pull requests
+# --------------------------------------------------------------------------- #
+
+def ado_pr_title_from_branch(branch):
+    """Build a PR title from a feature branch name.
+
+    ``feature/123_my_description`` becomes ``feature(123) My description``: the
+    leading numeric id is shown in braces, underscores become spaces and the
+    description's first word is capitalised. Falls back to a best-effort title
+    for branches that do not follow the ``<prefix>/<id>_<description>`` shape.
+    """
+    name = branch.strip()
+    if name.startswith("refs/heads/"):
+        name = name[len("refs/heads/"):]
+
+    prefix, sep, rest = name.partition("/")
+    if not sep:  # no "/" -> treat the whole thing as the rest, no prefix
+        prefix, rest = "", name
+
+    first, sep2, tail = rest.partition("_")
+    if first.isdigit():
+        number, desc = first, tail
+    else:
+        number, desc = "", rest
+
+    desc = desc.replace("_", " ").strip()
+    if desc:
+        desc = desc[0].upper() + desc[1:]
+
+    parts = []
+    if prefix and number:
+        parts.append(f"{prefix}({number})")
+    elif prefix:
+        parts.append(prefix)
+    elif number:
+        parts.append(f"({number})")
+    if desc:
+        parts.append(desc)
+    return " ".join(parts).strip() or name
+
+
+def ado_work_item_id_from_branch(branch):
+    """Return the work-item id embedded in a feature branch name, or "".
+
+    ``feature/514231_my_description`` -> ``514231`` (the leading numeric id of
+    the description). Returns "" when the branch has no such leading number.
+    """
+    name = branch.strip()
+    if name.startswith("refs/heads/"):
+        name = name[len("refs/heads/"):]
+    _prefix, _sep, rest = name.partition("/")
+    if not _sep:
+        rest = name
+    first = rest.partition("_")[0]
+    return first if first.isdigit() else ""
+
+
+def parse_ado_remote(remote_url):
+    """Return (org, project, repo, host) for an Azure DevOps remote, or None.
+
+    Handles the HTTPS (dev.azure.com and *.visualstudio.com) and SSH
+    (git@ssh.dev.azure.com:v3/...) forms. Returns None for non-ADO remotes.
+    """
+    url = remote_url.strip()
+    if url.endswith(".git"):
+        url = url[:-4]
+
+    # SSH short form: git@ssh.dev.azure.com:v3/org/project/repo
+    if url.startswith("git@ssh.dev.azure.com:"):
+        path = url.split(":", 1)[1]
+        parts = [urllib.parse.unquote(p) for p in path.strip("/").split("/")]
+        if len(parts) >= 4 and parts[0] == "v3":
+            return parts[1], parts[2], parts[3], "dev.azure.com"
+        return None
+
+    if "://" not in url:
+        return None
+    parsed = urllib.parse.urlparse(url)
+    host = (parsed.hostname or "").lower()
+    # Decode each path segment so values like "My%20Project"
+    # become "My Project" (they are re-encoded when used).
+    parts = [
+        urllib.parse.unquote(p) for p in parsed.path.strip("/").split("/")
+    ]
+
+    # HTTPS: dev.azure.com/org/project/_git/repo
+    if host == "dev.azure.com":
+        if "_git" in parts:
+            i = parts.index("_git")
+            if i >= 2 and i + 1 < len(parts):
+                return parts[0], parts[i - 1], parts[i + 1], host
+        return None
+
+    # HTTPS old form: org.visualstudio.com[/DefaultCollection]/project/_git/repo
+    if host.endswith(".visualstudio.com"):
+        org = host.split(".")[0]
+        if "_git" in parts:
+            i = parts.index("_git")
+            if i >= 1 and i + 1 < len(parts):
+                return org, parts[i - 1], parts[i + 1], host
+        return None
+
+    return None
+
+
+def get_git_credential(host):
+    """Return (username, password) Git has stored for *host*, or (None, None).
+
+    Uses ``git credential fill`` so the existing credential (e.g. a PAT managed
+    by Git Credential Manager) is reused without prompting the user.
+    """
+    try:
+        proc = subprocess.run(
+            ["git", "credential", "fill"],
+            input=f"protocol=https\nhost={host}\n\n",
+            capture_output=True, text=True, timeout=20,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None, None
+    if proc.returncode != 0:
+        return None, None
+    creds = {}
+    for line in proc.stdout.splitlines():
+        if "=" in line:
+            key, value = line.split("=", 1)
+            creds[key] = value
+    return creds.get("username"), creds.get("password")
+
+
+def create_ado_pr(name, path, title, description="", target="master"):
+    """Create an Azure DevOps pull request for one repo.
+
+    Returns (ok, url_or_err, warning). The PR goes from the repo's current
+    branch to *target* (master). The remote branch must already be pushed.
+    Authentication reuses the Git credential already stored for the host, so no
+    extra credentials are requested. When the branch name embeds a work-item id
+    (e.g. ``feature/514231_...``) that work item is linked to the new PR; a link
+    failure does not fail the PR but is returned as *warning*.
+    """
+    if not is_git_repo(path):
+        return False, f"{name}: not a git repository", ""
+    branch = git_current_branch(path)
+    if not branch:
+        return False, f"{name}: not on a branch (detached HEAD)", ""
+    if branch == target:
+        return False, f"{name}: on {target}; nothing to create a pull request for", ""
+
+    parsed = parse_ado_remote(git_remote_url(path))
+    if not parsed:
+        return False, f"{name}: remote is not an Azure DevOps repository", ""
+    org, project, repo, host = parsed
+
+    username, password = get_git_credential(host)
+    if not password:
+        return False, f"{name}: no stored Git credential for {host}", ""
+
+    # Project-scoped endpoint; project and repo are re-encoded here (they were
+    # decoded by parse_ado_remote, so names with spaces work correctly).
+    api_url = (
+        f"https://dev.azure.com/{urllib.parse.quote(org)}/"
+        f"{urllib.parse.quote(project)}/_apis/git/repositories/"
+        f"{urllib.parse.quote(repo)}/pullrequests?api-version=7.1"
+    )
+    body = json.dumps({
+        "sourceRefName": f"refs/heads/{branch}",
+        "targetRefName": f"refs/heads/{target}",
+        "title": title,
+        "description": description,
+    }).encode("utf-8")
+    auth = base64.b64encode(
+        f"{username or ''}:{password}".encode("utf-8")
+    ).decode("ascii")
+
+    req = urllib.request.Request(api_url, data=body, method="POST")
+    req.add_header("Content-Type", "application/json")
+    req.add_header("Authorization", f"Basic {auth}")
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", "replace").strip()
+        try:
+            detail = json.loads(detail).get("message", detail)
+        except ValueError:
+            pass
+        if not detail:
+            # ADO returns an empty 404 body when the resource path is wrong;
+            # include the URL so the org/repo can be verified.
+            detail = f"resource not found at {api_url}"
+        return False, f"{name}: pull request failed ({exc.code}): {detail}", ""
+    except (urllib.error.URLError, OSError) as exc:
+        return False, f"{name}: pull request failed: {exc}", ""
+
+    pr_id = data.get("pullRequestId")
+    # Prefer the project/repo names returned by the API for an accurate link.
+    repo_info = data.get("repository") or {}
+    project_name = (repo_info.get("project") or {}).get("name") or project
+    repo_name = repo_info.get("name") or repo
+    web_url = (
+        f"https://dev.azure.com/{urllib.parse.quote(org)}/"
+        f"{urllib.parse.quote(project_name)}/_git/"
+        f"{urllib.parse.quote(repo_name)}/pullrequest/{pr_id}"
+    )
+
+    # Best-effort: link the work item referenced by the branch name to the PR.
+    work_item_id = ado_work_item_id_from_branch(branch)
+    if work_item_id and pr_id is not None:
+        project_id = (repo_info.get("project") or {}).get("id")
+        repo_id = repo_info.get("id")
+        if not (project_id and repo_id):
+            warning = (
+                f"{name}: PR created but could not link work item "
+                f"{work_item_id} (missing project/repo id in API response)"
+            )
+            return True, web_url, warning
+        # The Git credential is usually scoped to Code only, so the Work Items
+        # API rejects it. Prefer a dedicated PAT from ADO_PAT (Work Items: write)
+        # for the link step, falling back to the Git credential.
+        link_token = os.environ.get("ADO_PAT") or password
+        ok_link, link_err = _link_work_item_to_pr(
+            org, work_item_id, project_id, repo_id, pr_id, username, link_token
+        )
+        if not ok_link:
+            return True, web_url, f"{name}: {link_err}"
+
+    return True, web_url, ""
+
+
+def _link_work_item_to_pr(org, work_item_id, project_id, repo_id, pr_id,
+                          username, password):
+    """Attach a PR ArtifactLink to a work item. Returns (ok, error) (best effort).
+
+    Failures are returned but callers treat them as non-fatal since the PR has
+    already been created.
+    """
+    # PR artifact id is projectId/repoId/prId with the slashes URL-encoded.
+    artifact_id = urllib.parse.quote(
+        f"{project_id}/{repo_id}/{pr_id}", safe=""
+    )
+    artifact_url = f"vstfs:///Git/PullRequestId/{artifact_id}"
+
+    api_url = (
+        f"https://dev.azure.com/{urllib.parse.quote(org)}/"
+        f"_apis/wit/workitems/{urllib.parse.quote(str(work_item_id))}"
+        f"?api-version=7.1"
+    )
+    patch = json.dumps([{
+        "op": "add",
+        "path": "/relations/-",
+        "value": {
+            "rel": "ArtifactLink",
+            "url": artifact_url,
+            "attributes": {"name": "Pull Request"},
+        },
+    }]).encode("utf-8")
+
+    # Try Basic auth (works for PATs) first, then Bearer (for Azure AD access
+    # tokens, which the work-item API may only accept that way). The credential
+    # reused from Git can be either form depending on how it was issued.
+    basic = base64.b64encode(
+        f"{username or ''}:{password}".encode("utf-8")
+    ).decode("ascii")
+    attempts = [f"Basic {basic}", f"Bearer {password}"]
+
+    last_code, last_detail = None, ""
+    for authorization in attempts:
+        req = urllib.request.Request(api_url, data=patch, method="PATCH")
+        req.add_header("Content-Type", "application/json-patch+json")
+        req.add_header("Authorization", authorization)
+        try:
+            with urllib.request.urlopen(req, timeout=30):
+                return True, ""
+        except urllib.error.HTTPError as exc:
+            last_code = exc.code
+            last_detail = exc.read().decode("utf-8", "replace").strip()
+            # Only an auth failure is worth retrying with the other scheme.
+            if exc.code not in (401, 403):
+                break
+        except (urllib.error.URLError, OSError) as exc:
+            return False, f"work item {work_item_id} link failed: {exc}"
+
+    hint = ""
+    if last_code in (401, 403):
+        hint = (
+            " - the credential lacks Work Items (write) permission; set the "
+            "ADO_PAT environment variable to a PAT with that scope, or link the "
+            "work item manually"
+        )
+    if not last_detail:
+        last_detail = "(empty response)"
+    return False, (
+        f"work item {work_item_id} link failed ({last_code}): "
+        f"{last_detail}{hint}"
+    )
+
+
 
 
 def create_feature_branch(name, path, branch_name, decision):

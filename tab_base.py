@@ -9,9 +9,12 @@ from tkinter import ttk
 
 from widgets import Tooltip, ProgressPanel, ErrorList
 from gitutils import (
-    is_git_repo, git_current_branch, commit_all, git_push, git_branch_url,
+    is_git_repo, git_current_branch, git_has_changes, commit_all, git_push,
+    git_branch_url, create_ado_pr, ado_pr_title_from_branch,
 )
-from dialogs import ask_change_decision, ask_commit_message, ask_branch_warning
+from dialogs import (
+    ask_change_decision, ask_commit_message, ask_branch_warning, ask_pr_details,
+)
 
 
 class ActionTabBase(ttk.Frame):
@@ -179,6 +182,62 @@ class ActionTabBase(ttk.Frame):
             link_fn=lambda n, p: git_branch_url(p, git_current_branch(p)),
         )
 
+    def create_prs(self, repos):
+        """Create an Azure DevOps pull request for every selected repo.
+
+        Asks once whether to auto-generate each PR title from its branch name or
+        use one custom title, then creates the PRs on a background thread. Each
+        successful PR adds a clickable link to it in the Details table.
+        """
+        self.errors.clear()
+        if not repos:
+            return
+
+        self.show_repos_async(repos, with_status=False)
+
+        options = ask_pr_details(self, len(repos))
+        if options is None:
+            return
+
+        # PR URLs are produced by the action itself; stash them so the link
+        # column can show them without creating the PR a second time.
+        pr_urls = {}
+
+        def _create(name, path):
+            if options["mode"] == "auto":
+                title = ado_pr_title_from_branch(git_current_branch(path))
+            else:
+                title = options["title"]
+            ok, result, warning = create_ado_pr(
+                name, path, title, options["description"]
+            )
+            if ok:
+                pr_urls[name] = result
+                # A work-item link failure is non-fatal: the PR still succeeds,
+                # but surface the reason so it is not silently lost.
+                if warning:
+                    self.after(0, self.errors.add, warning)
+                return True, ""
+            return False, result
+
+        # On full success, offer to copy every "repo name - pr link" line.
+        def _copy_text(ok_repos):
+            return "\n".join(
+                f"{name} - {pr_urls[name]}"
+                for name, _ in ok_repos if name in pr_urls
+            )
+
+        self.run_repo_action(
+            repos,
+            _create,
+            "All pull requests created successfully.",
+            link_fn=lambda n, p: pr_urls.get(n, ""),
+            link_text="View PR",
+            link_header="Pull request",
+            show_branch=False,
+            completion_copy_fn=_copy_text,
+        )
+
 
     # -- Generic background runner ----------------------------------------- #
     def repo_rows(self, repos):
@@ -221,7 +280,9 @@ class ActionTabBase(ttk.Frame):
             self.progress.set_branch(name, branch)
 
     def run_repo_action(self, repos, per_repo_fn, success_msg, on_complete=None,
-                        link_fn=None):
+                        link_fn=None, link_text="View branch",
+                        link_header="Link", show_branch=True,
+                        completion_copy_fn=None):
         """Run *per_repo_fn(name, path)* for each repo off the UI thread.
 
         *per_repo_fn* must return (ok, error_message). The table shows each
@@ -230,22 +291,29 @@ class ActionTabBase(ttk.Frame):
         shows only when every repo succeeds. *on_complete(all_ok)*, if given,
         runs on the UI thread afterwards (used to chain a follow-up step such as
         writing a workspace file). *link_fn(name, path)*, if given, returns a URL
-        shown as a clickable link in an extra "Link" column after the repo's
-        action succeeds.
+        shown as a clickable link (labelled *link_text*, under the *link_header*
+        column) after the repo's action succeeds. Set *show_branch* to False to
+        hide the Branch column (e.g. when creating pull requests).
+        *completion_copy_fn(ok_repos)*, if given, returns text shown behind a
+        "Copy all" button on the success banner (ok_repos is the (name, path)
+        list, used to build e.g. "repo name - pr link" lines).
         """
         self.errors.clear()
         self.progress.show_repos(
             [(name, "...") for name, _ in repos], with_status=True,
-            with_link=link_fn is not None,
+            with_link=link_fn is not None, show_branch=show_branch,
+            link_header=link_header,
         )
         threading.Thread(
             target=self._worker,
-            args=(repos, per_repo_fn, success_msg, on_complete, link_fn),
+            args=(repos, per_repo_fn, success_msg, on_complete, link_fn,
+                  link_text, show_branch, completion_copy_fn),
             daemon=True,
         ).start()
 
     def _worker(self, repos, per_repo_fn, success_msg, on_complete=None,
-                link_fn=None):
+                link_fn=None, link_text="View branch", show_branch=True,
+                completion_copy_fn=None):
         all_ok = True
         for name, path in repos:
             self.after(0, self.progress.status, name, "in-progress")
@@ -256,17 +324,20 @@ class ActionTabBase(ttk.Frame):
                 all_ok = False
                 self.after(0, self.progress.status, name, "error")
                 self.after(0, self.errors.add, message)
-            # The action may have changed the branch (e.g. checkout); refresh it.
-            branch = git_current_branch(path) if is_git_repo(path) else ""
-            self.after(0, self.progress.set_branch, name, branch)
-            # Add a clickable branch link once the action has succeeded.
+            # The action may have changed the branch (e.g. checkout); refresh it
+            # (no-op when the Branch column is hidden).
+            if show_branch:
+                branch = git_current_branch(path) if is_git_repo(path) else ""
+                self.after(0, self.progress.set_branch, name, branch)
+            # Add a clickable link once the action has succeeded.
             if ok and link_fn is not None:
                 url = link_fn(name, path)
                 if url:
-                    self.after(0, self.progress.set_link, name, url)
+                    self.after(0, self.progress.set_link, name, url, link_text)
 
         if all_ok and success_msg:
-            self.after(0, self.progress.show_completion, success_msg)
+            copy_text = completion_copy_fn(repos) if completion_copy_fn else None
+            self.after(0, self.progress.show_completion, success_msg, copy_text)
         if on_complete is not None:
             self.after(0, on_complete, all_ok)
 
