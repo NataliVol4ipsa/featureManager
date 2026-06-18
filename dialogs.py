@@ -22,67 +22,64 @@ def _center_over_parent(dialog, parent):
     dialog.geometry(f"+{x}+{y}")
 
 
-def ask_commit_or_abort(parent, repo_names):
-    """Modal asking whether to commit & rebase or abort. Returns True=commit."""
-    dialog = tk.Toplevel(parent)
-    dialog.title("Uncommitted changes")
-    dialog.transient(parent.winfo_toplevel())
-    dialog.resizable(False, False)
-
-    message = (
-        "There are uncommitted changes in following repositories:\n"
-        f"{', '.join(repo_names)}.\n\n"
-        "Do you want to commit and rebase, or to abort operation?"
-    )
-    tk.Label(dialog, text=message, justify="left", wraplength=380).pack(
-        padx=16, pady=12
-    )
-
-    choice = {"commit": False}
-
-    def _commit():
-        choice["commit"] = True
-        dialog.destroy()
-
-    def _abort():
-        choice["commit"] = False
-        dialog.destroy()
-
-    bar = ttk.Frame(dialog)
-    bar.pack(padx=16, pady=(0, 12))
-    ttk.Button(bar, text="Commit and rebase", command=_commit).pack(
-        side="left", padx=4
-    )
-    ttk.Button(bar, text="Abort operation", command=_abort).pack(
-        side="left", padx=4
-    )
-
-    dialog.protocol("WM_DELETE_WINDOW", _abort)
-    _center_over_parent(dialog, parent)
-    dialog.grab_set()
-    parent.wait_window(dialog)
-    return choice["commit"]
+# Human-readable button labels for each uncommitted-changes decision key.
+_DECISION_LABELS = {
+    "commit": "Commit changes",
+    "commit_restore": "Commit & restore",
+    "delete": "Delete changes",
+    "move": "Move to new feature branch",
+    "abort": "Abort operation",
+}
 
 
-def ask_change_decision(parent, name, on_master):
-    """Per-repo modal for handling uncommitted changes when creating a branch.
+def ask_change_decision(parent, name, options, on_master=False, note=None):
+    """Per-repo modal asking what to do with a repo's uncommitted changes.
 
-    Returns "delete", "commit" or "move"; None if the user closes the modal.
-    Committing is not offered when the repo is on master.
+    *options* is the ordered list of decision keys to offer, drawn from
+    "commit", "commit_restore", "delete", "move" and "abort". Returns the chosen
+    key, or None if the user aborts or closes the modal (callers treat None as
+    "abort"). The repository name is shown in bold so it stands out. When
+    *on_master* is set, a clear warning explains why committing is not offered.
+    *note*, if given, is extra explanatory text shown above the buttons (e.g.
+    why committing is required for a rebase).
     """
     dialog = tk.Toplevel(parent)
     dialog.title(f"Uncommitted changes - {name}")
     dialog.transient(parent.winfo_toplevel())
     dialog.resizable(False, False)
 
-    message = (
-        f"Repository '{name}' has uncommitted changes.\n"
-        "What would you like to do with them?"
-    )
+    # Message with the repo name highlighted in bold (built from inline labels).
+    text = ttk.Frame(dialog)
+    text.pack(padx=16, pady=12, anchor="w")
+    line = ttk.Frame(text)
+    line.pack(anchor="w")
+    tk.Label(line, text="Repository ").pack(side="left")
+    tk.Label(line, text=name, font=("", 9, "bold")).pack(side="left")
+    tk.Label(line, text=" has uncommitted changes.").pack(side="left")
+
+    # On master, make it obvious why there is no Commit button.
     if on_master:
-        message += "\n\n(On master, committing is not allowed.)"
-    tk.Label(dialog, text=message, justify="left", wraplength=400).pack(
-        padx=16, pady=12
+        warn = ttk.Frame(text)
+        warn.pack(anchor="w", pady=(8, 0))
+        tk.Label(warn, text="\u26A0", foreground="#c0392b",
+                 font=("", 11, "bold")).pack(side="left", padx=(0, 4))
+        master_line = ttk.Frame(warn)
+        master_line.pack(side="left")
+        tk.Label(master_line, text="This repository is on the ",
+                 foreground="#c0392b").pack(side="left")
+        tk.Label(master_line, text="master", foreground="#c0392b",
+                 font=("", 9, "bold")).pack(side="left")
+        tk.Label(master_line, text=" branch. Committing on master is not allowed.",
+                 foreground="#c0392b").pack(side="left")
+
+    # Optional explanatory note (e.g. that a rebase requires committing first).
+    if note:
+        tk.Label(text, text=note, justify="left", wraplength=380).pack(
+            anchor="w", pady=(8, 0)
+        )
+
+    tk.Label(text, text="What would you like to do with them?").pack(
+        anchor="w", pady=(8, 0)
     )
 
     choice = {"value": None}
@@ -93,53 +90,11 @@ def ask_change_decision(parent, name, on_master):
 
     bar = ttk.Frame(dialog)
     bar.pack(padx=16, pady=(0, 12))
-    ttk.Button(bar, text="Delete changes",
-               command=lambda: _set("delete")).pack(side="left", padx=4)
-    if not on_master:
-        ttk.Button(bar, text="Commit changes",
-                   command=lambda: _set("commit")).pack(side="left", padx=4)
-    ttk.Button(bar, text="Move to new feature branch",
-               command=lambda: _set("move")).pack(side="left", padx=4)
-
-    dialog.protocol("WM_DELETE_WINDOW", lambda: _set(None))
-    _center_over_parent(dialog, parent)
-    dialog.grab_set()
-    parent.wait_window(dialog)
-    return choice["value"]
-
-
-def ask_commit_delete_abort(parent, name):
-    """Per-repo modal for handling uncommitted changes before a workspace switch.
-
-    Returns "commit", "delete"; None if the user aborts/closes the modal.
-    """
-    dialog = tk.Toplevel(parent)
-    dialog.title(f"Uncommitted changes - {name}")
-    dialog.transient(parent.winfo_toplevel())
-    dialog.resizable(False, False)
-
-    message = (
-        f"Repository '{name}' has uncommitted changes.\n"
-        "Commit them, delete them, or abort the switch?"
-    )
-    tk.Label(dialog, text=message, justify="left", wraplength=400).pack(
-        padx=16, pady=12
-    )
-
-    choice = {"value": None}
-
-    def _set(value):
-        choice["value"] = value
-        dialog.destroy()
-
-    bar = ttk.Frame(dialog)
-    bar.pack(padx=16, pady=(0, 12))
-    ttk.Button(bar, text="Commit changes",
-               command=lambda: _set("commit")).pack(side="left", padx=4)
-    ttk.Button(bar, text="Delete changes",
-               command=lambda: _set("delete")).pack(side="left", padx=4)
-    ttk.Button(bar, text="Abort operation",
-               command=lambda: _set(None)).pack(side="left", padx=4)
+    for key in options:
+        # "abort" (and a closed window) resolve to None.
+        value = None if key == "abort" else key
+        ttk.Button(bar, text=_DECISION_LABELS[key],
+                   command=lambda v=value: _set(v)).pack(side="left", padx=4)
 
     dialog.protocol("WM_DELETE_WINDOW", lambda: _set(None))
     _center_over_parent(dialog, parent)

@@ -7,11 +7,11 @@ from config import REPOS_ROOT, NUGETS_ROOT
 from gitutils import (
     get_service_folders, get_nuget_folders, write_workspace,
     run_git, is_git_repo, git_current_branch, git_has_changes,
-    create_feature_branch, rebase_on_master,
+    save_uncommitted, create_feature_branch, rebase_on_master, SAVEPOS_MSG,
 )
 from widgets import FolderTab
 from tab_base import ActionTabBase
-from dialogs import ask_commit_or_abort, ask_change_decision, ask_branch_name
+from dialogs import ask_branch_name
 
 # Base message for the rebase savepos commits (see gitutils.save_uncommitted).
 REBASE_SAVE_MSG = "save changes before rebase"
@@ -95,32 +95,40 @@ class ManualTab(ActionTabBase):
         repos = self._all_selected_repos()
         if not repos:
             return
+
+        # Ask per dirty repo what to do with its changes before switching away.
+        decisions = self.collect_change_decisions(repos)
+        if decisions is None:
+            return  # user aborted
+
         self.run_repo_action(
-            repos, self._checkout_and_pull,
+            repos,
+            lambda n, p: self._checkout_and_pull(n, p, decisions.get(n)),
             "All repositories updated successfully.",
         )
 
-    def _checkout_and_pull(self, name, path):
+    def _checkout_and_pull(self, name, path, decision):
         """Checkout master + pull for one repo. Returns (ok, error_message).
 
-        On a non-master branch, local changes are committed as "savepos" first.
-        On master with local changes the pull is unsafe, so the repo is skipped.
+        Uncommitted changes are handled per the user's *decision*: "delete"
+        discards them; "commit" saves them as restorable savepos commit(s) on
+        the current branch (staged/unstaged split preserved).
         """
         if not is_git_repo(path):
             return False, f"{name}: not a git repository"
 
         if git_has_changes(path):
-            if git_current_branch(path) == "master":
-                return False, (
-                    f"{name} is already on master and has unsaved changes. "
-                    f"cannot perform pull"
-                )
-            ok, out = run_git(path, ["add", "-A"])
-            if not ok:
-                return False, f"{name}: {out}"
-            ok, out = run_git(path, ["commit", "-m", "savepos"])
-            if not ok:
-                return False, f"{name}: {out}"
+            if decision == "delete":
+                ok, out = run_git(path, ["reset", "--hard"])
+                if not ok:
+                    return False, f"{name}: {out}"
+                ok, out = run_git(path, ["clean", "-fd"])
+                if not ok:
+                    return False, f"{name}: {out}"
+            elif decision == "commit":
+                ok, out = save_uncommitted(path, SAVEPOS_MSG)
+                if not ok:
+                    return False, f"{name}: {out}"
 
         ok, out = run_git(path, ["checkout", "master"])
         if not ok:
@@ -139,16 +147,23 @@ class ManualTab(ActionTabBase):
         self.errors.clear()
         self.progress.set_repos([name for name, _ in repos])
 
-        # Pre-scan: nothing is processed until the user decides about dirty repos.
-        dirty = [name for name, path in repos
-                 if is_git_repo(path) and git_has_changes(path)]
-        if dirty and not ask_commit_or_abort(self, dirty):
+        # Ask per dirty repo what to do with its changes. A rebase needs the
+        # changes committed first, so "commit" (leave committed) and
+        # "commit & restore" (restore the working state afterwards) are offered.
+        decisions = self.collect_change_decisions(
+            repos, restore_option=True,
+            note="A rebase requires committing the changes first. 'Commit "
+                 "changes' leaves them committed on the branch; 'Commit & "
+                 "restore' puts the same changes back as uncommitted work after "
+                 "the rebase.",
+        )
+        if decisions is None:
             self.progress.set_repos([])
             return
 
         self.run_repo_action(
             repos,
-            lambda n, p: rebase_on_master(n, p, REBASE_SAVE_MSG),
+            lambda n, p: rebase_on_master(n, p, REBASE_SAVE_MSG, decisions.get(n)),
             "All repositories rebased successfully.",
         )
 
@@ -162,7 +177,9 @@ class ManualTab(ActionTabBase):
         if not branch_name:
             return
 
-        decisions = self._collect_change_decisions(repos, f"feature/{branch_name}")
+        decisions = self.collect_change_decisions(
+            repos, allow_move=True, skip_branch=f"feature/{branch_name}"
+        )
         if decisions is None:
             return  # user aborted
 
@@ -171,27 +188,6 @@ class ManualTab(ActionTabBase):
             lambda n, p: create_feature_branch(n, p, branch_name, decisions.get(n)),
             "All feature branches created successfully.",
         )
-
-    def _collect_change_decisions(self, repos, target_branch):
-        """Ask per-repo how to handle uncommitted changes before branching.
-
-        Repos already on *target_branch* are skipped (no prompt). Returns a
-        {name: decision} dict, or None if the user aborts any modal (so the
-        whole batch is cancelled).
-        """
-        decisions = {}  # repo name -> "delete" | "commit" | "move"
-        for name, path in repos:
-            if not is_git_repo(path):
-                continue
-            if git_current_branch(path) == target_branch:
-                continue  # already on target branch; skip this repo entirely
-            if git_has_changes(path):
-                on_master = git_current_branch(path) == "master"
-                decision = ask_change_decision(self, name, on_master)
-                if decision is None:
-                    return None
-                decisions[name] = decision
-        return decisions
 
     # -- Commit all changes as savepos ------------------------------------- #
     def _action_commit_savepos(self):
@@ -204,7 +200,10 @@ class ManualTab(ActionTabBase):
         )
 
     def _commit_savepos_one(self, name, path):
-        """Commit one repo's changes as 'savepos'. Returns (ok, error_message)."""
+        """Commit one repo's changes as savepos. Returns (ok, error_message).
+
+        Uses the staged/unstaged-preserving save so the commit can be restored.
+        """
         if not is_git_repo(path):
             return False, f"{name}: not a git repository"
         if git_current_branch(path) == "master":
@@ -212,10 +211,7 @@ class ManualTab(ActionTabBase):
         if not git_has_changes(path):
             return False, f"{name}: no changes to commit"
 
-        ok, out = run_git(path, ["add", "-A"])
-        if not ok:
-            return False, f"{name}: {out}"
-        ok, out = run_git(path, ["commit", "-m", "savepos"])
+        ok, out = save_uncommitted(path, SAVEPOS_MSG)
         if not ok:
             return False, f"{name}: {out}"
         return True, ""
@@ -259,7 +255,9 @@ class ManualTab(ActionTabBase):
         if not feature_name:
             return
 
-        decisions = self._collect_change_decisions(repos, f"feature/{feature_name}")
+        decisions = self.collect_change_decisions(
+            repos, allow_move=True, skip_branch=f"feature/{feature_name}"
+        )
         if decisions is None:
             return  # user aborted
 

@@ -8,13 +8,13 @@ from tkinter import ttk
 from config import WORKSPACES_ROOT
 from gitutils import (
     list_workspaces_detailed, read_workspace_repos,
-    run_git, is_git_repo, git_has_changes, git_branch_exists,
+    run_git, is_git_repo, git_branch_exists,
     save_uncommitted, has_savepos, restore_uncommitted,
     git_current_branch, create_feature_branch, rebase_on_master,
 )
 from widgets import WorkspaceList, Tooltip
 from tab_base import ActionTabBase
-from dialogs import ask_commit_delete_abort, ask_change_decision, ask_branch_name, ask_commit_or_abort
+from dialogs import ask_branch_name
 
 # Base message for the savepos commits created when switching workspaces.
 SWITCH_SAVE_MSG = "savepos before workspace switch"
@@ -167,16 +167,10 @@ class WorkspacesTab(ActionTabBase):
         # Pre-check 2: decide what to do with uncommitted changes (per repo).
         # Closing/aborting any modal cancels the whole switch. Repos already on
         # the target branch are skipped entirely (no prompt, no checkout).
-        decisions = {}
-        for name, path in repos:
-            if git_current_branch(path) == target:
-                continue
-            if git_has_changes(path):
-                decision = ask_commit_delete_abort(self, name)
-                if decision is None:
-                    self.progress.set_repos([])
-                    return
-                decisions[name] = decision
+        decisions = self.collect_change_decisions(repos, skip_branch=target)
+        if decisions is None:
+            self.progress.set_repos([])
+            return
 
         self.run_repo_action(
             repos,
@@ -247,16 +241,23 @@ class WorkspacesTab(ActionTabBase):
 
         self.progress.set_repos([name for name, _ in repos])
 
-        # Pre-scan: nothing is processed until the user decides about dirty repos.
-        dirty = [name for name, path in repos
-                 if is_git_repo(path) and git_has_changes(path)]
-        if dirty and not ask_commit_or_abort(self, dirty):
+        # Ask per dirty repo what to do with its changes. A rebase needs the
+        # changes committed first, so "commit" (leave committed) and
+        # "commit & restore" (restore the working state afterwards) are offered.
+        decisions = self.collect_change_decisions(
+            repos, restore_option=True,
+            note="A rebase requires committing the changes first. 'Commit "
+                 "changes' leaves them committed on the branch; 'Commit & "
+                 "restore' puts the same changes back as uncommitted work after "
+                 "the rebase.",
+        )
+        if decisions is None:
             self.progress.set_repos([])
             return
 
         self.run_repo_action(
             repos,
-            lambda n, p: rebase_on_master(n, p, REBASE_SAVE_MSG),
+            lambda n, p: rebase_on_master(n, p, REBASE_SAVE_MSG, decisions.get(n)),
             "All repositories rebased successfully.",
         )
 
@@ -284,18 +285,11 @@ class WorkspacesTab(ActionTabBase):
 
         # Per-repo decisions for dirty repos; repos already on the target branch
         # are skipped (no prompt). Closing any modal aborts the batch.
-        decisions = {}  # repo name -> "delete" | "commit" | "move"
-        for name, path in repos:
-            if not is_git_repo(path):
-                continue
-            if git_current_branch(path) == target:
-                continue  # already on target branch; skip this repo entirely
-            if git_has_changes(path):
-                on_master = git_current_branch(path) == "master"
-                decision = ask_change_decision(self, name, on_master)
-                if decision is None:
-                    return
-                decisions[name] = decision
+        decisions = self.collect_change_decisions(
+            repos, allow_move=True, skip_branch=target
+        )
+        if decisions is None:
+            return
 
         self.run_repo_action(
             repos,

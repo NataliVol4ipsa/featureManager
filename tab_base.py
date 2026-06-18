@@ -8,6 +8,8 @@ import threading
 from tkinter import ttk
 
 from widgets import Tooltip, ProgressPanel, ErrorList
+from gitutils import is_git_repo, git_current_branch, git_has_changes
+from dialogs import ask_change_decision
 
 
 class ActionTabBase(ttk.Frame):
@@ -54,6 +56,55 @@ class ActionTabBase(ttk.Frame):
         right.pack(side="left", fill="both", expand=expand)
         self.progress = ProgressPanel(right)
         self.progress.pack(fill="both", expand=True, padx=4, pady=4)
+
+    # -- Shared uncommitted-changes handling ------------------------------- #
+    def collect_change_decisions(self, repos, allow_move=False, skip_branch=None,
+                                 restore_option=False, note=None):
+        """Ask, per repo, what to do with its uncommitted changes.
+
+        The same modal is used by every action. Buttons are chosen per repo:
+        always "delete" and "abort"; "commit" only when the repo is not on
+        master (committing on master is disallowed); "commit_restore" alongside
+        "commit" when *restore_option* is set (used by rebase, where one variant
+        only commits and the other also restores the working state afterwards);
+        "move" only when *allow_move* is set (i.e. a new branch is being
+        created). *note* is extra explanatory text shown in each modal. Repos
+        that are not git repos, are clean, or are already on *skip_branch* are
+        skipped with no prompt.
+
+        Returns a {repo_name: decision} dict (decision is "commit",
+        "commit_restore", "delete" or "move"), or None if the user aborts/closes
+        any modal so the whole batch is cancelled. Wherever a commit decision is
+        later applied, the change set is committed preserving its staged/unstaged
+        split so it can be restored.
+        """
+        decisions = {}
+        for name, path in repos:
+            if not is_git_repo(path):
+                continue
+            branch = git_current_branch(path)
+            if skip_branch is not None and branch == skip_branch:
+                continue
+            if not git_has_changes(path):
+                continue
+
+            options = []
+            if branch != "master":
+                options.append("commit")
+                if restore_option:
+                    options.append("commit_restore")
+            options.append("delete")
+            if allow_move:
+                options.append("move")
+            options.append("abort")
+
+            decision = ask_change_decision(
+                self, name, options, on_master=(branch == "master"), note=note
+            )
+            if decision is None:
+                return None
+            decisions[name] = decision
+        return decisions
 
     # -- Generic background runner ----------------------------------------- #
     def run_repo_action(self, repos, per_repo_fn, success_msg, on_complete=None):

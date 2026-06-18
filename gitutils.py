@@ -12,6 +12,12 @@ import subprocess
 from config import REPOS_ROOT, NUGETS_ROOT, WORKSPACES_ROOT, EXCLUDED_FOLDERS
 
 
+# Base message for the generic "commit changes as savepos" commits. Using
+# save_uncommitted with this message keeps the staged/unstaged split so the
+# work can later be restored exactly.
+SAVEPOS_MSG = "savepos"
+
+
 # --------------------------------------------------------------------------- #
 # Folder / workspace discovery
 # --------------------------------------------------------------------------- #
@@ -326,12 +332,10 @@ def create_feature_branch(name, path, branch_name, decision):
         if not ok:
             return False, f"{name}: {out}"
 
-    # Commit: keep the changes as a savepos commit on the current branch.
+    # Commit: keep the changes as savepos commit(s) on the current branch,
+    # preserving the staged/unstaged split so they can be restored later.
     elif decision == "commit":
-        ok, out = run_git(path, ["add", "-A"])
-        if not ok:
-            return False, f"{name}: {out}"
-        ok, out = run_git(path, ["commit", "-m", "savepos"])
+        ok, out = save_uncommitted(path, SAVEPOS_MSG)
         if not ok:
             return False, f"{name}: {out}"
 
@@ -384,12 +388,16 @@ def restore_uncommitted(repo_path, base_msg):
     return False, "no app savepos commit at HEAD to restore"
 
 
-def rebase_on_master(name, path, save_msg):
+def rebase_on_master(name, path, save_msg, decision):
     """Rebase one repo's feature branch onto an updated master. Returns (ok, error).
 
-    Uncommitted work is saved as commit(s) preserving the staged/unstaged split
-    (using *save_msg*), master is pulled, the feature branch is rebased onto it
-    and - on a clean rebase - the saved working state is restored exactly.
+    *decision* (set only for dirty repos) is one of:
+      * "commit" - uncommitted work is committed (staged/unstaged split
+        preserved via *save_msg*) and left as commit(s) on the branch after the
+        rebase; the working tree is NOT restored.
+      * "commit_restore" - same as "commit" but the saved working state is
+        restored exactly after a clean rebase.
+      * "delete" - uncommitted work is discarded before the rebase.
     """
     if not is_git_repo(path):
         return False, f"{name}: not a git repository"
@@ -407,11 +415,23 @@ def rebase_on_master(name, path, save_msg):
             f"nothing to rebase onto master"
         )
 
-    saved = git_has_changes(path)
-    if saved:
-        ok, out = save_uncommitted(path, save_msg)
-        if not ok:
-            return False, f"{name}: {out}"
+    # Handle uncommitted work per the user's decision. The working tree is only
+    # restored afterwards for "commit_restore"; "commit" leaves it committed and
+    # "delete" discards it outright.
+    restore_after = False
+    if git_has_changes(path):
+        if decision == "delete":
+            ok, out = run_git(path, ["reset", "--hard"])
+            if not ok:
+                return False, f"{name}: {out}"
+            ok, out = run_git(path, ["clean", "-fd"])
+            if not ok:
+                return False, f"{name}: {out}"
+        else:
+            ok, out = save_uncommitted(path, save_msg)
+            if not ok:
+                return False, f"{name}: {out}"
+            restore_after = decision == "commit_restore"
 
     ok, out = run_git(path, ["checkout", "master"])
     if not ok:
@@ -431,7 +451,7 @@ def rebase_on_master(name, path, save_msg):
         )
 
     # Clean rebase: restore the saved working state (staged/unstaged intact).
-    if saved:
+    if restore_after:
         ok, out = restore_uncommitted(path, save_msg)
         if not ok:
             return False, f"{name}: {out}"
