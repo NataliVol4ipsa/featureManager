@@ -27,8 +27,18 @@ class FeatureManagerApp(ttk.Notebook):
         super().__init__(master, padding=6)
         self.pack(fill="both", expand=True)
 
-        self.add(ManualTab(self), text="Manual")
-        self.add(WorkspacesTab(self), text="Workspaces")
+        self.manual_tab = ManualTab(self)
+        self.workspaces_tab = WorkspacesTab(self)
+        self.add(self.manual_tab, text="Manual")
+        self.add(self.workspaces_tab, text="Workspaces")
+
+        # Refresh the workspace list every time the Workspaces tab is opened, so
+        # newly created/modified workspaces show up without a manual refresh.
+        self.bind("<<NotebookTabChanged>>", self._on_tab_changed)
+
+    def _on_tab_changed(self, _event=None):
+        if self.nametowidget(self.select()) is self.workspaces_tab:
+            self.workspaces_tab.refresh()
 
 
 def main():

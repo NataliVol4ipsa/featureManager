@@ -10,6 +10,18 @@ from tkinter import ttk
 from gitutils import is_valid_branch_name
 
 
+def _center_over_parent(dialog, parent):
+    """Position *dialog* centred over the parent's top-level window."""
+    dialog.update_idletasks()  # ensure the dialog has its real size
+    top = parent.winfo_toplevel()
+    px, py = top.winfo_rootx(), top.winfo_rooty()
+    pw, ph = top.winfo_width(), top.winfo_height()
+    dw, dh = dialog.winfo_width(), dialog.winfo_height()
+    x = px + (pw - dw) // 2
+    y = py + (ph - dh) // 2
+    dialog.geometry(f"+{x}+{y}")
+
+
 def ask_commit_or_abort(parent, repo_names):
     """Modal asking whether to commit & rebase or abort. Returns True=commit."""
     dialog = tk.Toplevel(parent)
@@ -46,6 +58,7 @@ def ask_commit_or_abort(parent, repo_names):
     )
 
     dialog.protocol("WM_DELETE_WINDOW", _abort)
+    _center_over_parent(dialog, parent)
     dialog.grab_set()
     parent.wait_window(dialog)
     return choice["commit"]
@@ -89,6 +102,7 @@ def ask_change_decision(parent, name, on_master):
                command=lambda: _set("move")).pack(side="left", padx=4)
 
     dialog.protocol("WM_DELETE_WINDOW", lambda: _set(None))
+    _center_over_parent(dialog, parent)
     dialog.grab_set()
     parent.wait_window(dialog)
     return choice["value"]
@@ -128,6 +142,7 @@ def ask_commit_delete_abort(parent, name):
                command=lambda: _set(None)).pack(side="left", padx=4)
 
     dialog.protocol("WM_DELETE_WINDOW", lambda: _set(None))
+    _center_over_parent(dialog, parent)
     dialog.grab_set()
     parent.wait_window(dialog)
     return choice["value"]
@@ -180,6 +195,7 @@ def ask_branch_name(parent, title="Create feature branch", prefix="feature/"):
 
     entry.bind("<Return>", lambda _e: _ok())
     dialog.protocol("WM_DELETE_WINDOW", _cancel)
+    _center_over_parent(dialog, parent)
     dialog.grab_set()
     parent.wait_window(dialog)
     return result["name"]

@@ -40,10 +40,18 @@ class ActionTabBase(ttk.Frame):
             button.pack(fill="x", padx=6, pady=3)
             Tooltip(button, hint)
 
-    def build_right_details(self):
-        """Build the right 'Details' column holding the live progress panel."""
+    def build_right_details(self, expand=True, width=None):
+        """Build the right 'Details' column holding the live progress panel.
+
+        *expand* controls whether the panel absorbs spare horizontal space.
+        *width*, if given, fixes the panel width (pixels) regardless of content
+        so a tab can keep its left panel wider.
+        """
         right = ttk.LabelFrame(self._top, text="Details")
-        right.pack(side="left", fill="both", expand=True)
+        if width is not None:
+            right.configure(width=width)
+            right.pack_propagate(False)  # keep the fixed width
+        right.pack(side="left", fill="both", expand=expand)
         self.progress = ProgressPanel(right)
         self.progress.pack(fill="both", expand=True, padx=4, pady=4)
 

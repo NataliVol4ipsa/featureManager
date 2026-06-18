@@ -1,20 +1,31 @@
 """The 'Workspaces' tab: switch all repos of a feature workspace at once."""
 
 import os
+import subprocess
+from datetime import datetime
 from tkinter import ttk
 
+from config import WORKSPACES_ROOT
 from gitutils import (
-    list_workspaces, read_workspace_repos,
+    list_workspaces_detailed, read_workspace_repos,
     run_git, is_git_repo, git_has_changes, git_branch_exists,
     save_uncommitted, has_savepos, restore_uncommitted,
-    git_current_branch, create_feature_branch,
+    git_current_branch, create_feature_branch, rebase_on_master,
 )
-from widgets import WorkspaceList
+from widgets import WorkspaceList, Tooltip
 from tab_base import ActionTabBase
-from dialogs import ask_commit_delete_abort, ask_change_decision, ask_branch_name
+from dialogs import ask_commit_delete_abort, ask_change_decision, ask_branch_name, ask_commit_or_abort
 
 # Base message for the savepos commits created when switching workspaces.
 SWITCH_SAVE_MSG = "savepos before workspace switch"
+
+# Base message for the rebase savepos commits (see gitutils.save_uncommitted).
+REBASE_SAVE_MSG = "save changes before rebase"
+
+
+def _fmt_time(timestamp):
+    """Format an epoch-second timestamp as a short 'YYYY-MM-DD HH:MM' string."""
+    return datetime.fromtimestamp(timestamp).strftime("%Y-%m-%d %H:%M")
 
 
 class WorkspacesTab(ActionTabBase):
@@ -24,7 +35,9 @@ class WorkspacesTab(ActionTabBase):
         super().__init__(master)
         self._build_left()
         self.build_middle_actions(self._actions())
-        self.build_right_details()
+        # The workspace table needs the room, so keep Details a fixed width and
+        # let the left panel absorb the rest of the window.
+        self.build_right_details(expand=False, width=300)
 
     # -- Layout ------------------------------------------------------------ #
     def _build_left(self):
@@ -32,13 +45,31 @@ class WorkspacesTab(ActionTabBase):
         left.pack(side="left", fill="both", expand=True)
 
         self.workspace_list = WorkspaceList(
-            left, list_workspaces(), on_select=self._on_workspace_selected
+            left, self._workspace_items(), on_select=self._on_workspace_selected
         )
         self.workspace_list.pack(fill="both", expand=True, padx=4, pady=4)
 
         ttk.Button(left, text="Refresh", command=self._refresh).pack(
             fill="x", padx=4, pady=(0, 4)
         )
+        open_btn = ttk.Button(
+            left, text="Open workspaces folder", command=self._open_workspaces_folder
+        )
+        open_btn.pack(fill="x", padx=4, pady=(0, 4))
+        Tooltip(
+            open_btn,
+            "Opens the workspaces folder "
+            f"({WORKSPACES_ROOT}) in Windows File Explorer.",
+        )
+
+    def _open_workspaces_folder(self):
+        """Open the feature workspaces folder in Windows File Explorer."""
+        self.errors.clear()
+        if not os.path.isdir(WORKSPACES_ROOT):
+            self.errors.add(f"workspaces folder does not exist: {WORKSPACES_ROOT}")
+            return
+        # 'explorer' expects a backslashed path; normpath gives the native form.
+        subprocess.Popen(["explorer", os.path.normpath(WORKSPACES_ROOT)])
 
     def _on_workspace_selected(self, workspace):
         """Show the workspace's repositories in the Details panel immediately."""
@@ -52,7 +83,17 @@ class WorkspacesTab(ActionTabBase):
 
     def _refresh(self):
         """Re-scan the workspaces folder (e.g. after creating a new workspace)."""
-        self.workspace_list.set_items(list_workspaces())
+        self.workspace_list.set_items(self._workspace_items())
+
+    # Public alias used by the app when the Workspaces tab is opened.
+    refresh = _refresh
+
+    def _workspace_items(self):
+        """Build (name, created, modified) rows, freshest (most recent) first."""
+        items = []
+        for name, created, modified in list_workspaces_detailed():
+            items.append((name, _fmt_time(created), _fmt_time(modified)))
+        return items
 
     def _actions(self):
         return [
@@ -73,12 +114,13 @@ class WorkspacesTab(ActionTabBase):
                 "are never touched.",
             ),
             (
-                "Create feature branch",
-                self._action_create_feature_branch,
+                "Rebase current branch on master",
+                self._action_rebase_on_master,
                 "For the selected workspace's repositories: updates master "
-                "(checkout + pull) and creates a new 'feature/<name>' branch. "
-                "Uncommitted changes are handled per repository (delete, commit, "
-                "or move to the new branch) before the branch is created.",
+                "(checkout + pull), returns to the feature branch and rebases "
+                "it onto master. Uncommitted changes are committed first (with "
+                "confirmation) and restored afterwards (staged/unstaged "
+                "preserved) on a clean rebase.",
             ),
         ]
 
@@ -191,6 +233,32 @@ class WorkspacesTab(ActionTabBase):
         if not ok:
             return False, f"{name}: {out}"
         return True, ""
+
+    # -- Rebase current branch on master ----------------------------------- #
+    def _action_rebase_on_master(self):
+        ok, workspace, repos = self._selected_repos()
+        self.errors.clear()
+        if not ok:
+            if workspace is not None:
+                self.errors.add(repos)
+            return
+        if not repos:
+            return
+
+        self.progress.set_repos([name for name, _ in repos])
+
+        # Pre-scan: nothing is processed until the user decides about dirty repos.
+        dirty = [name for name, path in repos
+                 if is_git_repo(path) and git_has_changes(path)]
+        if dirty and not ask_commit_or_abort(self, dirty):
+            self.progress.set_repos([])
+            return
+
+        self.run_repo_action(
+            repos,
+            lambda n, p: rebase_on_master(n, p, REBASE_SAVE_MSG),
+            "All repositories rebased successfully.",
+        )
 
     # -- Create feature branch --------------------------------------------- #
     def _action_create_feature_branch(self):

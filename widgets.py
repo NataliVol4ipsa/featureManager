@@ -2,6 +2,7 @@
 
 import os
 import tkinter as tk
+from datetime import datetime
 from tkinter import ttk
 
 
@@ -137,9 +138,12 @@ class ErrorList(ttk.Frame):
         self._text.config(state="disabled")
 
     def add(self, message):
-        """Append a single error line."""
+        """Append an error, prefixing each line with the current time (HH:MM:SS)."""
+        stamp = datetime.now().strftime("%H:%M:%S")
         self._text.config(state="normal")
-        self._text.insert("end", message.rstrip() + "\n")
+        # Multi-line messages (e.g. git output) get a timestamp on every row.
+        for line in message.rstrip().splitlines():
+            self._text.insert("end", f"[{stamp}] {line}\n")
         self._text.config(state="disabled")
         self._text.see("end")
 
@@ -260,26 +264,45 @@ class FolderTab(ttk.Frame):
 
 
 class WorkspaceList(ttk.Frame):
-    """A scrollable, single-selection list of feature workspaces.
+    """A single-selection table of feature workspaces (Name / Created / Modified).
 
     *on_select*, if given, is called with the selected workspace name whenever
     the selection changes.
     """
 
+    # Column ids and their header text / display width (pixels).
+    _COLUMNS = (
+        ("name", "Name", 220),
+        ("created", "Created", 130),
+        ("modified", "Modified", 130),
+    )
+
     def __init__(self, master, items, on_select=None, **kwargs):
         super().__init__(master, **kwargs)
 
         self._on_select = on_select
-        self.listbox = tk.Listbox(self, selectmode="browse", exportselection=False,
-                                  activestyle="dotbox")
-        scrollbar = ttk.Scrollbar(self, orient="vertical",
-                                  command=self.listbox.yview)
-        self.listbox.configure(yscrollcommand=scrollbar.set)
-        self.listbox.pack(side="left", fill="both", expand=True)
+        # Maps tree row id -> workspace name, so selection returns the name.
+        self._names = {}
+
+        column_ids = [col_id for col_id, _, _ in self._COLUMNS]
+        self.tree = ttk.Treeview(
+            self, columns=column_ids, show="headings", selectmode="browse"
+        )
+        for col_id, heading, width in self._COLUMNS:
+            self.tree.heading(col_id, text=heading)
+            # 'name' stretches to fill spare width; the date columns stay fixed.
+            self.tree.column(
+                col_id, width=width, anchor="w",
+                stretch=(col_id == "name"),
+            )
+
+        scrollbar = ttk.Scrollbar(self, orient="vertical", command=self.tree.yview)
+        self.tree.configure(yscrollcommand=scrollbar.set)
+        self.tree.pack(side="left", fill="both", expand=True)
         scrollbar.pack(side="right", fill="y")
 
         if on_select is not None:
-            self.listbox.bind("<<ListboxSelect>>", self._handle_select)
+            self.tree.bind("<<TreeviewSelect>>", self._handle_select)
 
         self.set_items(items)
 
@@ -289,14 +312,26 @@ class WorkspaceList(ttk.Frame):
             self._on_select(name)
 
     def set_items(self, items):
-        """Replace the list contents (keeps no prior selection)."""
-        self.listbox.delete(0, "end")
-        for name in items:
-            self.listbox.insert("end", name)
+        """Replace the table contents (keeps no prior selection).
+
+        Each item may be a plain name, or a (name, created, modified) tuple of
+        strings for the three columns. get_selected() always returns the name.
+        """
+        self.tree.delete(*self.tree.get_children())
+        self._names = {}
+        for item in items:
+            if isinstance(item, (tuple, list)):
+                name = item[0]
+                values = (item[0], *item[1:])
+            else:
+                name = item
+                values = (item, "", "")
+            row_id = self.tree.insert("", "end", values=values)
+            self._names[row_id] = name
 
     def get_selected(self):
         """Return the selected workspace name, or None if nothing is selected."""
-        selection = self.listbox.curselection()
+        selection = self.tree.selection()
         if not selection:
             return None
-        return self.listbox.get(selection[0])
+        return self._names.get(selection[0])

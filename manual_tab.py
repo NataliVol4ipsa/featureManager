@@ -7,8 +7,7 @@ from config import REPOS_ROOT, NUGETS_ROOT
 from gitutils import (
     get_service_folders, get_nuget_folders, write_workspace,
     run_git, is_git_repo, git_current_branch, git_has_changes,
-    git_rebase_in_progress, save_uncommitted, restore_uncommitted,
-    create_feature_branch,
+    create_feature_branch, rebase_on_master,
 )
 from widgets import FolderTab
 from tab_base import ActionTabBase
@@ -73,18 +72,13 @@ class ManualTab(ActionTabBase):
                 "master are skipped with an error.",
             ),
             (
-                "Create feature workspace",
-                self._action_create_workspace,
-                "Creates a VS Code '.code-workspace' file from the selected "
-                "repositories, named after the feature name you enter.",
-            ),
-            (
                 "Create feature workspace and branches",
                 self._action_create_workspace_and_branches,
-                "Combination of 'Create feature branch' and 'Create feature "
-                "workspace': first creates a 'feature/<name>' branch in every "
-                "selected repository (with the same uncommitted-change handling), "
-                "then writes a workspace file named after the same feature name.",
+                "For every selected repository: first creates a 'feature/<name>' "
+                "branch (updating master, then branching off it, with per-repo "
+                "handling of uncommitted changes - delete, commit, or move), "
+                "then writes a VS Code '.code-workspace' file named after the "
+                "same feature name.",
             ),
         ]
 
@@ -153,62 +147,10 @@ class ManualTab(ActionTabBase):
             return
 
         self.run_repo_action(
-            repos, self._rebase_one,
+            repos,
+            lambda n, p: rebase_on_master(n, p, REBASE_SAVE_MSG),
             "All repositories rebased successfully.",
         )
-
-    def _rebase_one(self, name, path):
-        """Rebase one repo's feature branch onto master. Returns (ok, error_message).
-
-        Uncommitted work is saved as commit(s) preserving the staged/unstaged
-        split, then restored after a clean rebase so the working tree comes back
-        exactly as it was.
-        """
-        if not is_git_repo(path):
-            return False, f"{name}: not a git repository"
-
-        if git_rebase_in_progress(path):
-            return False, (
-                f"{name}: a rebase is already in progress. cannot start a new "
-                f"rebase until it is resolved"
-            )
-
-        branch = git_current_branch(path)
-        if not branch or branch == "master":
-            return False, (
-                f"{name}: not on a feature branch (currently '{branch or '?'}'); "
-                f"nothing to rebase onto master"
-            )
-
-        saved = git_has_changes(path)
-        if saved:
-            ok, out = save_uncommitted(path, REBASE_SAVE_MSG)
-            if not ok:
-                return False, f"{name}: {out}"
-
-        ok, out = run_git(path, ["checkout", "master"])
-        if not ok:
-            return False, f"{name}: {out}"
-        ok, out = run_git(path, ["pull"])
-        if not ok:
-            return False, f"{name}: {out}"
-        ok, out = run_git(path, ["checkout", branch])
-        if not ok:
-            return False, f"{name}: {out}"
-
-        ok, out = run_git(path, ["rebase", "master"])
-        if not ok:
-            return False, (
-                f"{name}: rebase could not complete automatically. manual "
-                f"rebase review is needed.\n{out}"
-            )
-
-        # Clean rebase: restore the saved working state (staged/unstaged intact).
-        if saved:
-            ok, out = restore_uncommitted(path, REBASE_SAVE_MSG)
-            if not ok:
-                return False, f"{name}: {out}"
-        return True, ""
 
     # -- Create feature branch --------------------------------------------- #
     def _action_create_feature_branch(self):

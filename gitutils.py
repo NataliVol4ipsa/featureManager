@@ -55,6 +55,30 @@ def list_workspaces():
     )
 
 
+def list_workspaces_detailed():
+    """Return workspace info sorted with the most recently modified first.
+
+    Each item is (name, created_at, modified_at) where the timestamps are
+    epoch-second floats. Files that cannot be stat'd are skipped.
+    """
+    if not os.path.isdir(WORKSPACES_ROOT):
+        return []
+    suffix = ".code-workspace"
+    items = []
+    for fname in os.listdir(WORKSPACES_ROOT):
+        if not fname.endswith(suffix):
+            continue
+        try:
+            info = os.stat(os.path.join(WORKSPACES_ROOT, fname))
+        except OSError:
+            continue
+        items.append((fname[: -len(suffix)], info.st_ctime, info.st_mtime))
+    # Freshest (most recently modified) on top.
+    items.sort(key=lambda item: item[2], reverse=True)
+    return items
+
+
+
 def read_workspace_repos(workspace_name):
     """Return (ok, repos_or_error).
 
@@ -358,3 +382,57 @@ def restore_uncommitted(repo_path, base_msg):
         return (ok, "" if ok else out)
 
     return False, "no app savepos commit at HEAD to restore"
+
+
+def rebase_on_master(name, path, save_msg):
+    """Rebase one repo's feature branch onto an updated master. Returns (ok, error).
+
+    Uncommitted work is saved as commit(s) preserving the staged/unstaged split
+    (using *save_msg*), master is pulled, the feature branch is rebased onto it
+    and - on a clean rebase - the saved working state is restored exactly.
+    """
+    if not is_git_repo(path):
+        return False, f"{name}: not a git repository"
+
+    if git_rebase_in_progress(path):
+        return False, (
+            f"{name}: a rebase is already in progress. cannot start a new "
+            f"rebase until it is resolved"
+        )
+
+    branch = git_current_branch(path)
+    if not branch or branch == "master":
+        return False, (
+            f"{name}: not on a feature branch (currently '{branch or '?'}'); "
+            f"nothing to rebase onto master"
+        )
+
+    saved = git_has_changes(path)
+    if saved:
+        ok, out = save_uncommitted(path, save_msg)
+        if not ok:
+            return False, f"{name}: {out}"
+
+    ok, out = run_git(path, ["checkout", "master"])
+    if not ok:
+        return False, f"{name}: {out}"
+    ok, out = run_git(path, ["pull"])
+    if not ok:
+        return False, f"{name}: {out}"
+    ok, out = run_git(path, ["checkout", branch])
+    if not ok:
+        return False, f"{name}: {out}"
+
+    ok, out = run_git(path, ["rebase", "master"])
+    if not ok:
+        return False, (
+            f"{name}: rebase could not complete automatically. manual "
+            f"rebase review is needed.\n{out}"
+        )
+
+    # Clean rebase: restore the saved working state (staged/unstaged intact).
+    if saved:
+        ok, out = restore_uncommitted(path, save_msg)
+        if not ok:
+            return False, f"{name}: {out}"
+    return True, ""
