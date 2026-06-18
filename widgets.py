@@ -38,6 +38,33 @@ class Tooltip:
             self._tip = None
 
 
+class SelectableLabel(tk.Entry):
+    """A label whose text the user can select and copy.
+
+    Implemented as a read-only ``Entry`` styled to look like a flat label (no
+    border, frame-coloured background), so the text can be highlighted and
+    copied while still being non-editable.
+    """
+
+    def __init__(self, master, text="", font=None, **kwargs):
+        self._var = tk.StringVar(value=text)
+        # Blend into the surrounding ttk.Frame background.
+        background = ttk.Style().lookup("TFrame", "background") or "SystemButtonFace"
+        super().__init__(
+            master, textvariable=self._var, state="readonly",
+            relief="flat", borderwidth=0, highlightthickness=0,
+            readonlybackground=background, cursor="xterm",
+            width=max(len(text) + 1, 1), **kwargs,
+        )
+        if font is not None:
+            self.configure(font=font)
+
+    def set_text(self, text):
+        """Replace the displayed text (and resize to fit it)."""
+        self._var.set(text)
+        self.configure(width=max(len(text) + 1, 1))
+
+
 # Visual indicators for each repository row, keyed by status.
 STATUS_STYLES = {
     "pending":     ("\u25CB", "gray"),     # hollow circle
@@ -148,12 +175,12 @@ class ProgressPanel(ttk.Frame):
                 foreground=color, width=2,
             )
             indicator.grid(row=index, column=0, padx=(4, 2), pady=1)
-            ttk.Label(self._inner, text=name).grid(
+            SelectableLabel(self._inner, text=name).grid(
                 row=index, column=1, sticky="w", padx=4, pady=1
             )
             self._indicators[name] = indicator
             if branch_col is not None:
-                branch_label = ttk.Label(self._inner, text=branch)
+                branch_label = SelectableLabel(self._inner, text=branch)
                 branch_label.grid(
                     row=index, column=branch_col, sticky="w", padx=4, pady=1
                 )
@@ -183,7 +210,7 @@ class ProgressPanel(ttk.Frame):
         """Update a single repo's branch cell (e.g. after a checkout changes it)."""
         label = self._branch_labels.get(name)
         if label is not None:
-            label.config(text=branch)
+            label.set_text(branch)
 
     def set_link(self, name, url, text="View branch"):
         """Turn a repo's Link cell into a clickable link that opens *url*.
@@ -432,7 +459,20 @@ class WorkspaceList(ttk.Frame):
         if on_select is not None:
             self.tree.bind("<<TreeviewSelect>>", self._handle_select)
 
+        # Treeview cells are not natively selectable; allow Ctrl+C (and a
+        # right-click) to copy the selected workspace name to the clipboard.
+        self.tree.bind("<Control-c>", self._copy_selected)
+        self.tree.bind("<Button-3>", self._copy_selected)
+
         self.set_items(items)
+
+    def _copy_selected(self, _event=None):
+        """Copy the selected workspace name to the clipboard."""
+        name = self.get_selected()
+        if name:
+            self.clipboard_clear()
+            self.clipboard_append(name)
+        return "break"
 
     def _handle_select(self, _event=None):
         name = self.get_selected()
