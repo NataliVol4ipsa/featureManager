@@ -37,7 +37,7 @@ class WorkspacesTab(ActionTabBase):
         self.build_middle_actions(self._actions())
         # The workspace table needs the room, so keep Details a fixed width and
         # let the left panel absorb the rest of the window.
-        self.build_right_details(expand=False, width=300)
+        self.build_right_details(expand=False, width=360)
 
     # -- Layout ------------------------------------------------------------ #
     def _build_left(self):
@@ -72,14 +72,14 @@ class WorkspacesTab(ActionTabBase):
         subprocess.Popen(["explorer", os.path.normpath(WORKSPACES_ROOT)])
 
     def _on_workspace_selected(self, workspace):
-        """Show the workspace's repositories in the Details panel immediately."""
+        """Show the workspace's repositories (with branch) in the Details table."""
         self.errors.clear()
         ok, repos = read_workspace_repos(workspace)
         if not ok:
-            self.progress.set_repos([])
+            self.progress.show_repos([])
             self.errors.add(repos)
             return
-        self.progress.set_repos([name for name, _ in repos])
+        self.progress.show_repos(self.repo_rows(repos), with_status=False)
 
     def _refresh(self):
         """Re-scan the workspaces folder (e.g. after creating a new workspace)."""
@@ -147,7 +147,7 @@ class WorkspacesTab(ActionTabBase):
             return
 
         target = f"feature/{workspace}"
-        self.progress.set_repos([name for name, _ in repos])
+        self.progress.show_repos(self.repo_rows(repos), with_status=True)
 
         # Pre-check 1: every repo must have the target branch. If any is missing,
         # switch none of them.
@@ -169,7 +169,7 @@ class WorkspacesTab(ActionTabBase):
         # the target branch are skipped entirely (no prompt, no checkout).
         decisions = self.collect_change_decisions(repos, skip_branch=target)
         if decisions is None:
-            self.progress.set_repos([])
+            self.progress.show_repos([])
             return
 
         self.run_repo_action(
@@ -239,7 +239,7 @@ class WorkspacesTab(ActionTabBase):
         if not repos:
             return
 
-        self.progress.set_repos([name for name, _ in repos])
+        self.progress.show_repos(self.repo_rows(repos), with_status=True)
 
         # Ask per dirty repo what to do with its changes. A rebase needs the
         # changes committed first, so "commit" (leave committed) and

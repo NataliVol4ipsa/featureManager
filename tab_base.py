@@ -107,16 +107,26 @@ class ActionTabBase(ttk.Frame):
         return decisions
 
     # -- Generic background runner ----------------------------------------- #
+    def repo_rows(self, repos):
+        """Return [(name, branch), ...], querying each repo's current branch."""
+        rows = []
+        for name, path in repos:
+            branch = git_current_branch(path) if is_git_repo(path) else ""
+            rows.append((name, branch))
+        return rows
+
     def run_repo_action(self, repos, per_repo_fn, success_msg, on_complete=None):
         """Run *per_repo_fn(name, path)* for each repo off the UI thread.
 
-        *per_repo_fn* must return (ok, error_message). Status dots and the error
-        list update live; the green banner shows only when every repo succeeds.
-        *on_complete(all_ok)*, if given, runs on the UI thread afterwards (used
-        to chain a follow-up step such as writing a workspace file).
+        *per_repo_fn* must return (ok, error_message). The table shows each
+        repo's status circle and current branch; both update live (the branch is
+        re-read after each repo in case the action changed it). The green banner
+        shows only when every repo succeeds. *on_complete(all_ok)*, if given,
+        runs on the UI thread afterwards (used to chain a follow-up step such as
+        writing a workspace file).
         """
         self.errors.clear()
-        self.progress.set_repos([name for name, _ in repos])
+        self.progress.show_repos(self.repo_rows(repos), with_status=True)
         threading.Thread(
             target=self._worker, args=(repos, per_repo_fn, success_msg, on_complete),
             daemon=True,
@@ -133,6 +143,9 @@ class ActionTabBase(ttk.Frame):
                 all_ok = False
                 self.after(0, self.progress.status, name, "error")
                 self.after(0, self.errors.add, message)
+            # The action may have changed the branch (e.g. checkout); refresh it.
+            branch = git_current_branch(path) if is_git_repo(path) else ""
+            self.after(0, self.progress.set_branch, name, branch)
 
         if all_ok and success_msg:
             self.after(0, self.progress.show_completion, success_msg)

@@ -47,11 +47,12 @@ STATUS_STYLES = {
 
 
 class ProgressPanel(ttk.Frame):
-    """A completion banner plus a live per-repo status list.
+    """A completion banner plus a per-repo table (status / name / branch).
 
-    Call set_repos() at the start of an action, then status() as each repo
-    progresses. show_completion() reveals the green banner when everything
-    finished successfully.
+    Call show_repos() whenever the selection changes to (re)build the table.
+    Status circles are only drawn while *with_status* is set (i.e. an action is
+    running); on plain selection the status column stays blank. status() updates
+    a single repo's circle and set_branch() updates its branch cell live.
     """
 
     def __init__(self, master, **kwargs):
@@ -61,7 +62,7 @@ class ProgressPanel(ttk.Frame):
         self._banner = tk.Label(self, text="", foreground="#1a9e1a",
                                 font=("", 10, "bold"), anchor="w")
 
-        # Scrollable list area for repo rows.
+        # Scrollable table area for repo rows.
         self._canvas = tk.Canvas(self, highlightthickness=0)
         self._scrollbar = ttk.Scrollbar(self, orient="vertical",
                                         command=self._canvas.yview)
@@ -76,24 +77,59 @@ class ProgressPanel(ttk.Frame):
         self._canvas.pack(side="left", fill="both", expand=True)
         self._scrollbar.pack(side="right", fill="y")
 
-        # Maps repo name -> the Label widget showing its status indicator.
+        # Per repo name: the status indicator Label and the branch Label, so
+        # both can be updated live during an action.
         self._indicators = {}
+        self._branch_labels = {}
+        self._with_status = False
 
-    def set_repos(self, names):
-        """Build one row per repository, all starting in the 'pending' state."""
+    def show_repos(self, rows, with_status=False):
+        """(Re)build the table from *rows* (each a (name, branch) pair).
+
+        When *with_status* is True the status column shows a 'pending' circle
+        per row; otherwise it is left blank (plain selection view).
+        """
         self.clear_completion()
         for child in self._inner.winfo_children():
             child.destroy()
         self._indicators = {}
+        self._branch_labels = {}
+        self._with_status = with_status
 
-        for name in names:
-            row = ttk.Frame(self._inner)
-            row.pack(fill="x", anchor="w", padx=4, pady=1)
+        # Let the name/branch columns share the spare width.
+        self._inner.columnconfigure(1, weight=1)
+        self._inner.columnconfigure(2, weight=1)
+
+        # Header row.
+        ttk.Label(self._inner, text="", width=2).grid(
+            row=0, column=0, padx=(4, 2), pady=(2, 4)
+        )
+        ttk.Label(self._inner, text="Repository", font=("", 9, "bold")).grid(
+            row=0, column=1, sticky="w", padx=4, pady=(2, 4)
+        )
+        ttk.Label(self._inner, text="Branch", font=("", 9, "bold")).grid(
+            row=0, column=2, sticky="w", padx=4, pady=(2, 4)
+        )
+
+        for index, (name, branch) in enumerate(rows, start=1):
             symbol, color = STATUS_STYLES["pending"]
-            indicator = tk.Label(row, text=symbol, foreground=color, width=2)
-            indicator.pack(side="left")
-            ttk.Label(row, text=name).pack(side="left")
+            indicator = tk.Label(
+                self._inner, text=(symbol if with_status else ""),
+                foreground=color, width=2,
+            )
+            indicator.grid(row=index, column=0, padx=(4, 2), pady=1)
+            ttk.Label(self._inner, text=name).grid(
+                row=index, column=1, sticky="w", padx=4, pady=1
+            )
+            branch_label = ttk.Label(self._inner, text=branch)
+            branch_label.grid(row=index, column=2, sticky="w", padx=4, pady=1)
             self._indicators[name] = indicator
+            self._branch_labels[name] = branch_label
+
+    # Backwards-compatible alias: a plain name list with no branch/status.
+    def set_repos(self, names):
+        """Build a status-less table from bare repo *names* (no branch info)."""
+        self.show_repos([(name, "") for name in names], with_status=False)
 
     def status(self, name, state):
         """Update a single repo row to the given state (see STATUS_STYLES)."""
@@ -102,6 +138,12 @@ class ProgressPanel(ttk.Frame):
             return
         symbol, color = STATUS_STYLES.get(state, STATUS_STYLES["pending"])
         indicator.config(text=symbol, foreground=color)
+
+    def set_branch(self, name, branch):
+        """Update a single repo's branch cell (e.g. after a checkout changes it)."""
+        label = self._branch_labels.get(name)
+        if label is not None:
+            label.config(text=branch)
 
     def show_completion(self, text):
         """Reveal the green completion banner above the repo list."""
@@ -155,8 +197,11 @@ class CheckboxList(ttk.Frame):
     the widget is hidden (e.g. while another notebook tab is shown).
     """
 
-    def __init__(self, master, items, **kwargs):
+    def __init__(self, master, items, on_change=None, **kwargs):
         super().__init__(master, **kwargs)
+
+        # Called (no args) whenever the set of checked items changes.
+        self._on_change = on_change
 
         # Maps folder name -> BooleanVar holding its checked state.
         self.vars = {}
@@ -194,15 +239,21 @@ class CheckboxList(ttk.Frame):
             # Reuse an existing BooleanVar so a rescan keeps the user's choices.
             var = self.vars.get(name, tk.BooleanVar(value=False))
             new_vars[name] = var
-            ttk.Checkbutton(self._inner, text=name, variable=var).pack(
-                anchor="w", padx=4, pady=1
-            )
+            ttk.Checkbutton(
+                self._inner, text=name, variable=var, command=self._notify,
+            ).pack(anchor="w", padx=4, pady=1)
         self.vars = new_vars
 
     def set_all(self, value):
         """Check (True) or uncheck (False) every item."""
         for var in self.vars.values():
             var.set(value)
+        self._notify()
+
+    def _notify(self):
+        """Fire the on_change callback after a selection change."""
+        if self._on_change is not None:
+            self._on_change()
 
     def get_selected(self):
         """Return the list of currently checked item names."""
@@ -226,7 +277,7 @@ class FolderTab(ttk.Frame):
     affect the other.
     """
 
-    def __init__(self, master, items, root_path, **kwargs):
+    def __init__(self, master, items, root_path, on_change=None, **kwargs):
         super().__init__(master, **kwargs)
 
         # Folder that the displayed items live under; used to build full paths.
@@ -248,7 +299,7 @@ class FolderTab(ttk.Frame):
         container = ttk.LabelFrame(self, text="Folders")
         container.pack(fill="both", expand=True, padx=4, pady=(2, 4))
 
-        self.checkbox_list = CheckboxList(container, items)
+        self.checkbox_list = CheckboxList(container, items, on_change=on_change)
         self.checkbox_list.pack(fill="both", expand=True, padx=2, pady=2)
 
     def get_selected(self):

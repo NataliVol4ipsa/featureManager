@@ -28,16 +28,32 @@ class ManualTab(ActionTabBase):
 
     # -- Layout ------------------------------------------------------------ #
     def _build_left(self):
-        left = ttk.Frame(self._top)
-        left.pack(side="left", fill="both", expand=True)
+        # Fixed (slightly narrow) width so the Details table gets more room.
+        left = ttk.Frame(self._top, width=230)
+        left.pack(side="left", fill="y")
+        left.pack_propagate(False)
 
         self.notebook = ttk.Notebook(left)
         self.notebook.pack(fill="both", expand=True)
 
-        self.services_tab = FolderTab(self.notebook, get_service_folders(), REPOS_ROOT)
-        self.nugets_tab = FolderTab(self.notebook, get_nuget_folders(), NUGETS_ROOT)
+        self.services_tab = FolderTab(
+            self.notebook, get_service_folders(), REPOS_ROOT,
+            on_change=self._on_selection_changed,
+        )
+        self.nugets_tab = FolderTab(
+            self.notebook, get_nuget_folders(), NUGETS_ROOT,
+            on_change=self._on_selection_changed,
+        )
         self.notebook.add(self.services_tab, text="Services")
         self.notebook.add(self.nugets_tab, text="Nugets")
+
+    def _on_selection_changed(self):
+        """Show the currently selected repos (with branch) in the Details table.
+
+        Status circles stay blank here - they only appear while an action runs.
+        """
+        repos = self._all_selected_repos()
+        self.progress.show_repos(self.repo_rows(repos), with_status=False)
 
     def _actions(self):
         """Return the (label, command, hint) tuples for the middle column."""
@@ -145,7 +161,7 @@ class ManualTab(ActionTabBase):
             return
 
         self.errors.clear()
-        self.progress.set_repos([name for name, _ in repos])
+        self.progress.show_repos(self.repo_rows(repos), with_status=True)
 
         # Ask per dirty repo what to do with its changes. A rebase needs the
         # changes committed first, so "commit" (leave committed) and
@@ -158,7 +174,7 @@ class ManualTab(ActionTabBase):
                  "the rebase.",
         )
         if decisions is None:
-            self.progress.set_repos([])
+            self.progress.show_repos([])
             return
 
         self.run_repo_action(
@@ -230,7 +246,7 @@ class ManualTab(ActionTabBase):
 
         # Writing a file is fast, so this runs inline (no background thread).
         self.errors.clear()
-        self.progress.set_repos([name for name, _ in repos])
+        self.progress.show_repos(self.repo_rows(repos), with_status=True)
         ok, message = write_workspace(feature_name, repos)
         if ok:
             for name, _ in repos:
