@@ -79,7 +79,7 @@ class WorkspacesTab(ActionTabBase):
             self.progress.show_repos([])
             self.errors.add(repos)
             return
-        self.progress.show_repos(self.repo_rows(repos), with_status=False)
+        self.show_repos_async(repos, with_status=False)
 
     def _refresh(self):
         """Re-scan the workspaces folder (e.g. after creating a new workspace)."""
@@ -122,6 +122,14 @@ class WorkspacesTab(ActionTabBase):
                 "confirmation) and restored afterwards (staged/unstaged "
                 "preserved) on a clean rebase.",
             ),
+            (
+                "Commit all changes",
+                self._action_commit_all,
+                "For the selected workspace's repositories: stages and commits "
+                "all uncommitted changes using a commit message you enter. If "
+                "the repos with changes are on different branches, a warning is "
+                "shown before committing.",
+            ),
         ]
 
     # -- Helpers ----------------------------------------------------------- #
@@ -147,7 +155,7 @@ class WorkspacesTab(ActionTabBase):
             return
 
         target = f"feature/{workspace}"
-        self.progress.show_repos(self.repo_rows(repos), with_status=True)
+        self.show_repos_async(repos, with_status=True)
 
         # Pre-check 1: every repo must have the target branch. If any is missing,
         # switch none of them.
@@ -239,7 +247,7 @@ class WorkspacesTab(ActionTabBase):
         if not repos:
             return
 
-        self.progress.show_repos(self.repo_rows(repos), with_status=True)
+        self.show_repos_async(repos, with_status=True)
 
         # Ask per dirty repo what to do with its changes. A rebase needs the
         # changes committed first, so "commit" (leave committed) and
@@ -260,6 +268,16 @@ class WorkspacesTab(ActionTabBase):
             lambda n, p: rebase_on_master(n, p, REBASE_SAVE_MSG, decisions.get(n)),
             "All repositories rebased successfully.",
         )
+
+    # -- Commit all changes (custom message) ------------------------------- #
+    def _action_commit_all(self):
+        ok, workspace, repos = self._selected_repos()
+        self.errors.clear()
+        if not ok:
+            if workspace is not None:
+                self.errors.add(repos)
+            return
+        self.commit_all_changes(repos)
 
     # -- Create feature branch --------------------------------------------- #
     def _action_create_feature_branch(self):

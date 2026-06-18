@@ -51,9 +51,9 @@ class ManualTab(ActionTabBase):
         """Show the currently selected repos (with branch) in the Details table.
 
         Status circles stay blank here - they only appear while an action runs.
+        Branches are filled in lazily so a large selection stays responsive.
         """
-        repos = self._all_selected_repos()
-        self.progress.show_repos(self.repo_rows(repos), with_status=False)
+        self.show_repos_async(self._all_selected_repos(), with_status=False)
 
     def _actions(self):
         """Return the (label, command, hint) tuples for the middle column."""
@@ -86,6 +86,14 @@ class ManualTab(ActionTabBase):
                 "For every selected repository: commits all uncommitted changes "
                 "as a 'savepos' commit on the current branch. Repositories on "
                 "master are skipped with an error.",
+            ),
+            (
+                "Commit all changes",
+                self._action_commit_all,
+                "For every selected repository: stages and commits all "
+                "uncommitted changes using a commit message you enter. If the "
+                "selected repos with changes are on different branches, a "
+                "warning is shown before committing.",
             ),
             (
                 "Create feature workspace and branches",
@@ -161,7 +169,7 @@ class ManualTab(ActionTabBase):
             return
 
         self.errors.clear()
-        self.progress.show_repos(self.repo_rows(repos), with_status=True)
+        self.show_repos_async(repos, with_status=True)
 
         # Ask per dirty repo what to do with its changes. A rebase needs the
         # changes committed first, so "commit" (leave committed) and
@@ -232,6 +240,10 @@ class ManualTab(ActionTabBase):
             return False, f"{name}: {out}"
         return True, ""
 
+    # -- Commit all changes (custom message) ------------------------------- #
+    def _action_commit_all(self):
+        self.commit_all_changes(self._all_selected_repos())
+
     # -- Create feature workspace ------------------------------------------ #
     def _action_create_workspace(self):
         repos = self._all_selected_repos()
@@ -246,7 +258,7 @@ class ManualTab(ActionTabBase):
 
         # Writing a file is fast, so this runs inline (no background thread).
         self.errors.clear()
-        self.progress.show_repos(self.repo_rows(repos), with_status=True)
+        self.show_repos_async(repos, with_status=True)
         ok, message = write_workspace(feature_name, repos)
         if ok:
             for name, _ in repos:

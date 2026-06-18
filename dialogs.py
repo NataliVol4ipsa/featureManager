@@ -154,3 +154,66 @@ def ask_branch_name(parent, title="Create feature branch", prefix="feature/"):
     dialog.grab_set()
     parent.wait_window(dialog)
     return result["name"]
+
+
+def ask_commit_message(parent, repo_count, branch_warning=None):
+    """Modal asking for a commit message applied to every selected repo.
+
+    *repo_count* is shown for context. *branch_warning*, if given, is shown as a
+    red warning (e.g. when the repos are not all on the same branch). Returns the
+    entered message, or None if cancelled.
+    """
+    dialog = tk.Toplevel(parent)
+    dialog.title("Commit all changes")
+    dialog.transient(parent.winfo_toplevel())
+    dialog.resizable(False, False)
+
+    tk.Label(
+        dialog,
+        text=f"Commit all changes in {repo_count} selected "
+             f"{'repository' if repo_count == 1 else 'repositories'}.",
+        justify="left",
+    ).pack(padx=16, pady=(16, 4), anchor="w")
+
+    # Optional mixed-branch (or similar) warning shown in red.
+    if branch_warning:
+        warn = ttk.Frame(dialog)
+        warn.pack(padx=16, pady=(0, 4), anchor="w")
+        tk.Label(warn, text="\u26A0", foreground="#c0392b",
+                 font=("", 11, "bold")).pack(side="left", padx=(0, 4))
+        tk.Label(warn, text=branch_warning, foreground="#c0392b",
+                 justify="left", wraplength=360).pack(side="left")
+
+    tk.Label(dialog, text="Commit message:").pack(padx=16, anchor="w")
+    entry = ttk.Entry(dialog, width=44)
+    entry.pack(padx=16, pady=(0, 4), fill="x")
+    entry.focus_set()
+
+    error_label = tk.Label(dialog, text="", foreground="#c0392b")
+    error_label.pack(padx=16, anchor="w")
+
+    result = {"message": None}
+
+    def _ok():
+        message = entry.get().strip()
+        if not message:
+            error_label.config(text="Commit message is required.")
+            return
+        result["message"] = message
+        dialog.destroy()
+
+    def _cancel():
+        result["message"] = None
+        dialog.destroy()
+
+    bar = ttk.Frame(dialog)
+    bar.pack(padx=16, pady=12)
+    ttk.Button(bar, text="Commit", command=_ok).pack(side="left", padx=4)
+    ttk.Button(bar, text="Cancel", command=_cancel).pack(side="left", padx=4)
+
+    entry.bind("<Return>", lambda _e: _ok())
+    dialog.protocol("WM_DELETE_WINDOW", _cancel)
+    _center_over_parent(dialog, parent)
+    dialog.grab_set()
+    parent.wait_window(dialog)
+    return result["message"]

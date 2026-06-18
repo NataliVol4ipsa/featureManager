@@ -285,6 +285,26 @@ def has_savepos(repo_path, base_msg):
     return head in (f"{base_msg} - staged", f"{base_msg} - unstaged")
 
 
+def commit_all(name, path, message):
+    """Stage and commit all changes in one repo with *message*. Returns (ok, err).
+
+    Skips repos that are not git repos or have nothing to commit (those are
+    reported as errors so the user sees why they were not committed).
+    """
+    if not is_git_repo(path):
+        return False, f"{name}: not a git repository"
+    if not git_has_changes(path):
+        return False, f"{name}: no changes to commit"
+
+    ok, out = run_git(path, ["add", "-A"])
+    if not ok:
+        return False, f"{name}: {out}"
+    ok, out = run_git(path, ["commit", "-m", message])
+    if not ok:
+        return False, f"{name}: {out}"
+    return True, ""
+
+
 def create_feature_branch(name, path, branch_name, decision):
     """Create one repo's feature branch off updated master. Returns (ok, error).
 

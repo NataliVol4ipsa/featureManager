@@ -8,8 +8,8 @@ import threading
 from tkinter import ttk
 
 from widgets import Tooltip, ProgressPanel, ErrorList
-from gitutils import is_git_repo, git_current_branch, git_has_changes
-from dialogs import ask_change_decision
+from gitutils import is_git_repo, git_current_branch, commit_all
+from dialogs import ask_change_decision, ask_commit_message
 
 
 class ActionTabBase(ttk.Frame):
@@ -106,6 +106,44 @@ class ActionTabBase(ttk.Frame):
             decisions[name] = decision
         return decisions
 
+    def commit_all_changes(self, repos):
+        """Commit all changes in *repos* with a single user-supplied message.
+
+        Shows the Details table for the repos, warns if the selected repos are
+        not all on the same branch, asks for a commit message, then commits each
+        repo on a background thread. Repos that are clean or not git repos are
+        reported as errors during the run.
+        """
+        self.errors.clear()
+        if not repos:
+            return
+
+        self.show_repos_async(repos, with_status=False)
+
+        # Warn if the selected git repositories are not all on the same branch,
+        # since the one commit message would land on different branches.
+        branches = {
+            git_current_branch(path)
+            for _, path in repos
+            if is_git_repo(path)
+        }
+        branches.discard("")  # ignore repos whose branch could not be read
+        warning = None
+        if len(branches) > 1:
+            warning = (
+                "The selected repositories are not all on the same branch."
+            )
+
+        message = ask_commit_message(self, len(repos), branch_warning=warning)
+        if not message:
+            return
+
+        self.run_repo_action(
+            repos,
+            lambda n, p: commit_all(n, p, message),
+            "All changes committed successfully.",
+        )
+
     # -- Generic background runner ----------------------------------------- #
     def repo_rows(self, repos):
         """Return [(name, branch), ...], querying each repo's current branch."""
@@ -114,6 +152,37 @@ class ActionTabBase(ttk.Frame):
             branch = git_current_branch(path) if is_git_repo(path) else ""
             rows.append((name, branch))
         return rows
+
+    def show_repos_async(self, repos, with_status=False):
+        """Show *repos* in the Details table at once, filling branches lazily.
+
+        The table is drawn immediately with a "..." branch placeholder (querying
+        every repo's branch up front is slow for large selections), then a
+        background thread fills in each repo's real branch as it is read.
+        """
+        # Draw straight away with placeholders so the UI stays responsive.
+        self.progress.show_repos(
+            [(name, "...") for name, _ in repos], with_status=with_status
+        )
+
+        # A token guards against a newer selection overwriting an older scan's
+        # late results: only the most recent call's updates are applied.
+        token = getattr(self, "_branch_scan_token", 0) + 1
+        self._branch_scan_token = token
+
+        def _scan():
+            for name, path in repos:
+                if self._branch_scan_token != token:
+                    return  # a newer selection started; stop this stale scan
+                branch = git_current_branch(path) if is_git_repo(path) else ""
+                self.after(0, self._apply_branch, token, name, branch)
+
+        threading.Thread(target=_scan, daemon=True).start()
+
+    def _apply_branch(self, token, name, branch):
+        """Apply one lazily-read branch value, unless a newer scan superseded it."""
+        if self._branch_scan_token == token:
+            self.progress.set_branch(name, branch)
 
     def run_repo_action(self, repos, per_repo_fn, success_msg, on_complete=None):
         """Run *per_repo_fn(name, path)* for each repo off the UI thread.
@@ -126,7 +195,9 @@ class ActionTabBase(ttk.Frame):
         writing a workspace file).
         """
         self.errors.clear()
-        self.progress.show_repos(self.repo_rows(repos), with_status=True)
+        self.progress.show_repos(
+            [(name, "...") for name, _ in repos], with_status=True
+        )
         threading.Thread(
             target=self._worker, args=(repos, per_repo_fn, success_msg, on_complete),
             daemon=True,
