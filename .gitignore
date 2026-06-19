@@ -72,3 +72,6 @@ _out.log
 # Templates with the same name + ".example" are committed for reference.
 secrets.json
 repo_synonyms.json
+
+# Local-only Copilot working notes (not shared with the team).
+.github/copilot-instructions.md
