@@ -46,6 +46,17 @@ def main():
     root.title("Feature Manager")
     root.geometry("960x640")
     FeatureManagerApp(root)
+
+    # Author credit footer - always visible at the bottom of the window.
+    footer = ttk.Label(
+        root,
+        text="Feature Manager  -  by Nataliia Kolosova",
+        anchor="e",
+        padding=(8, 2),
+        foreground="gray40",
+    )
+    footer.pack(side="bottom", fill="x")
+
     root.mainloop()
 
 

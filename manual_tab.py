@@ -81,13 +81,6 @@ class ManualTab(ActionTabBase):
                 "branch) before the branch is created.",
             ),
             (
-                "Commit all changes as savepos",
-                self._action_commit_savepos,
-                "For every selected repository: commits all uncommitted changes "
-                "as a 'savepos' commit on the current branch. Repositories on "
-                "master are skipped with an error.",
-            ),
-            (
                 "Commit all changes",
                 self._action_commit_all,
                 "For every selected repository: stages and commits all "
