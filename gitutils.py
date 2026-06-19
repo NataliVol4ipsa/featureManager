@@ -493,8 +493,8 @@ def parse_ado_remote(remote_url):
         return None
     parsed = urllib.parse.urlparse(url)
     host = (parsed.hostname or "").lower()
-    # Decode each path segment so values like "My%20Project"
-    # become "My Project" (they are re-encoded when used).
+    # Decode each path segment so values like "My%20Project" become
+    # "My Project" (they are re-encoded when used).
     parts = [
         urllib.parse.unquote(p) for p in parsed.path.strip("/").split("/")
     ]
