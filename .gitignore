@@ -67,3 +67,8 @@ Thumbs.db
 *.log
 _err.log
 _out.log
+
+# Local-only configuration (secrets / machine-specific). Never commit these.
+# Templates with the same name + ".example" are committed for reference.
+secrets.json
+repo_synonyms.json

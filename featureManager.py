@@ -18,6 +18,7 @@ from tkinter import ttk
 
 from manual_tab import ManualTab
 from workspaces_tab import WorkspacesTab
+from dialogs import edit_synonyms
 
 
 class FeatureManagerApp(ttk.Notebook):
@@ -45,6 +46,18 @@ def main():
     root = tk.Tk()
     root.title("Feature Manager")
     root.geometry("960x640")
+
+    # Menu bar with a Settings menu for editing the repository synonyms used by
+    # the "Create workspace from PBI" action.
+    menubar = tk.Menu(root)
+    settings_menu = tk.Menu(menubar, tearoff=0)
+    settings_menu.add_command(
+        label="Repository synonyms\u2026",
+        command=lambda: edit_synonyms(root),
+    )
+    menubar.add_cascade(label="Settings", menu=settings_menu)
+    root.config(menu=menubar)
+
     FeatureManagerApp(root)
 
     # Author credit footer - always visible at the bottom of the window.

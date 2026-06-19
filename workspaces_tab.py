@@ -2,25 +2,33 @@
 
 import os
 import subprocess
+import threading
 from datetime import datetime
 from tkinter import ttk
 
-from config import WORKSPACES_ROOT
+from config import WORKSPACES_ROOT, REPOS_ROOT
 from gitutils import (
-    list_workspaces_detailed, read_workspace_repos,
+    list_workspaces_detailed, read_workspace_repos, write_workspace,
     run_git, is_git_repo, git_branch_exists,
     save_uncommitted, has_savepos, restore_uncommitted,
     git_current_branch, create_feature_branch, rebase_on_master,
+    SAVEPOS_MSG,
 )
 from widgets import WorkspaceList, Tooltip
 from tab_base import ActionTabBase
-from dialogs import ask_branch_name
+from dialogs import ask_branch_name, ask_pbi_number, resolve_pbi_repos
+import pbi
 
 # Base message for the savepos commits created when switching workspaces.
 SWITCH_SAVE_MSG = "savepos before workspace switch"
 
 # Base message for the rebase savepos commits (see gitutils.save_uncommitted).
 REBASE_SAVE_MSG = "save changes before rebase"
+
+# All savepos base messages "Restore state before switch" can put back: the one
+# the switch action makes, plus the generic one used when creating feature
+# branches / committing savepos (create_feature_branch, "Commit changes (savepos)").
+RESTORABLE_SAVE_MSGS = (SWITCH_SAVE_MSG, SAVEPOS_MSG)
 
 
 def _fmt_time(timestamp):
@@ -102,6 +110,17 @@ class WorkspacesTab(ActionTabBase):
     def _actions(self):
         return [
             (
+                "Create workspace from PBI",
+                self._action_create_from_pbi,
+                "Downloads an Azure DevOps PBI (work item) by number, reads the "
+                "repositories from its WBS section, and creates a feature "
+                "workspace for them. You map any unrecognised service to a local "
+                "folder (new mappings are remembered) and name the workspace "
+                "(pre-filled from the PBI number and title). A matching "
+                "'feature/<name>' branch is then created off updated master in "
+                "each repository. Requires secrets.json to be configured.",
+            ),
+            (
                 "Switch to selected workspace",
                 self._action_switch,
                 "Checks out every repository in the selected workspace to its "
@@ -112,10 +131,10 @@ class WorkspacesTab(ActionTabBase):
             (
                 "Restore state before switch",
                 self._action_restore,
-                "For the selected workspace's repositories, undoes the "
-                "'savepos before workspace switch' commit made by the app and "
-                "restores the exact staged/unstaged working state. User commits "
-                "are never touched.",
+                "For the selected workspace's repositories, undoes the savepos "
+                "commit the app made (when switching workspaces or creating a "
+                "feature branch) and restores the exact staged/unstaged working "
+                "state. User commits are never touched.",
             ),
             (
                 "Rebase current branch on master",
@@ -249,13 +268,15 @@ class WorkspacesTab(ActionTabBase):
         if not is_git_repo(path):
             return False, f"{name}: not a git repository"
 
-        # Only act on commits the app made during a switch; skip everything else.
-        if not has_savepos(path, SWITCH_SAVE_MSG):
-            return True, ""
-
-        ok, out = restore_uncommitted(path, SWITCH_SAVE_MSG)
-        if not ok:
-            return False, f"{name}: {out}"
+        # Restore whichever app-made savepos commit is at HEAD: the switch one,
+        # or the generic "savepos" left by creating a feature branch / committing
+        # savepos. Skip the repo if HEAD is not one of ours.
+        for base_msg in RESTORABLE_SAVE_MSGS:
+            if has_savepos(path, base_msg):
+                ok, out = restore_uncommitted(path, base_msg)
+                if not ok:
+                    return False, f"{name}: {out}"
+                return True, ""
         return True, ""
 
     # -- Rebase current branch on master ----------------------------------- #
@@ -320,6 +341,99 @@ class WorkspacesTab(ActionTabBase):
                 self.errors.add(repos)
             return
         self.create_prs(repos)
+
+    # -- Create workspace from a PBI --------------------------------------- #
+    def _action_create_from_pbi(self):
+        """Download a PBI, map its WBS repos to folders and build a workspace."""
+        self.errors.clear()
+        pbi_id = ask_pbi_number(self)
+        if not pbi_id:
+            return
+
+        # The work item download hits the network, so run it off the UI thread
+        # and resume on the UI thread once it returns.
+        self.progress.show_repos([])
+        self.progress.show_completion(f"Downloading PBI {pbi_id}\u2026")
+
+        def _work():
+            ok, result = pbi.fetch_work_item(pbi_id)
+            self.after(0, self._on_pbi_downloaded, ok, result)
+
+        threading.Thread(target=_work, daemon=True).start()
+
+    def _on_pbi_downloaded(self, ok, result):
+        """Continue the PBI flow on the UI thread after the download finishes."""
+        self.progress.clear_completion()
+        if not ok:
+            self.errors.add(result)
+            return
+
+        services = pbi.parse_wbs_services(result["description"])
+        if not services:
+            self.errors.add(
+                f"PBI {result['id']}: no repositories found in the WBS section."
+            )
+            return
+
+        synonyms = pbi.load_synonyms()
+        folders = pbi.available_folders()
+        mappings = pbi.map_services(services, synonyms, folders)
+
+        resolved = resolve_pbi_repos(self, mappings, folders)
+        if resolved is None:
+            return
+
+        # Remember every service->folder mapping the user resolved. Build the
+        # list first (not a generator) so add_synonym runs for *all* services -
+        # any() over a generator would stop at the first newly added one.
+        added = [
+            pbi.add_synonym(synonyms, folder, service)
+            for service, folder in resolved.items()
+        ]
+        if any(added):
+            ok_save, message = pbi.save_synonyms(synonyms)
+            if not ok_save:
+                self.errors.add(message)
+
+        # Name the workspace, pre-filled from the PBI number and title.
+        initial = f"{result['id']}_{pbi.slugify_title(result['title'])}"
+        name = ask_branch_name(
+            self, title="Name the feature workspace",
+            prefix="feature/", initial=initial,
+        )
+        if not name:
+            return
+
+        # Build the repo list (de-duplicated, order preserved).
+        chosen, seen = [], set()
+        for folder in resolved.values():
+            if folder not in seen:
+                seen.add(folder)
+                chosen.append((folder, os.path.join(REPOS_ROOT, folder)))
+
+        ok_ws, message = write_workspace(name, chosen)
+        if not ok_ws:
+            self.errors.add(message)
+            return
+        self._refresh()
+
+        # Create the matching 'feature/<name>' branch in every chosen repo, the
+        # same branch the workspace switches to. Uncommitted changes are handled
+        # per repo; repos already on the branch are skipped without a prompt.
+        target = f"feature/{name}"
+        decisions = self.collect_change_decisions(
+            chosen, allow_move=True, skip_branch=target
+        )
+        if decisions is None:
+            # User aborted branch creation; the workspace file was still written.
+            self.show_repos_async(chosen, with_status=True)
+            return
+
+        self.run_repo_action(
+            chosen,
+            lambda n, p: create_feature_branch(n, p, name, decisions.get(n)),
+            f"{message}\nFeature branch '{target}' created in each repository.",
+        )
 
     # -- Create feature branch --------------------------------------------- #
     def _action_create_feature_branch(self):
