@@ -171,6 +171,15 @@ class WorkspacesTab(ActionTabBase):
                 "be auto-generated from its branch name (feature/123_my_desc "
                 "\u2192 feature(123) My desc). A link to each new PR is shown.",
             ),
+            (
+                "Open in Git Bash tabs",
+                self._action_open_terminals,
+                "For the selected workspace's repositories: opens a Git Bash "
+                "session in a Windows Terminal tab (one tab per repo, titled "
+                "with the repo name, started in that repo's folder). If Windows "
+                "Terminal is not available, a separate Git Bash window is opened "
+                "per repo.",
+            ),
         ]
 
     # -- Helpers ----------------------------------------------------------- #
@@ -341,6 +350,16 @@ class WorkspacesTab(ActionTabBase):
                 self.errors.add(repos)
             return
         self.create_prs(repos)
+
+    # -- Open in Git Bash tabs --------------------------------------------- #
+    def _action_open_terminals(self):
+        ok, workspace, repos = self._selected_repos()
+        self.errors.clear()
+        if not ok:
+            if workspace is not None:
+                self.errors.add(repos)
+            return
+        self.open_terminals(repos)
 
     # -- Create workspace from a PBI --------------------------------------- #
     def _action_create_from_pbi(self):

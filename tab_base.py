@@ -11,6 +11,7 @@ from widgets import Tooltip, ProgressPanel, ErrorList
 from gitutils import (
     is_git_repo, git_current_branch, git_has_changes, commit_all, git_push,
     git_branch_url, create_ado_pr, ado_pr_title_from_branch,
+    open_in_terminal_tabs,
 )
 from dialogs import (
     ask_change_decision, ask_commit_message, ask_branch_warning, ask_pr_details,
@@ -238,6 +239,21 @@ class ActionTabBase(ttk.Frame):
             completion_copy_fn=_copy_text,
         )
 
+
+    # -- Open Git Bash terminals ------------------------------------------- #
+    def open_terminals(self, repos):
+        """Open each selected repo as a Git Bash tab in one Windows Terminal window.
+
+        Each tab is titled with the repo name and starts in that repo's folder.
+        Falls back to a separate Git Bash window per repo when Windows Terminal
+        is unavailable. Nothing happens (no error) when no repos are selected.
+        """
+        self.errors.clear()
+        if not repos:
+            return
+        ok, message = open_in_terminal_tabs(repos)
+        if not ok:
+            self.errors.add(message)
 
     # -- Generic background runner ----------------------------------------- #
     def repo_rows(self, repos):

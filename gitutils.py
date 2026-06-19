@@ -8,6 +8,7 @@ import os
 import re
 import json
 import base64
+import shutil
 import subprocess
 import urllib.parse
 import urllib.request
@@ -143,6 +144,82 @@ def write_workspace(feature_name, repos):
         return True, f"Workspace created: {target}"
     except OSError as exc:
         return False, f"could not create workspace: {exc}"
+
+
+# --------------------------------------------------------------------------- #
+# Git Bash terminal launching
+# --------------------------------------------------------------------------- #
+
+def _git_install_root():
+    """Return the Git for Windows install root, or None if git can't be found.
+
+    git.exe lives in either ``<root>\\cmd`` or ``<root>\\bin``, so the install
+    root is two levels up from the resolved executable.
+    """
+    git = shutil.which("git")
+    if not git:
+        return None
+    return os.path.dirname(os.path.dirname(git))
+
+
+def _bash_exe():
+    """Return the path to Git Bash's bash.exe (falls back to 'bash' on PATH)."""
+    root = _git_install_root()
+    if root:
+        candidate = os.path.join(root, "bin", "bash.exe")
+        if os.path.isfile(candidate):
+            return candidate
+    return shutil.which("bash") or "bash"
+
+
+def open_in_terminal_tabs(repos):
+    """Open each repo as a Git Bash tab in one Windows Terminal window.
+
+    *repos* is a list of (name, path) pairs. Each existing repo opens as its own
+    tab, titled with the repo name, with the shell started in that repo's
+    directory. A login+interactive shell is used so the user's ~/.bash_profile
+    (aliases, prompt) is loaded. When Windows Terminal (wt.exe) is not
+    available, falls back to a separate Git Bash (MinTTY) window per repo.
+
+    Returns (ok, error_message); ok is False only when there is nothing to open
+    or the launcher cannot be started.
+    """
+    repos = [(name, path) for name, path in repos if os.path.isdir(path)]
+    if not repos:
+        return False, "no existing repository folders to open"
+
+    bash = _bash_exe()
+    wt = shutil.which("wt")
+    try:
+        if wt:
+            # One wt invocation with a tab per repo. Subcommands are separated by
+            # a literal ';' argument: the first new-tab opens a new window and
+            # each subsequent one becomes a tab in that same window.
+            # --suppressApplicationTitle keeps our --title from being overwritten
+            # by the shell's own title escape (Git's prompt sets it to the path).
+            args = [wt]
+            for index, (name, path) in enumerate(repos):
+                if index:
+                    args.append(";")
+                args += [
+                    "new-tab", "--title", name,
+                    "--suppressApplicationTitle", "-d", path,
+                    bash, "--login", "-i",
+                ]
+            subprocess.Popen(args)
+            return True, ""
+
+        # Fallback: a standalone Git Bash window per repo, each in its own dir.
+        root = _git_install_root()
+        git_bash = os.path.join(root, "git-bash.exe") if root else None
+        for _, path in repos:
+            if git_bash and os.path.isfile(git_bash):
+                subprocess.Popen([git_bash], cwd=path)
+            else:
+                subprocess.Popen([bash, "--login", "-i"], cwd=path)
+        return True, ""
+    except OSError as exc:
+        return False, f"could not launch terminal: {exc}"
 
 
 # --------------------------------------------------------------------------- #

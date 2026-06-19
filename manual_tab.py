@@ -115,6 +115,14 @@ class ManualTab(ActionTabBase):
                 "then writes a VS Code '.code-workspace' file named after the "
                 "same feature name.",
             ),
+            (
+                "Open in Git Bash tabs",
+                self._action_open_terminals,
+                "For every selected repository: opens a Git Bash session in a "
+                "Windows Terminal tab (one tab per repo, titled with the repo "
+                "name, started in that repo's folder). If Windows Terminal is "
+                "not available, a separate Git Bash window is opened per repo.",
+            ),
         ]
 
     # -- Selection helper -------------------------------------------------- #
@@ -262,6 +270,10 @@ class ManualTab(ActionTabBase):
     # -- Create pull request ----------------------------------------------- #
     def _action_create_pr(self):
         self.create_prs(self._all_selected_repos())
+
+    # -- Open in Git Bash tabs --------------------------------------------- #
+    def _action_open_terminals(self):
+        self.open_terminals(self._all_selected_repos())
 
     # -- Create feature workspace ------------------------------------------ #
     def _action_create_workspace(self):
