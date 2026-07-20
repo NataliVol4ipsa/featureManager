@@ -26,6 +26,13 @@ from config import (
 SAVEPOS_MSG = "savepos"
 
 
+# On Windows a GUI (``--windowed``) build has no console, so every child
+# process (git, git credential, ...) would otherwise flash its own console
+# window. CREATE_NO_WINDOW suppresses that. It's 0 on non-Windows / older
+# Pythons, so passing it as creationflags is always safe.
+NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+
+
 # --------------------------------------------------------------------------- #
 # Folder / workspace discovery
 # --------------------------------------------------------------------------- #
@@ -237,6 +244,7 @@ def run_git(repo_path, args):
         result = subprocess.run(
             ["git", "-C", repo_path, *args],
             capture_output=True, text=True,
+            creationflags=NO_WINDOW,
         )
         output = (result.stdout or "") + (result.stderr or "")
         return result.returncode == 0, output.strip()
@@ -304,6 +312,38 @@ def git_commit_message(repo_path, ref):
     """Return the subject line of the commit at *ref*, or '' on failure."""
     ok, out = run_git(repo_path, ["log", "-1", "--format=%s", ref])
     return out if ok else ""
+
+
+def git_branch_is_empty(repo_path, target="master"):
+    """Return True if the current branch has no changes versus *target*.
+
+    "Empty" means a pull request from this branch to *target* would show zero
+    file changes (no diff against their merge-base, matching what a PR displays).
+    Repos that are not git repos, are on a detached HEAD, are already on
+    *target*, or whose target ref cannot be resolved are treated as not empty
+    (False) so they are never silently skipped.
+    """
+    if not is_git_repo(repo_path):
+        return False
+    branch = git_current_branch(repo_path)
+    if not branch or branch == target:
+        return False
+    # Prefer the remote-tracking branch so the comparison mirrors what the PR
+    # would show; fall back to a local branch of the same name.
+    ref = None
+    for candidate in (f"origin/{target}", target):
+        ok, _ = run_git(
+            repo_path, ["rev-parse", "--verify", "--quiet", candidate]
+        )
+        if ok:
+            ref = candidate
+            break
+    if ref is None:
+        return False
+    # Three-dot diff compares against the merge-base, exactly like a PR. An exit
+    # code of 0 (ok) means there is no diff, i.e. the branch is empty.
+    ok, _ = run_git(repo_path, ["diff", "--quiet", f"{ref}...HEAD"])
+    return ok
 
 
 # --------------------------------------------------------------------------- #
@@ -607,6 +647,7 @@ def get_git_credential(host):
             ["git", "credential", "fill"],
             input=f"protocol=https\nhost={host}\n\n",
             capture_output=True, text=True, timeout=20,
+            creationflags=NO_WINDOW,
         )
     except (OSError, subprocess.SubprocessError):
         return None, None

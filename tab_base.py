@@ -11,7 +11,7 @@ from widgets import Tooltip, ProgressPanel, ErrorList
 from gitutils import (
     is_git_repo, git_current_branch, git_has_changes, commit_all, git_push,
     git_branch_url, create_ado_pr, ado_pr_title_from_branch,
-    open_in_terminal_tabs,
+    git_branch_is_empty, open_in_terminal_tabs,
 )
 from dialogs import (
     ask_change_decision, ask_commit_message, ask_branch_warning, ask_pr_details,
@@ -165,7 +165,9 @@ class ActionTabBase(ttk.Frame):
         self.show_repos_async(repos, with_status=False)
 
         # Only show a modal when the repos are on different branches; otherwise
-        # push straight away with no interaction.
+        # push straight away with no interaction. When no modal is shown the
+        # "skip empty branches" option defaults to on (matching the checkbox).
+        skip_empty = True
         branches = {
             git_current_branch(path)
             for _, path in repos
@@ -173,14 +175,17 @@ class ActionTabBase(ttk.Frame):
         }
         branches.discard("")  # ignore repos whose branch could not be read
         if len(branches) > 1:
-            if not ask_branch_warning(self, len(repos)):
+            answer = ask_branch_warning(self, len(repos))
+            if not answer["ok"]:
                 return
+            skip_empty = answer["skip_empty"]
 
         self.run_repo_action(
             repos,
             git_push,
             "All branches pushed successfully.",
             link_fn=lambda n, p: git_branch_url(p, git_current_branch(p)),
+            skip_fn=git_branch_is_empty if skip_empty else None,
         )
 
     def create_prs(self, repos):
@@ -237,6 +242,7 @@ class ActionTabBase(ttk.Frame):
             link_header="Pull request",
             show_branch=False,
             completion_copy_fn=_copy_text,
+            skip_fn=git_branch_is_empty if options["skip_empty"] else None,
         )
 
 
@@ -298,7 +304,7 @@ class ActionTabBase(ttk.Frame):
     def run_repo_action(self, repos, per_repo_fn, success_msg, on_complete=None,
                         link_fn=None, link_text="View branch",
                         link_header="Link", show_branch=True,
-                        completion_copy_fn=None):
+                        completion_copy_fn=None, skip_fn=None):
         """Run *per_repo_fn(name, path)* for each repo off the UI thread.
 
         *per_repo_fn* must return (ok, error_message). The table shows each
@@ -313,6 +319,9 @@ class ActionTabBase(ttk.Frame):
         *completion_copy_fn(ok_repos)*, if given, returns text shown behind a
         "Copy all" button on the success banner (ok_repos is the (name, path)
         list, used to build e.g. "repo name - pr link" lines).
+        *skip_fn(name, path)*, if given, is called (on the worker thread) before
+        each repo's action; repos for which it returns True are marked
+        "skipped" and their action is not run (they do not affect success).
         """
         self.errors.clear()
         self.progress.show_repos(
@@ -323,15 +332,21 @@ class ActionTabBase(ttk.Frame):
         threading.Thread(
             target=self._worker,
             args=(repos, per_repo_fn, success_msg, on_complete, link_fn,
-                  link_text, show_branch, completion_copy_fn),
+                  link_text, show_branch, completion_copy_fn, skip_fn),
             daemon=True,
         ).start()
 
     def _worker(self, repos, per_repo_fn, success_msg, on_complete=None,
                 link_fn=None, link_text="View branch", show_branch=True,
-                completion_copy_fn=None):
+                completion_copy_fn=None, skip_fn=None):
         all_ok = True
         for name, path in repos:
+            if skip_fn is not None and skip_fn(name, path):
+                self.after(0, self.progress.status, name, "skipped")
+                if show_branch:
+                    branch = git_current_branch(path) if is_git_repo(path) else ""
+                    self.after(0, self.progress.set_branch, name, branch)
+                continue
             self.after(0, self.progress.status, name, "in-progress")
             ok, message = per_repo_fn(name, path)
             if ok:

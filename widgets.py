@@ -71,6 +71,7 @@ STATUS_STYLES = {
     "in-progress": ("\u25CF", "#d98c00"),  # filled circle, amber
     "done":        ("\u25CF", "#1a9e1a"),  # filled circle, green
     "error":       ("\u25CF", "#c0392b"),  # filled circle, red
+    "skipped":     ("\u2013", "#888888"),  # en dash, gray (no-op / skipped)
 }
 
 

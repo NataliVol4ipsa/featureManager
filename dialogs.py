@@ -251,6 +251,12 @@ def ask_branch_warning(parent, repo_count, title="Push all changes",
     tk.Label(warn, text="The selected repositories are not all on the same branch.",
              foreground="#c0392b", justify="left", wraplength=360).pack(side="left")
 
+    skip_empty = tk.BooleanVar(value=True)
+    ttk.Checkbutton(
+        dialog, variable=skip_empty,
+        text="Skip empty branches (no changes vs master)",
+    ).pack(padx=16, pady=(4, 0), anchor="w")
+
     result = {"ok": False}
 
     def _ok():
@@ -270,7 +276,7 @@ def ask_branch_warning(parent, repo_count, title="Push all changes",
     _center_over_parent(dialog, parent)
     dialog.grab_set()
     parent.wait_window(dialog)
-    return result["ok"]
+    return {"ok": result["ok"], "skip_empty": bool(skip_empty.get())}
 
 
 def ask_pr_details(parent, repo_count):
@@ -326,6 +332,12 @@ def ask_pr_details(parent, repo_count):
     desc_text = tk.Text(dialog, width=46, height=4, wrap="word")
     desc_text.pack(padx=16, pady=(0, 4), fill="x")
 
+    skip_empty = tk.BooleanVar(value=True)
+    ttk.Checkbutton(
+        dialog, variable=skip_empty,
+        text="Skip empty branches (no changes vs master)",
+    ).pack(padx=16, pady=(4, 0), anchor="w")
+
     error_label = tk.Label(dialog, text="", foreground="#c0392b")
     error_label.pack(padx=16, anchor="w")
 
@@ -343,6 +355,7 @@ def ask_pr_details(parent, repo_count):
             "mode": chosen,
             "title": title,
             "description": desc_text.get("1.0", "end").strip(),
+            "skip_empty": bool(skip_empty.get()),
         }
         dialog.destroy()
 
