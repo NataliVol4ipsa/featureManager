@@ -229,6 +229,34 @@ def open_in_terminal_tabs(repos):
         return False, f"could not launch terminal: {exc}"
 
 
+def open_in_vscode(path):
+    """Open *path* (a folder or .code-workspace file) in VS Code.
+
+    On Windows a .code-workspace file is associated with VS Code, so
+    ``os.startfile`` launches it directly; otherwise the ``code`` launcher on
+    PATH is used as a fallback. Returns (ok, error_message).
+    """
+    if not os.path.exists(path):
+        return False, f"path does not exist: {path}"
+
+    startfile = getattr(os, "startfile", None)
+    if startfile is not None:
+        try:
+            startfile(path)
+            return True, ""
+        except OSError as exc:
+            return False, f"could not open VS Code: {exc}"
+
+    code = shutil.which("code")
+    if not code:
+        return False, "VS Code 'code' launcher not found on PATH"
+    try:
+        subprocess.Popen([code, path], creationflags=NO_WINDOW)
+        return True, ""
+    except OSError as exc:
+        return False, f"could not open VS Code: {exc}"
+
+
 # --------------------------------------------------------------------------- #
 # Core git runner
 # --------------------------------------------------------------------------- #
@@ -758,6 +786,78 @@ def create_ado_pr(name, path, title, description="", target="master"):
             return True, web_url, f"{name}: {link_err}"
 
     return True, web_url, ""
+
+
+def get_ado_pr_url(name, path, target="master"):
+    """Return (ok, url_or_err) for an existing open PR of the repo's branch.
+
+    Looks up the active Azure DevOps pull request that goes from the repo's
+    current branch to *target* (master) and returns a browser link to it.
+    Authentication reuses the Git credential already stored for the host (no
+    prompts). ok is False - with an explanatory message - when the repo is not
+    an ADO repo, has no stored credential, or has no open pull request for its
+    current branch.
+    """
+    if not is_git_repo(path):
+        return False, f"{name}: not a git repository"
+    branch = git_current_branch(path)
+    if not branch:
+        return False, f"{name}: not on a branch (detached HEAD)"
+
+    parsed = parse_ado_remote(git_remote_url(path))
+    if not parsed:
+        return False, f"{name}: remote is not an Azure DevOps repository"
+    org, project, repo, host = parsed
+
+    username, password = get_git_credential(host)
+    if not password:
+        return False, f"{name}: no stored Git credential for {host}"
+
+    query = urllib.parse.urlencode({
+        "searchCriteria.sourceRefName": f"refs/heads/{branch}",
+        "searchCriteria.targetRefName": f"refs/heads/{target}",
+        "searchCriteria.status": "active",
+        "api-version": "7.1",
+    })
+    api_url = (
+        f"https://dev.azure.com/{urllib.parse.quote(org)}/"
+        f"{urllib.parse.quote(project)}/_apis/git/repositories/"
+        f"{urllib.parse.quote(repo)}/pullrequests?{query}"
+    )
+    auth = base64.b64encode(
+        f"{username or ''}:{password}".encode("utf-8")
+    ).decode("ascii")
+
+    req = urllib.request.Request(api_url, method="GET")
+    req.add_header("Authorization", f"Basic {auth}")
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", "replace").strip()
+        try:
+            detail = json.loads(detail).get("message", detail)
+        except ValueError:
+            pass
+        return False, f"{name}: pull request lookup failed ({exc.code}): {detail}"
+    except (urllib.error.URLError, OSError) as exc:
+        return False, f"{name}: pull request lookup failed: {exc}"
+
+    prs = data.get("value") or []
+    if not prs:
+        return False, f"{name}: no open pull request for branch '{branch}'"
+
+    pr = prs[0]
+    pr_id = pr.get("pullRequestId")
+    repo_info = pr.get("repository") or {}
+    project_name = (repo_info.get("project") or {}).get("name") or project
+    repo_name = repo_info.get("name") or repo
+    web_url = (
+        f"https://dev.azure.com/{urllib.parse.quote(org)}/"
+        f"{urllib.parse.quote(project_name)}/_git/"
+        f"{urllib.parse.quote(repo_name)}/pullrequest/{pr_id}"
+    )
+    return True, web_url
 
 
 def _link_work_item_to_pr(org, work_item_id, project_id, repo_id, pr_id,

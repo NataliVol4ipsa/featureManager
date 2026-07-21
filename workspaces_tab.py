@@ -3,6 +3,7 @@
 import os
 import subprocess
 import threading
+import webbrowser
 from datetime import datetime
 from tkinter import ttk
 
@@ -12,6 +13,7 @@ from gitutils import (
     run_git, is_git_repo, git_branch_exists,
     save_uncommitted, has_savepos, restore_uncommitted,
     git_current_branch, create_feature_branch, rebase_on_master,
+    git_branch_url, get_ado_pr_url, open_in_vscode,
     SAVEPOS_MSG,
 )
 from widgets import WorkspaceList, Tooltip
@@ -42,7 +44,7 @@ class WorkspacesTab(ActionTabBase):
     def __init__(self, master):
         super().__init__(master)
         self._build_left()
-        self.build_middle_actions(self._actions())
+        self.build_middle_sections(self._sections())
         # Let the Details panel absorb the extra width when the window grows, so
         # long branch/PR content on the right has room (the workspace list on
         # the left keeps a fixed width).
@@ -107,7 +109,14 @@ class WorkspacesTab(ActionTabBase):
             items.append((name, _fmt_time(created), _fmt_time(modified)))
         return items
 
-    def _actions(self):
+    def _sections(self):
+        """Two stacked action groups: state-changing actions, then open actions."""
+        return [
+            ("Manipulate", self._manipulate_actions()),
+            ("Open", self._open_actions()),
+        ]
+
+    def _manipulate_actions(self):
         return [
             (
                 "Create workspace from PBI",
@@ -171,6 +180,17 @@ class WorkspacesTab(ActionTabBase):
                 "be auto-generated from its branch name (feature/123_my_desc "
                 "\u2192 feature(123) My desc). A link to each new PR is shown.",
             ),
+        ]
+
+    def _open_actions(self):
+        return [
+            (
+                "Open workspace in VS Code",
+                self._action_open_workspace,
+                "Opens the selected feature workspace (its .code-workspace file) "
+                "in VS Code, so every repository of the workspace loads in one "
+                "window.",
+            ),
             (
                 "Open in Git Bash tabs",
                 self._action_open_terminals,
@@ -179,6 +199,29 @@ class WorkspacesTab(ActionTabBase):
                 "with the repo name, started in that repo's folder). If Windows "
                 "Terminal is not available, a separate Git Bash window is opened "
                 "per repo.",
+            ),
+            (
+                "Open repositories (master)",
+                self._action_open_repos_master,
+                "For the selected workspace's repositories: opens each "
+                "repository's master branch on the remote host (Azure DevOps / "
+                "GitHub / \u2026) in your default web browser, one tab per repo.",
+            ),
+            (
+                "Open branches",
+                self._action_open_branches,
+                "For the selected workspace's repositories: opens each "
+                "repository's current branch on the remote host in your default "
+                "web browser, one tab per repo. Branches that have not been "
+                "pushed yet may show as not found on the host.",
+            ),
+            (
+                "Open pull requests",
+                self._action_open_prs,
+                "For the selected workspace's repositories: looks up the open "
+                "Azure DevOps pull request for each repo's current branch and "
+                "opens it in your default web browser. Repos with no open PR are "
+                "reported in the Errors panel.",
             ),
         ]
 
@@ -360,6 +403,122 @@ class WorkspacesTab(ActionTabBase):
                 self.errors.add(repos)
             return
         self.open_terminals(repos)
+
+    # -- Open workspace in VS Code ----------------------------------------- #
+    def _action_open_workspace(self):
+        """Open the selected workspace's .code-workspace file in VS Code."""
+        self.errors.clear()
+        workspace = self.workspace_list.get_selected()
+        if not workspace:
+            self.errors.add("no workspace selected")
+            return
+        path = os.path.join(WORKSPACES_ROOT, f"{workspace}.code-workspace")
+        ok, message = open_in_vscode(path)
+        if not ok:
+            self.errors.add(message)
+
+    # -- Open repositories (master) in the browser ------------------------- #
+    def _action_open_repos_master(self):
+        ok, workspace, repos = self._selected_repos()
+        self.errors.clear()
+        if not ok:
+            if workspace is not None:
+                self.errors.add(repos)
+            return
+        if not repos:
+            return
+        self._open_browser_async(
+            repos, self._master_url, "master link", "Resolving master links\u2026"
+        )
+
+    # -- Open current branches in the browser ------------------------------ #
+    def _action_open_branches(self):
+        ok, workspace, repos = self._selected_repos()
+        self.errors.clear()
+        if not ok:
+            if workspace is not None:
+                self.errors.add(repos)
+            return
+        if not repos:
+            return
+        self._open_browser_async(
+            repos, self._branch_url, "branch link", "Resolving branch links\u2026"
+        )
+
+    # -- Open pull requests in the browser --------------------------------- #
+    def _action_open_prs(self):
+        ok, workspace, repos = self._selected_repos()
+        self.errors.clear()
+        if not ok:
+            if workspace is not None:
+                self.errors.add(repos)
+            return
+        if not repos:
+            return
+        self._open_browser_async(
+            repos, self._pr_url, "pull request", "Looking up pull requests\u2026"
+        )
+
+    # -- Browser-open helpers ---------------------------------------------- #
+    @staticmethod
+    def _master_url(name, path):
+        """Return (url, error) for *path*'s master branch on the remote host."""
+        if not is_git_repo(path):
+            return "", f"{name}: not a git repository"
+        url = git_branch_url(path, "master")
+        if not url:
+            return "", f"{name}: could not resolve the remote URL"
+        return url, ""
+
+    @staticmethod
+    def _branch_url(name, path):
+        """Return (url, error) for *path*'s current branch on the remote host."""
+        if not is_git_repo(path):
+            return "", f"{name}: not a git repository"
+        branch = git_current_branch(path)
+        url = git_branch_url(path, branch)
+        if not url:
+            return "", f"{name}: could not resolve the remote URL for '{branch}'"
+        return url, ""
+
+    @staticmethod
+    def _pr_url(name, path):
+        """Return (url, error) for *path*'s open pull request (network lookup)."""
+        ok, result = get_ado_pr_url(name, path)
+        return (result, "") if ok else ("", result)
+
+    def _open_browser_async(self, repos, url_fn, what, busy_msg):
+        """Resolve a URL per repo off the UI thread and open each in the browser.
+
+        *url_fn(name, path)* returns (url, error); a non-empty *url* is opened in
+        the default browser and a non-empty *error* is shown in the Errors panel.
+        The resolution runs on a background thread (git/network calls can be
+        slow) and the browser is opened back on the UI thread. *busy_msg* is
+        shown on the completion banner while the lookup runs.
+        """
+        self.show_repos_async(repos, with_status=False)
+        self.progress.show_completion(busy_msg)
+
+        def _work():
+            results = [(name, *url_fn(name, path)) for name, path in repos]
+            self.after(0, self._on_urls_resolved, results, what)
+
+        threading.Thread(target=_work, daemon=True).start()
+
+    def _on_urls_resolved(self, results, what):
+        """Open resolved URLs in the browser and report failures (UI thread)."""
+        self.progress.clear_completion()
+        opened = 0
+        for name, url, error in results:
+            if url:
+                webbrowser.open(url, new=2)
+                opened += 1
+            elif error:
+                self.errors.add(error)
+        if opened:
+            self.progress.show_completion(
+                f"Opened {opened} {what}{'s' if opened != 1 else ''} in the browser."
+            )
 
     # -- Create workspace from a PBI --------------------------------------- #
     def _action_create_from_pbi(self):

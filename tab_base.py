@@ -48,6 +48,24 @@ class ActionTabBase(ttk.Frame):
             button.pack(fill="x", padx=6, pady=3)
             Tooltip(button, hint)
 
+    def build_middle_sections(self, sections):
+        """Build the middle 'Actions' column as several stacked labelled groups.
+
+        *sections* is a list of (title, actions) pairs, where *actions* is the
+        usual list of (label, command, hint) tuples. Each section becomes its
+        own labelled frame, stacked top-to-bottom in a single column so related
+        actions are visually grouped.
+        """
+        middle = ttk.Frame(self._top)
+        middle.pack(side="left", fill="y", padx=6)
+        for title, actions in sections:
+            frame = ttk.LabelFrame(middle, text=title)
+            frame.pack(side="top", fill="x", pady=(0, 6))
+            for label, command, hint in actions:
+                button = ttk.Button(frame, text=label, command=command)
+                button.pack(fill="x", padx=6, pady=3)
+                Tooltip(button, hint)
+
     def build_right_details(self, expand=True, width=None):
         """Build the right 'Details' column holding the live progress panel.
 
