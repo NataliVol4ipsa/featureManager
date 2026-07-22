@@ -7,13 +7,14 @@ import webbrowser
 from datetime import datetime
 from tkinter import ttk
 
-from config import WORKSPACES_ROOT, REPOS_ROOT
+from config import WORKSPACES_ROOT, REPOS_ROOT, NUGETS_ROOT
 from gitutils import (
     list_workspaces_detailed, read_workspace_repos, write_workspace,
     run_git, is_git_repo, git_branch_exists,
     save_uncommitted, has_savepos, restore_uncommitted,
     git_current_branch, create_feature_branch, rebase_on_master,
     git_branch_url, get_ado_pr_url, open_in_vscode,
+    get_nuget_folders,
     SAVEPOS_MSG,
 )
 from widgets import WorkspaceList, Tooltip
@@ -555,18 +556,32 @@ class WorkspacesTab(ActionTabBase):
 
         synonyms = pbi.load_synonyms()
         folders = pbi.available_folders()
-        mappings = pbi.map_services(services, synonyms, folders)
 
-        resolved = resolve_pbi_repos(self, mappings, folders)
+        # Shared NuGet folders are offered at the end of every folder dropdown;
+        # a set lets us resolve the right root when building the workspace.
+        nuget_folders = get_nuget_folders()
+        nuget_set = set(nuget_folders)
+
+        # Recognise stored synonyms for both repository and shared NuGet folders
+        # so a previously learned NuGet mapping pre-fills its dropdown too.
+        all_folders = folders + [f for f in nuget_folders if f not in set(folders)]
+        mappings = pbi.map_services(services, synonyms, all_folders)
+
+        resolved = resolve_pbi_repos(
+            self, mappings, folders, nuget_folders=nuget_folders
+        )
         if resolved is None:
             return
 
-        # Remember every service->folder mapping the user resolved. Build the
-        # list first (not a generator) so add_synonym runs for *all* services -
-        # any() over a generator would stop at the first newly added one.
+        # Remember every service->folder mapping the user resolved, including
+        # shared NuGet folders, so the choice is preserved for next time.
+        # Skipped services (None) are not learned. Build the list first (not a
+        # generator) so add_synonym runs for *all* services - any() over a
+        # generator would stop at the first newly added one.
         added = [
             pbi.add_synonym(synonyms, folder, service)
             for service, folder in resolved.items()
+            if folder
         ]
         if any(added):
             ok_save, message = pbi.save_synonyms(synonyms)
@@ -582,12 +597,21 @@ class WorkspacesTab(ActionTabBase):
         if not name:
             return
 
-        # Build the repo list (de-duplicated, order preserved).
+        # Build the repo list (de-duplicated, order preserved). Skipped services
+        # (None) are left out; shared NuGet folders resolve under NUGETS_ROOT.
         chosen, seen = [], set()
         for folder in resolved.values():
-            if folder not in seen:
-                seen.add(folder)
-                chosen.append((folder, os.path.join(REPOS_ROOT, folder)))
+            if not folder or folder in seen:
+                continue
+            seen.add(folder)
+            root = NUGETS_ROOT if folder in nuget_set else REPOS_ROOT
+            chosen.append((folder, os.path.join(root, folder)))
+
+        if not chosen:
+            self.errors.add(
+                f"PBI {result['id']}: no repositories selected for the workspace."
+            )
+            return
 
         ok_ws, message = write_workspace(name, chosen)
         if not ok_ws:

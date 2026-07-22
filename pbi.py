@@ -279,7 +279,10 @@ class _WbsHtmlParser(HTMLParser):
         elif tag in ("b", "strong") and self._bold > 0:
             self._bold -= 1
             text = "".join(self._bold_buf).strip()
-            if text:
+            # Only bold runs *outside* a list item are treated as section
+            # headings; bold inside a bullet (e.g. "**XAPI** service") is inline
+            # emphasis and must not be mistaken for the start of a new section.
+            if text and self._cur_item is None:
                 self.events.append(("heading", text))
             self._bold_buf = []
 
@@ -317,7 +320,12 @@ def _services_from_events(events):
     collected = []
     for event in events[start + 1:]:
         if event[0] == "heading":
-            if any(word in event[1].lower() for word in _SECTION_BREAK_WORDS):
+            # Any heading after we have started collecting items marks the next
+            # section and ends the WBS list. Before the first item, only a known
+            # later-section label ends it (a sub-label is skipped).
+            if collected or any(
+                word in event[1].lower() for word in _SECTION_BREAK_WORDS
+            ):
                 break
             continue
         _, depth, buffer = event
@@ -349,9 +357,16 @@ def _services_from_text(raw):
     for line in lines[start + 1:]:
         match = bullet_re.match(line)
         if not match:
-            stripped = line.strip().lower()
-            # A non-bullet line naming a later section ends the WBS list.
-            if stripped and any(w in stripped for w in _SECTION_BREAK_WORDS):
+            stripped = line.strip()
+            if not stripped:
+                continue
+            # A non-bullet, non-empty line ends the WBS list once it has started
+            # (it is the next section heading/paragraph, e.g. "Testing:").
+            # Before any bullet is collected, intro text is skipped, but a known
+            # later-section label still ends an (empty) WBS section.
+            if collected or any(
+                w in stripped.lower() for w in _SECTION_BREAK_WORDS
+            ):
                 break
             continue
         indent = len(match.group(1).replace("\t", "    "))

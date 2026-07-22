@@ -428,16 +428,29 @@ def ask_pbi_number(parent):
     return result["id"]
 
 
-def resolve_pbi_repos(parent, mappings, folders):
+# Combobox sentinel letting the user leave a PBI service out of the workspace.
+_SKIP_LABEL = "\u2014 skip this repo \u2014"
+
+
+def resolve_pbi_repos(parent, mappings, folders, nuget_folders=None):
     """Modal mapping each PBI service name to a local repository folder.
 
     *mappings* is a list of (service_name, folder_or_None) as recognised from
     the synonyms dictionary; *folders* is the list of available local repository
     folder names. Each row shows the service name and a folder picker pre-set to
-    the recognised folder (or blank/"unknown" when not recognised). The Create
-    button is disabled until every service is mapped. Returns a
-    {service_name: folder} dict on submit, or None if cancelled.
+    the recognised folder (or blank/"unknown" when not recognised). A service can
+    also be left out of the workspace by choosing "skip this repo".
+
+    *nuget_folders*, if given, is the list of shared NuGet folder names; they are
+    offered at the *end* of every folder dropdown so a service can be mapped to a
+    shared NuGet repository as well.
+
+    The Create button is disabled until every service is either mapped or
+    skipped. Returns a ``{service_name: folder_or_None}`` dict on submit (a
+    skipped service maps to ``None``), or ``None`` if cancelled.
     """
+    nuget_folders = list(nuget_folders or [])
+
     dialog = tk.Toplevel(parent)
     dialog.title("Create workspace from PBI - map repositories")
     dialog.transient(parent.winfo_toplevel())
@@ -453,7 +466,9 @@ def resolve_pbi_repos(parent, mappings, folders):
     tk.Label(
         dialog,
         text="Unrecognised services are marked in red - pick the matching "
-             "folder. New mappings are remembered for next time.",
+             "folder, or choose \"skip this repo\" to leave it out. Shared "
+             "NuGet repositories are listed at the end of each dropdown. New "
+             "mappings are remembered for next time.",
         foreground="#666666", justify="left", wraplength=420,
     ).pack(padx=16, pady=(0, 8), anchor="w")
 
@@ -466,7 +481,9 @@ def resolve_pbi_repos(parent, mappings, folders):
         row=0, column=1, sticky="w", padx=4, pady=(0, 4)
     )
 
-    folder_values = sorted(folders)
+    # Dropdown order: "skip" first, then repository folders, then the shared
+    # NuGet folders at the very end.
+    folder_values = [_SKIP_LABEL] + sorted(folders) + sorted(nuget_folders)
     rows = []  # (service_name, combobox, status_label)
 
     for index, (service, folder) in enumerate(mappings, start=1):
@@ -486,21 +503,28 @@ def resolve_pbi_repos(parent, mappings, folders):
     create_button = None  # assigned below; updated by _refresh
 
     def _refresh(*_args):
-        all_mapped = True
+        all_resolved = True
         for _service, combo, status in rows:
-            if combo.get():
+            value = combo.get()
+            if value == _SKIP_LABEL:
+                status.config(text="skipped", foreground="#666666")
+            elif value:
                 status.config(text="mapped", foreground="#1a9e1a")
             else:
                 status.config(text="unknown", foreground="#c0392b")
-                all_mapped = False
+                all_resolved = False
         if create_button is not None:
-            create_button.config(state="normal" if all_mapped else "disabled")
+            create_button.config(state="normal" if all_resolved else "disabled")
 
     for _service, combo, _status in rows:
         combo.bind("<<ComboboxSelected>>", _refresh)
 
     def _ok():
-        result["value"] = {service: combo.get() for service, combo, _ in rows}
+        resolved = {}
+        for service, combo, _ in rows:
+            value = combo.get()
+            resolved[service] = None if value == _SKIP_LABEL else value
+        result["value"] = resolved
         dialog.destroy()
 
     def _cancel():
