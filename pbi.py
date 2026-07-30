@@ -400,6 +400,12 @@ def parse_wbs_services(description):
 
 
 def slugify_title(title):
-    """Turn a work item title into a valid branch-name fragment (no spaces)."""
+    """Turn a work item title into a valid branch-name fragment (no spaces).
+
+    If the title contains a ``|``, only the part to the right of the last ``|``
+    is used (the pipe and everything before it are dropped).
+    """
+    if "|" in title:
+        title = title.rsplit("|", 1)[1]
     slug = re.sub(r"[^A-Za-z0-9._-]+", "_", title.strip().lower())
     return slug.strip("_")

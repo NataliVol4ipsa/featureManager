@@ -251,25 +251,35 @@ class WorkspacesTab(ActionTabBase):
         target = f"feature/{workspace}"
         self.show_repos_async(repos, with_status=True)
 
-        # Pre-check 1: every repo must have the target branch. If any is missing,
-        # switch none of them.
-        problems = []
+        # Split the workspace folders into ones we can switch and ones we skip.
+        # Workspaces often bundle a docs folder (not a git repo) or repos where
+        # the feature branch was only created in some services. Rather than
+        # abort the whole batch, we switch what we can and mark the rest
+        # "skipped" (hover shows the reason).
+        skip_reasons = {}
+        switchable = []
         for name, path in repos:
             if not is_git_repo(path):
-                problems.append(f"{name}: not a git repository")
+                skip_reasons[name] = "not a git repository"
             elif not git_branch_exists(path, target):
-                problems.append(f"{name}: feature '{target}' does not exist")
-        if problems:
-            for problem in problems:
-                self.errors.add(problem)
-            for name, _ in repos:
-                self.progress.status(name, "error")
+                skip_reasons[name] = f"branch '{target}' does not exist"
+            else:
+                switchable.append((name, path))
+
+        # Mark skipped rows upfront so the user sees them before the modal.
+        for name, reason in skip_reasons.items():
+            self.progress.status(name, "skipped", tooltip=f"Skipped: {reason}")
+
+        if not switchable:
+            self.errors.add(
+                f"No repository in this workspace has branch '{target}'."
+            )
             return
 
-        # Pre-check 2: decide what to do with uncommitted changes (per repo).
-        # Closing/aborting any modal cancels the whole switch. Repos already on
-        # the target branch are skipped entirely (no prompt, no checkout).
-        decisions = self.collect_change_decisions(repos, skip_branch=target)
+        # Pre-check: decide what to do with uncommitted changes in each repo
+        # we're actually going to switch. Repos already on the target branch
+        # are skipped entirely (no prompt, no checkout).
+        decisions = self.collect_change_decisions(switchable, skip_branch=target)
         if decisions is None:
             self.progress.show_repos([])
             return
@@ -278,6 +288,9 @@ class WorkspacesTab(ActionTabBase):
             repos,
             lambda n, p: self._switch_one(n, p, target, decisions.get(n)),
             f"Switched to workspace '{workspace}'.",
+            skip_fn=lambda n, _p: (
+                f"Skipped: {skip_reasons[n]}" if n in skip_reasons else False
+            ),
         )
 
     def _switch_one(self, name, path, target, decision):

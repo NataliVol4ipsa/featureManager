@@ -338,8 +338,10 @@ class ActionTabBase(ttk.Frame):
         "Copy all" button on the success banner (ok_repos is the (name, path)
         list, used to build e.g. "repo name - pr link" lines).
         *skip_fn(name, path)*, if given, is called (on the worker thread) before
-        each repo's action; repos for which it returns True are marked
-        "skipped" and their action is not run (they do not affect success).
+        each repo's action; if it returns a truthy value the repo is marked
+        "skipped" and its action is not run (skipped repos do not affect the
+        success banner). When *skip_fn* returns a non-empty string the string
+        is attached as a hover tooltip on the skipped status indicator.
         """
         self.errors.clear()
         self.progress.show_repos(
@@ -359,8 +361,10 @@ class ActionTabBase(ttk.Frame):
                 completion_copy_fn=None, skip_fn=None):
         all_ok = True
         for name, path in repos:
-            if skip_fn is not None and skip_fn(name, path):
-                self.after(0, self.progress.status, name, "skipped")
+            skip_result = skip_fn(name, path) if skip_fn is not None else False
+            if skip_result:
+                tooltip = skip_result if isinstance(skip_result, str) else None
+                self.after(0, self.progress.status, name, "skipped", tooltip)
                 if show_branch:
                     branch = git_current_branch(path) if is_git_repo(path) else ""
                     self.after(0, self.progress.set_branch, name, branch)

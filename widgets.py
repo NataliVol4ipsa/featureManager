@@ -199,13 +199,25 @@ class ProgressPanel(ttk.Frame):
         """Build a status-less table from bare repo *names* (no branch info)."""
         self.show_repos([(name, "") for name in names], with_status=False)
 
-    def status(self, name, state):
-        """Update a single repo row to the given state (see STATUS_STYLES)."""
+    def status(self, name, state, tooltip=None):
+        """Update a single repo row to the given state (see STATUS_STYLES).
+
+        If *tooltip* is given, attach a hover tooltip to the status indicator
+        explaining the state (used e.g. to show why a repo was skipped).
+        """
         indicator = self._indicators.get(name)
         if indicator is None:
             return
         symbol, color = STATUS_STYLES.get(state, STATUS_STYLES["pending"])
         indicator.config(text=symbol, foreground=color)
+        if tooltip:
+            # Replace any previous tooltip on the indicator so the reason stays
+            # accurate if the status changes across a batch.
+            existing = getattr(indicator, "_status_tip", None)
+            if existing is not None:
+                existing.text = tooltip
+            else:
+                indicator._status_tip = Tooltip(indicator, tooltip)
 
     def set_branch(self, name, branch):
         """Update a single repo's branch cell (e.g. after a checkout changes it)."""
