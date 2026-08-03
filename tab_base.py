@@ -94,7 +94,8 @@ class ActionTabBase(ttk.Frame):
         "move" only when *allow_move* is set (i.e. a new branch is being
         created). *note* is extra explanatory text shown in each modal. Repos
         that are not git repos, are clean, or are already on *skip_branch* are
-        skipped with no prompt.
+        skipped with no prompt. *skip_branch* may be a fixed branch name or a
+        callable ``fn(name) -> branch`` returning each repo's target branch.
 
         Returns a {repo_name: decision} dict (decision is "commit",
         "commit_restore", "delete" or "move"), or None if the user aborts/closes
@@ -107,7 +108,12 @@ class ActionTabBase(ttk.Frame):
             if not is_git_repo(path):
                 continue
             branch = git_current_branch(path)
-            if skip_branch is not None and branch == skip_branch:
+            # *skip_branch* may be a fixed branch name or a callable returning
+            # the per-repo target branch (workspaces can switch each repo to a
+            # differently named feature branch). Repos already on their target
+            # are skipped (no prompt).
+            target = skip_branch(name) if callable(skip_branch) else skip_branch
+            if target is not None and branch == target:
                 continue
             if not git_has_changes(path):
                 continue

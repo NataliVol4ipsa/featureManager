@@ -429,7 +429,7 @@ def ask_pbi_number(parent):
 
 
 # Combobox sentinel letting the user leave a PBI service out of the workspace.
-_SKIP_LABEL = "\u2014 skip this repo \u2014"
+_EXCLUDE_LABEL = "\u2014 exclude \u2014"
 
 
 def resolve_pbi_repos(parent, mappings, folders, nuget_folders=None):
@@ -439,15 +439,16 @@ def resolve_pbi_repos(parent, mappings, folders, nuget_folders=None):
     the synonyms dictionary; *folders* is the list of available local repository
     folder names. Each row shows the service name and a folder picker pre-set to
     the recognised folder (or blank/"unknown" when not recognised). A service can
-    also be left out of the workspace by choosing "skip this repo".
+    be left out of the workspace entirely by choosing "exclude", or included but
+    marked to ignore git commands via the per-row "Ignore git" checkbox.
 
     *nuget_folders*, if given, is the list of shared NuGet folder names; they are
     offered at the *end* of every folder dropdown so a service can be mapped to a
     shared NuGet repository as well.
 
     The Create button is disabled until every service is either mapped or
-    skipped. Returns a ``{service_name: folder_or_None}`` dict on submit (a
-    skipped service maps to ``None``), or ``None`` if cancelled.
+    excluded. Returns a ``{service_name: folder_or_None}`` dict on submit (an
+    excluded service maps to ``None``), or ``None`` if cancelled.
     """
     nuget_folders = list(nuget_folders or [])
 
@@ -466,9 +467,9 @@ def resolve_pbi_repos(parent, mappings, folders, nuget_folders=None):
     tk.Label(
         dialog,
         text="Unrecognised services are marked in red - pick the matching "
-             "folder, or choose \"skip this repo\" to leave it out. Shared "
-             "NuGet repositories are listed at the end of each dropdown. New "
-             "mappings are remembered for next time.",
+             "folder, or choose \"exclude\" to leave it out of the workspace. "
+             "Shared NuGet repositories are listed at the end of each dropdown. "
+             "New mappings are remembered for next time.",
         foreground="#666666", justify="left", wraplength=420,
     ).pack(padx=16, pady=(0, 8), anchor="w")
 
@@ -481,9 +482,9 @@ def resolve_pbi_repos(parent, mappings, folders, nuget_folders=None):
         row=0, column=1, sticky="w", padx=4, pady=(0, 4)
     )
 
-    # Dropdown order: "skip" first, then repository folders, then the shared
+    # Dropdown order: "exclude" first, then repository folders, then the shared
     # NuGet folders at the very end.
-    folder_values = [_SKIP_LABEL] + sorted(folders) + sorted(nuget_folders)
+    folder_values = [_EXCLUDE_LABEL] + sorted(folders) + sorted(nuget_folders)
     rows = []  # (service_name, combobox, status_label)
 
     for index, (service, folder) in enumerate(mappings, start=1):
@@ -506,8 +507,8 @@ def resolve_pbi_repos(parent, mappings, folders, nuget_folders=None):
         all_resolved = True
         for _service, combo, status in rows:
             value = combo.get()
-            if value == _SKIP_LABEL:
-                status.config(text="skipped", foreground="#666666")
+            if value == _EXCLUDE_LABEL:
+                status.config(text="excluded", foreground="#666666")
             elif value:
                 status.config(text="mapped", foreground="#1a9e1a")
             else:
@@ -521,9 +522,9 @@ def resolve_pbi_repos(parent, mappings, folders, nuget_folders=None):
 
     def _ok():
         resolved = {}
-        for service, combo, _ in rows:
+        for service, combo, _status in rows:
             value = combo.get()
-            resolved[service] = None if value == _SKIP_LABEL else value
+            resolved[service] = None if value == _EXCLUDE_LABEL else (value or None)
         result["value"] = resolved
         dialog.destroy()
 
@@ -538,6 +539,145 @@ def resolve_pbi_repos(parent, mappings, folders, nuget_folders=None):
     ttk.Button(bar, text="Cancel", command=_cancel).pack(side="left", padx=4)
 
     _refresh()
+    dialog.protocol("WM_DELETE_WINDOW", _cancel)
+    _center_over_parent(dialog, parent)
+    dialog.grab_set()
+    parent.wait_window(dialog)
+    return result["value"]
+
+
+def ask_workspace_branches(parent, repo_names, initial=""):
+    """Modal to name the workspace and set a feature branch per repository.
+
+    The first field is the workspace name; each following field is one repo's
+    feature branch, pre-filled with the workspace name and editable. A per-repo
+    "Ignore git" checkbox marks a repo that is included in the workspace but
+    excluded from git commands (it keeps its own branch). Returns
+    ``{"name": str, "branches": {repo: suffix}, "ignore_git": {repo: bool}}``
+    (branch suffixes exclude the "feature/" prefix), or None if cancelled.
+    """
+    dialog = tk.Toplevel(parent)
+    dialog.title("Name the feature workspace")
+    dialog.transient(parent.winfo_toplevel())
+    dialog.resizable(False, False)
+
+    tk.Label(
+        dialog,
+        text="Name the workspace, then set each repository's feature branch. "
+             "Branches are pre-filled with the workspace name - override any "
+             "that differ. Tick \"Ignore git\" to keep a repo on its own branch.",
+        justify="left", wraplength=460,
+    ).pack(padx=16, pady=(16, 8), anchor="w")
+
+    body = ttk.Frame(dialog)
+    body.pack(padx=16, fill="x")
+
+    ttk.Label(body, text="Workspace name", font=("", 9, "bold")).grid(
+        row=0, column=0, sticky="w", padx=4, pady=(0, 6)
+    )
+    name_var = tk.StringVar(value=initial)
+    name_entry = ttk.Entry(body, textvariable=name_var, width=40)
+    name_entry.grid(row=0, column=1, columnspan=2, sticky="w", padx=4, pady=(0, 6))
+    name_entry.focus_set()
+
+    ttk.Label(body, text="Repository", font=("", 9, "bold")).grid(
+        row=1, column=0, sticky="w", padx=4, pady=(4, 4)
+    )
+    ttk.Label(body, text="Feature branch", font=("", 9, "bold")).grid(
+        row=1, column=1, sticky="w", padx=4, pady=(4, 4)
+    )
+    ttk.Label(body, text="Ignore git", font=("", 9, "bold")).grid(
+        row=1, column=2, sticky="w", padx=4, pady=(4, 4)
+    )
+
+    branch_vars, ignore_vars, overridden = {}, {}, {}
+
+    for index, repo in enumerate(repo_names, start=2):
+        overridden[repo] = False
+        ttk.Label(body, text=repo, justify="left", wraplength=180).grid(
+            row=index, column=0, sticky="w", padx=4, pady=2
+        )
+        cell = ttk.Frame(body)
+        cell.grid(row=index, column=1, sticky="w", padx=4, pady=2)
+        ttk.Label(cell, text="feature/").pack(side="left")
+        branch_var = tk.StringVar(value=initial)
+        branch_entry = ttk.Entry(cell, textvariable=branch_var, width=28)
+        branch_entry.pack(side="left")
+        ignore_var = tk.BooleanVar(value=False)
+
+        # A manual keystroke stops this field from tracking the workspace name.
+        branch_entry.bind(
+            "<KeyRelease>", lambda _e, r=repo: overridden.__setitem__(r, True)
+        )
+
+        def _toggle(r=repo, e=branch_entry):
+            ignored = ignore_vars[r].get()
+            e.config(state="disabled" if ignored else "normal")
+            if not ignored and not overridden[r]:
+                branch_vars[r].set(name_var.get())
+
+        ttk.Checkbutton(body, variable=ignore_var, command=_toggle).grid(
+            row=index, column=2, padx=4, pady=2
+        )
+        branch_vars[repo] = branch_var
+        ignore_vars[repo] = ignore_var
+
+    def _sync_from_name(*_args):
+        current = name_var.get()
+        for repo in repo_names:
+            if not overridden[repo] and not ignore_vars[repo].get():
+                branch_vars[repo].set(current)
+
+    name_var.trace_add("write", _sync_from_name)
+
+    error_label = tk.Label(dialog, text="", foreground="#c0392b",
+                           justify="left", wraplength=460)
+    error_label.pack(padx=16, anchor="w")
+
+    result = {"value": None}
+
+    def _ok():
+        name = name_var.get().strip()
+        if not name:
+            error_label.config(text="Workspace name is required.")
+            return
+        if not is_valid_branch_name(name):
+            error_label.config(
+                text="Invalid workspace name: no spaces; use letters, digits, "
+                     ". _ / -"
+            )
+            return
+        branches, ignore_git = {}, {}
+        for repo in repo_names:
+            ignore = ignore_vars[repo].get()
+            ignore_git[repo] = ignore
+            if ignore:
+                continue
+            suffix = branch_vars[repo].get().strip()
+            if not suffix:
+                error_label.config(text=f"{repo}: a branch name is required.")
+                return
+            if not is_valid_branch_name(suffix):
+                error_label.config(
+                    text=f"{repo}: invalid branch name (no spaces; use letters, "
+                         "digits, . _ / -)."
+                )
+                return
+            branches[repo] = suffix
+        result["value"] = {
+            "name": name, "branches": branches, "ignore_git": ignore_git,
+        }
+        dialog.destroy()
+
+    def _cancel():
+        result["value"] = None
+        dialog.destroy()
+
+    bar = ttk.Frame(dialog)
+    bar.pack(padx=16, pady=12)
+    ttk.Button(bar, text="Create", command=_ok).pack(side="left", padx=4)
+    ttk.Button(bar, text="Cancel", command=_cancel).pack(side="left", padx=4)
+
     dialog.protocol("WM_DELETE_WINDOW", _cancel)
     _center_over_parent(dialog, parent)
     dialog.grab_set()
@@ -610,4 +750,181 @@ def edit_synonyms(parent):
     parent.wait_window(dialog)
     return result["saved"]
 
+
+def edit_branch_overrides(parent, workspace_name, entries):
+    """Modal editor for a workspace's per-repo feature branch configuration.
+
+    *entries* is the list returned by ``gitutils.workspace_branch_entries``
+    (dicts with ``name``, ``path``, ``branch`` and ``ignoreGit``). Each git
+    folder in the workspace gets a row where you can edit its feature branch and
+    tick "Ignore git" to exclude it from the workspace's git commands (the repo
+    then keeps whatever branch it is on). The branch field is pre-filled for
+    every git folder, even when it equals the default 'feature/<workspace>'.
+    Non-git folders are listed but not editable.
+
+    Returns the ``{folder: {...}}`` override map to persist - only repos that
+    ignore git or whose branch differs from the default are included - or None
+    if the dialog is cancelled.
+    """
+    from gitutils import is_git_repo, default_workspace_branch, IGNORE_GIT_KEY
+
+    default = default_workspace_branch(workspace_name)
+
+    dialog = tk.Toplevel(parent)
+    dialog.title(f"Manage workspace branches - {workspace_name}")
+    dialog.transient(parent.winfo_toplevel())
+    dialog.resizable(False, False)
+
+    tk.Label(
+        dialog,
+        text=f"Configure the feature branch for each repository in "
+             f"\"{workspace_name}\".",
+        justify="left", wraplength=460,
+    ).pack(padx=16, pady=(16, 4), anchor="w")
+    tk.Label(
+        dialog,
+        text=f"The default branch is \"{default}\". Change it for any repo whose "
+             "feature branch has a different name. Tick \"Ignore git\" for a repo "
+             "that keeps its own branch and should be left out of the git "
+             "commands. Only differences are saved.",
+        foreground="#666666", justify="left", wraplength=460,
+    ).pack(padx=16, pady=(0, 8), anchor="w")
+
+    table = ttk.Frame(dialog)
+    table.pack(padx=16, fill="x")
+    ttk.Label(table, text="Repository", font=("", 9, "bold")).grid(
+        row=0, column=0, sticky="w", padx=4, pady=(0, 4)
+    )
+    ttk.Label(table, text="Feature branch", font=("", 9, "bold")).grid(
+        row=0, column=1, sticky="w", padx=4, pady=(0, 4)
+    )
+    ttk.Label(table, text="Ignore git", font=("", 9, "bold")).grid(
+        row=0, column=2, sticky="w", padx=4, pady=(0, 4)
+    )
+
+    rows = []  # (name, is_git, branch_var, ignore_var)
+
+    for index, entry in enumerate(entries, start=1):
+        name = entry["name"]
+        is_git = is_git_repo(entry["path"])
+        ignore_var = tk.BooleanVar(value=bool(entry["ignoreGit"]) and is_git)
+        branch_var = tk.StringVar(
+            value=entry["branch"] if is_git else "(not a git repository)"
+        )
+
+        tk.Label(table, text=name, justify="left", wraplength=220).grid(
+            row=index, column=0, sticky="w", padx=4, pady=2
+        )
+        branch_entry = ttk.Entry(table, textvariable=branch_var, width=34)
+        branch_entry.grid(row=index, column=1, sticky="w", padx=4, pady=2)
+        ignore_check = ttk.Checkbutton(table, variable=ignore_var)
+        ignore_check.grid(row=index, column=2, padx=4, pady=2)
+
+        if not is_git:
+            branch_entry.config(state="disabled")
+            ignore_check.config(state="disabled")
+        else:
+            # Ignored repos keep their own branch, so disable the branch field
+            # while "Ignore git" is ticked.
+            def _toggle(e=branch_entry, v=ignore_var):
+                e.config(state="disabled" if v.get() else "normal")
+
+            ignore_check.config(command=_toggle)
+            _toggle()
+
+        rows.append((name, is_git, branch_var, ignore_var))
+
+    error_label = tk.Label(dialog, text="", foreground="#c0392b",
+                           justify="left", wraplength=460)
+    error_label.pack(padx=16, anchor="w")
+
+    result = {"value": None}
+
+    def _save():
+        overrides = {}
+        for name, is_git, branch_var, ignore_var in rows:
+            if not is_git:
+                continue
+            if ignore_var.get():
+                overrides[name] = {IGNORE_GIT_KEY: True}
+                continue
+            branch = branch_var.get().strip()
+            if not branch:
+                error_label.config(text=f"{name}: a branch name is required.")
+                return
+            if not is_valid_branch_name(branch):
+                error_label.config(
+                    text=f"{name}: invalid branch name (no spaces; use letters, "
+                         "digits, . _ / -)."
+                )
+                return
+            if branch != default:
+                overrides[name] = {"branch": branch}
+        result["value"] = overrides
+        dialog.destroy()
+
+    def _cancel():
+        result["value"] = None
+        dialog.destroy()
+
+    bar = ttk.Frame(dialog)
+    bar.pack(padx=16, pady=12)
+    ttk.Button(bar, text="Save", command=_save).pack(side="left", padx=4)
+    ttk.Button(bar, text="Cancel", command=_cancel).pack(side="left", padx=4)
+
+    dialog.protocol("WM_DELETE_WINDOW", _cancel)
+    _center_over_parent(dialog, parent)
+    dialog.grab_set()
+    parent.wait_window(dialog)
+    return result["value"]
+
+
+def ask_include_skipped(parent, action_label, names):
+    """Modal offering each skipped repo an "Include" checkbox (default off).
+
+    *names* is the list of repo folder names flagged as skipped. The repos are
+    normally left out of *action_label*; ticking a checkbox opts that repo back
+    in for this run only. Returns the set of names the user chose to include, or
+    None if the dialog is cancelled.
+    """
+    dialog = tk.Toplevel(parent)
+    dialog.title(f"Include skipped repositories - {action_label}")
+    dialog.transient(parent.winfo_toplevel())
+    dialog.resizable(False, False)
+
+    tk.Label(
+        dialog,
+        text=f"These repositories are flagged as skipped and are normally left "
+             f"out of \"{action_label}\". Tick any you want to include this time.",
+        justify="left", wraplength=420,
+    ).pack(padx=16, pady=(16, 8), anchor="w")
+
+    box = ttk.Frame(dialog)
+    box.pack(padx=16, fill="x")
+    checks = {}
+    for name in names:
+        var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(box, text=name, variable=var).pack(anchor="w", pady=1)
+        checks[name] = var
+
+    result = {"value": None}
+
+    def _ok():
+        result["value"] = {name for name, var in checks.items() if var.get()}
+        dialog.destroy()
+
+    def _cancel():
+        result["value"] = None
+        dialog.destroy()
+
+    bar = ttk.Frame(dialog)
+    bar.pack(padx=16, pady=12)
+    ttk.Button(bar, text="Continue", command=_ok).pack(side="left", padx=4)
+    ttk.Button(bar, text="Cancel", command=_cancel).pack(side="left", padx=4)
+
+    dialog.protocol("WM_DELETE_WINDOW", _cancel)
+    _center_over_parent(dialog, parent)
+    dialog.grab_set()
+    parent.wait_window(dialog)
+    return result["value"]
 

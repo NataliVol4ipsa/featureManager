@@ -15,11 +15,15 @@ from gitutils import (
     git_current_branch, create_feature_branch, rebase_on_master,
     git_branch_url, get_ado_pr_url, open_in_vscode,
     get_nuget_folders,
+    workspace_branch_entries, save_branch_overrides, IGNORE_GIT_KEY,
     SAVEPOS_MSG,
 )
 from widgets import WorkspaceList, Tooltip
 from tab_base import ActionTabBase
-from dialogs import ask_branch_name, ask_pbi_number, resolve_pbi_repos
+from dialogs import (
+    ask_branch_name, ask_pbi_number, resolve_pbi_repos, edit_branch_overrides,
+    ask_include_skipped, ask_workspace_branches,
+)
 import pbi
 
 # Base message for the savepos commits created when switching workspaces.
@@ -134,9 +138,23 @@ class WorkspacesTab(ActionTabBase):
                 "Switch to selected workspace",
                 self._action_switch,
                 "Checks out every repository in the selected workspace to its "
-                "'feature/<workspace>' branch. If the branch is missing in any "
-                "repo, nothing is switched. Uncommitted changes are handled per "
-                "repository (commit, delete, or abort).",
+                "feature branch (by default 'feature/<workspace>', or a per-repo "
+                "name set via 'Manage workspace branches'). Repos flagged as "
+                "skipped are still listed but left on their own branch. If a "
+                "repo's branch is missing it is marked skipped. Uncommitted "
+                "changes are handled per repository (commit, delete, or abort).",
+            ),
+            (
+                "Manage workspace branches",
+                self._action_manage_branches,
+                "Configures the feature branch used per repository in the "
+                "selected workspace. Lists every folder with its branch (default "
+                "'feature/<workspace>') and a Skip flag. Set a different branch "
+                "name for any repo whose branch differs from the workspace, or "
+                "tick Skip to exclude a repo from the branch-modifying actions "
+                "(commit, push, rebase, create PR) - it keeps its own branch. "
+                "Settings are stored in the .code-workspace file; folders you "
+                "add later in VS Code can be configured here too.",
             ),
             (
                 "Restore state before switch",
@@ -144,42 +162,44 @@ class WorkspacesTab(ActionTabBase):
                 "For the selected workspace's repositories, undoes the savepos "
                 "commit the app made (when switching workspaces or creating a "
                 "feature branch) and restores the exact staged/unstaged working "
-                "state. User commits are never touched.",
+                "state. User commits are never touched. Skipped repos are offered "
+                "as opt-in checkboxes (off by default).",
             ),
             (
                 "Rebase current branch on master",
                 self._action_rebase_on_master,
-                "For the selected workspace's repositories: updates master "
-                "(checkout + pull), returns to the feature branch and rebases "
-                "it onto master. Uncommitted changes are committed first (with "
-                "confirmation) and restored afterwards (staged/unstaged "
-                "preserved) on a clean rebase.",
+                "For the selected workspace's repositories (excluding skipped "
+                "repos): updates master (checkout + pull), returns to the "
+                "feature branch and rebases it onto master. Uncommitted changes "
+                "are committed first (with confirmation) and restored afterwards "
+                "(staged/unstaged preserved) on a clean rebase.",
             ),
             (
                 "Commit all changes",
                 self._action_commit_all,
-                "For the selected workspace's repositories: stages and commits "
-                "all uncommitted changes using a commit message you enter. If "
-                "the repos with changes are on different branches, a warning is "
-                "shown before committing.",
+                "For the selected workspace's repositories (excluding skipped "
+                "repos): stages and commits all uncommitted changes using a "
+                "commit message you enter. If the repos with changes are on "
+                "different branches, a warning is shown before committing.",
             ),
             (
                 "Git push",
                 self._action_push,
-                "For the selected workspace's repositories: pushes the current "
-                "branch to origin, creating the remote branch automatically if "
-                "it does not exist yet. No prompts are shown unless the repos "
-                "are on different branches, in which case a warning is shown "
-                "first.",
+                "For the selected workspace's repositories (excluding skipped "
+                "repos): pushes the current branch to origin, creating the "
+                "remote branch automatically if it does not exist yet. No "
+                "prompts are shown unless the repos are on different branches, "
+                "in which case a warning is shown first.",
             ),
             (
                 "Create pull request",
                 self._action_create_pr,
-                "For the selected workspace's repositories: creates an Azure "
-                "DevOps pull request to master from the current branch (it must "
-                "be pushed first). You choose one custom title or let each title "
-                "be auto-generated from its branch name (feature/123_my_desc "
-                "\u2192 feature(123) My desc). A link to each new PR is shown.",
+                "For the selected workspace's repositories (excluding skipped "
+                "repos): creates an Azure DevOps pull request to master from the "
+                "current branch (it must be pushed first). You choose one custom "
+                "title or let each title be auto-generated from its branch name "
+                "(feature/123_my_desc \u2192 feature(123) My desc). A link to "
+                "each new PR is shown.",
             ),
         ]
 
@@ -237,29 +257,88 @@ class WorkspacesTab(ActionTabBase):
             return False, workspace, repos
         return True, workspace, repos
 
+    def _selected_entries(self):
+        """Return (ok, workspace_name, entries_or_error).
+
+        *entries* is the per-repo branch map from ``workspace_branch_entries``
+        (each a dict with name, path, branch and ignoreGit) - the single source
+        of truth for which feature branch each repo of the workspace belongs to.
+        """
+        workspace = self.workspace_list.get_selected()
+        if not workspace:
+            return False, None, "no workspace selected"
+        ok, entries = workspace_branch_entries(workspace)
+        if not ok:
+            return False, workspace, entries
+        return True, workspace, entries
+
+    def _selected_active_repos(self):
+        """Return (ok, workspace_name, repos) with skipped repos excluded.
+
+        Used by the branch-modifying batch actions (commit, push, rebase, create
+        PR): a repo flagged "ignore git" keeps its own branch and must be left
+        out of operations that would act on the workspace's feature branch.
+        """
+        ok, workspace, entries = self._selected_entries()
+        if not ok:
+            return False, workspace, entries
+        repos = [(e["name"], e["path"]) for e in entries if not e["ignoreGit"]]
+        return True, workspace, repos
+
+    # -- Manage workspace branches ----------------------------------------- #
+    def _action_manage_branches(self):
+        """Open the per-repo feature-branch editor for the selected workspace."""
+        self.errors.clear()
+        ok, workspace, entries = self._selected_entries()
+        if not ok:
+            self.errors.add(entries)
+            return
+        if not entries:
+            self.errors.add("this workspace has no folders to configure")
+            return
+
+        overrides = edit_branch_overrides(self, workspace, entries)
+        if overrides is None:
+            return
+
+        ok_save, message = save_branch_overrides(workspace, overrides)
+        if not ok_save:
+            self.errors.add(message)
+            return
+        # Reflect any change in the Details table.
+        self._on_workspace_selected(workspace)
+
     # -- Switch to selected workspace -------------------------------------- #
     def _action_switch(self):
-        ok, workspace, repos = self._selected_repos()
+        ok, workspace, entries = self._selected_entries()
         self.errors.clear()
         if not ok:
             if workspace is not None:
-                self.errors.add(repos)
+                self.errors.add(entries)
             return
-        if not repos:
+        if not entries:
             return
 
-        target = f"feature/{workspace}"
-        self.show_repos_async(repos, with_status=True)
+        # Every folder is shown when switching (ignored repos are NOT hidden).
+        # A repo flagged "ignore git" keeps its own branch, so it is displayed
+        # but not checked out; the rest switch to their effective feature branch
+        # (default 'feature/<workspace>', or a per-repo override).
+        all_repos = [(e["name"], e["path"]) for e in entries]
+        branch_of = {e["name"]: e["branch"] for e in entries}
+        ignore_flag = {e["name"]: e["ignoreGit"] for e in entries}
+        self.show_repos_async(all_repos, with_status=True)
 
-        # Split the workspace folders into ones we can switch and ones we skip.
-        # Workspaces often bundle a docs folder (not a git repo) or repos where
-        # the feature branch was only created in some services. Rather than
-        # abort the whole batch, we switch what we can and mark the rest
-        # "skipped" (hover shows the reason).
+        # Split into repos we can switch and ones we skip. Workspaces often
+        # bundle a docs folder (not a git repo) or repos where the feature
+        # branch was only created in some services. Rather than abort the whole
+        # batch, we switch what we can and mark the rest "skipped".
         skip_reasons = {}
         switchable = []
-        for name, path in repos:
-            if not is_git_repo(path):
+        for name, path in all_repos:
+            target = branch_of[name]
+            if ignore_flag[name]:
+                skip_reasons[name] = "ignore git (keeps its own branch)"
+            elif not is_git_repo(path):
                 skip_reasons[name] = "not a git repository"
             elif not git_branch_exists(path, target):
                 skip_reasons[name] = f"branch '{target}' does not exist"
@@ -272,21 +351,23 @@ class WorkspacesTab(ActionTabBase):
 
         if not switchable:
             self.errors.add(
-                f"No repository in this workspace has branch '{target}'."
+                "No repository in this workspace has its feature branch."
             )
             return
 
         # Pre-check: decide what to do with uncommitted changes in each repo
-        # we're actually going to switch. Repos already on the target branch
+        # we're actually going to switch. Repos already on their target branch
         # are skipped entirely (no prompt, no checkout).
-        decisions = self.collect_change_decisions(switchable, skip_branch=target)
+        decisions = self.collect_change_decisions(
+            switchable, skip_branch=lambda n: branch_of.get(n)
+        )
         if decisions is None:
             self.progress.show_repos([])
             return
 
         self.run_repo_action(
-            repos,
-            lambda n, p: self._switch_one(n, p, target, decisions.get(n)),
+            all_repos,
+            lambda n, p: self._switch_one(n, p, branch_of[n], decisions.get(n)),
             f"Switched to workspace '{workspace}'.",
             skip_fn=lambda n, _p: (
                 f"Skipped: {skip_reasons[n]}" if n in skip_reasons else False
@@ -318,12 +399,29 @@ class WorkspacesTab(ActionTabBase):
 
     # -- Restore state before switch --------------------------------------- #
     def _action_restore(self):
-        ok, workspace, repos = self._selected_repos()
+        ok, workspace, entries = self._selected_entries()
         self.errors.clear()
         if not ok:
             if workspace is not None:
-                self.errors.add(repos)
+                self.errors.add(entries)
             return
+        if not entries:
+            return
+
+        # Non-ignored repos are always restored. Repos flagged "ignore git" keep
+        # their own branch, so they are offered as opt-in checkboxes (default
+        # off): the user can include a specific ignored repo when its savepos
+        # should be restored too.
+        repos = [(e["name"], e["path"]) for e in entries if not e["ignoreGit"]]
+        ignored = [(e["name"], e["path"]) for e in entries if e["ignoreGit"]]
+        if ignored:
+            included = ask_include_skipped(
+                self, "Restore state before switch", [n for n, _ in ignored]
+            )
+            if included is None:
+                return
+            repos += [(n, p) for n, p in ignored if n in included]
+
         if not repos:
             return
 
@@ -347,7 +445,7 @@ class WorkspacesTab(ActionTabBase):
 
     # -- Rebase current branch on master ----------------------------------- #
     def _action_rebase_on_master(self):
-        ok, workspace, repos = self._selected_repos()
+        ok, workspace, repos = self._selected_active_repos()
         self.errors.clear()
         if not ok:
             if workspace is not None:
@@ -380,7 +478,7 @@ class WorkspacesTab(ActionTabBase):
 
     # -- Commit all changes (custom message) ------------------------------- #
     def _action_commit_all(self):
-        ok, workspace, repos = self._selected_repos()
+        ok, workspace, repos = self._selected_active_repos()
         self.errors.clear()
         if not ok:
             if workspace is not None:
@@ -390,7 +488,7 @@ class WorkspacesTab(ActionTabBase):
 
     # -- Git push ---------------------------------------------------------- #
     def _action_push(self):
-        ok, workspace, repos = self._selected_repos()
+        ok, workspace, repos = self._selected_active_repos()
         self.errors.clear()
         if not ok:
             if workspace is not None:
@@ -400,7 +498,7 @@ class WorkspacesTab(ActionTabBase):
 
     # -- Create pull request ----------------------------------------------- #
     def _action_create_pr(self):
-        ok, workspace, repos = self._selected_repos()
+        ok, workspace, repos = self._selected_active_repos()
         self.errors.clear()
         if not ok:
             if workspace is not None:
@@ -588,8 +686,8 @@ class WorkspacesTab(ActionTabBase):
 
         # Remember every service->folder mapping the user resolved, including
         # shared NuGet folders, so the choice is preserved for next time.
-        # Skipped services (None) are not learned. Build the list first (not a
-        # generator) so add_synonym runs for *all* services - any() over a
+        # Excluded services (folder None) are not learned. Build the list first
+        # (not a generator) so add_synonym runs for *all* services - any() over a
         # generator would stop at the first newly added one.
         added = [
             pbi.add_synonym(synonyms, folder, service)
@@ -601,17 +699,9 @@ class WorkspacesTab(ActionTabBase):
             if not ok_save:
                 self.errors.add(message)
 
-        # Name the workspace, pre-filled from the PBI number and title.
-        initial = f"{result['id']}_{pbi.slugify_title(result['title'])}"
-        name = ask_branch_name(
-            self, title="Name the feature workspace",
-            prefix="feature/", initial=initial,
-        )
-        if not name:
-            return
-
-        # Build the repo list (de-duplicated, order preserved). Skipped services
-        # (None) are left out; shared NuGet folders resolve under NUGETS_ROOT.
+        # Build the repo list (de-duplicated, order preserved). Excluded services
+        # (folder None) are left out; shared NuGet folders resolve under
+        # NUGETS_ROOT.
         chosen, seen = [], set()
         for folder in resolved.values():
             if not folder or folder in seen:
@@ -626,18 +716,49 @@ class WorkspacesTab(ActionTabBase):
             )
             return
 
+        # Name the workspace and set a per-repo feature branch (pre-filled with
+        # the workspace name). Repos ticked "Ignore git" keep their own branch.
+        initial = f"{result['id']}_{pbi.slugify_title(result['title'])}"
+        info = ask_workspace_branches(
+            self, [n for n, _ in chosen], initial=initial
+        )
+        if info is None:
+            return
+        name = info["name"]
+
+        # Turn the per-repo choices into branch overrides: an "Ignore git" repo
+        # gets a skip override (and no branch); a repo whose branch differs from
+        # the workspace name gets a branch override. Matches are left implicit.
+        branch_suffix = {}
+        overrides, ignore_folders = {}, set()
+        for repo_name, _ in chosen:
+            if info["ignore_git"].get(repo_name):
+                overrides[repo_name] = {IGNORE_GIT_KEY: True}
+                ignore_folders.add(repo_name)
+                continue
+            suffix = info["branches"].get(repo_name, name)
+            branch_suffix[repo_name] = suffix
+            if suffix != name:
+                overrides[repo_name] = {"branch": f"feature/{suffix}"}
+
         ok_ws, message = write_workspace(name, chosen)
         if not ok_ws:
             self.errors.add(message)
             return
+
+        if overrides:
+            ok_ov, msg_ov = save_branch_overrides(name, overrides)
+            if not ok_ov:
+                self.errors.add(msg_ov)
         self._refresh()
 
-        # Create the matching 'feature/<name>' branch in every chosen repo, the
-        # same branch the workspace switches to. Uncommitted changes are handled
-        # per repo; repos already on the branch are skipped without a prompt.
-        target = f"feature/{name}"
+        # Create each repo's feature branch (its own name), except the ignored
+        # ones (they keep their own branch). Uncommitted changes are handled per
+        # repo; repos already on their branch are skipped without a prompt.
+        branch_repos = [(n, p) for n, p in chosen if n not in ignore_folders]
         decisions = self.collect_change_decisions(
-            chosen, allow_move=True, skip_branch=target
+            branch_repos, allow_move=True,
+            skip_branch=lambda n: f"feature/{branch_suffix.get(n, name)}",
         )
         if decisions is None:
             # User aborted branch creation; the workspace file was still written.
@@ -646,8 +767,14 @@ class WorkspacesTab(ActionTabBase):
 
         self.run_repo_action(
             chosen,
-            lambda n, p: create_feature_branch(n, p, name, decisions.get(n)),
-            f"{message}\nFeature branch '{target}' created in each repository.",
+            lambda n, p: create_feature_branch(
+                n, p, branch_suffix.get(n, name), decisions.get(n)
+            ),
+            f"{message}\nFeature branches created.",
+            skip_fn=lambda n, _p: (
+                "Skipped: ignore git (keeps its own branch)"
+                if n in ignore_folders else False
+            ),
         )
 
     # -- Create feature branch --------------------------------------------- #

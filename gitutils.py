@@ -154,6 +154,128 @@ def write_workspace(feature_name, repos):
 
 
 # --------------------------------------------------------------------------- #
+# Per-workspace feature-branch configuration
+# --------------------------------------------------------------------------- #
+#
+# A workspace's repositories normally all share one feature branch named after
+# the workspace ("feature/<workspace>"). Two things can differ per repo and are
+# stored in a custom "featureManagerSettings" block inside the .code-workspace
+# file (VS Code ignores unknown top-level keys, so it still opens cleanly):
+#   * a per-repo branch override (the repo's feature branch has a different
+#     name than the workspace), and
+#   * an "ignoreGit" flag marking a repo that keeps its own branch and is
+#     excluded from the workspace's git commands.
+# Only differences are written; a repo on the default branch needs no entry.
+
+# Top-level key in the .code-workspace file holding Feature Manager settings.
+FM_SETTINGS_KEY = "featureManagerSettings"
+
+# Sub-key holding the {folder: {...}} per-repo branch override map.
+BRANCH_OVERRIDES_KEY = "branchOverrides"
+
+# Override flag marking a repo as excluded from the workspace's git commands.
+IGNORE_GIT_KEY = "ignoreGit"
+
+
+def default_workspace_branch(workspace_name):
+    """Return the default feature branch for a workspace ('feature/<name>')."""
+    return f"feature/{workspace_name}"
+
+
+def _read_workspace_json(workspace_name):
+    """Return (ok, data_or_error) for a workspace's raw .code-workspace JSON."""
+    path = os.path.join(WORKSPACES_ROOT, f"{workspace_name}.code-workspace")
+    try:
+        with open(path, encoding="utf-8") as handle:
+            return True, json.load(handle)
+    except (OSError, json.JSONDecodeError) as exc:
+        return False, f"could not read workspace: {exc}"
+
+
+def read_branch_overrides(workspace_name):
+    """Return the {folder: {...}} branch-override map from a workspace, or {}.
+
+    A missing file, missing section or malformed data all yield an empty dict so
+    callers can treat "no overrides" and "unreadable" the same (defaults apply).
+    """
+    ok, data = _read_workspace_json(workspace_name)
+    if not ok or not isinstance(data, dict):
+        return {}
+    section = data.get(FM_SETTINGS_KEY)
+    if not isinstance(section, dict):
+        return {}
+    overrides = section.get(BRANCH_OVERRIDES_KEY)
+    return overrides if isinstance(overrides, dict) else {}
+
+
+def workspace_branch_entries(workspace_name):
+    """Return (ok, entries) describing every folder of a workspace.
+
+    Each entry is a dict with:
+      * ``name`` / ``path`` - the folder name and absolute path,
+      * ``branch`` - the effective feature branch (the per-repo override if set,
+        otherwise 'feature/<workspace>'), and
+      * ``ignoreGit`` - True when the repo is excluded from the workspace's git
+        commands (it keeps whatever branch it is on).
+
+    This is the single source of truth every workspace git feature uses to
+    decide which branch a repo belongs to.
+    """
+    ok, repos = read_workspace_repos(workspace_name)
+    if not ok:
+        return False, repos
+    overrides = read_branch_overrides(workspace_name)
+    default = default_workspace_branch(workspace_name)
+    entries = []
+    for name, path in repos:
+        override = overrides.get(name)
+        if not isinstance(override, dict):
+            override = {}
+        entries.append({
+            "name": name,
+            "path": path,
+            "branch": override.get("branch") or default,
+            "ignoreGit": bool(override.get(IGNORE_GIT_KEY)),
+        })
+    return True, entries
+
+
+def save_branch_overrides(workspace_name, overrides):
+    """Persist the branch-override map into a workspace file. Returns (ok, msg).
+
+    The existing folders / settings blocks are preserved; only the
+    featureManagerSettings.branchOverrides section is replaced. An empty
+    *overrides* removes the section (and an emptied featureManagerSettings block)
+    so the file stays clean.
+    """
+    ok, data = _read_workspace_json(workspace_name)
+    if not ok:
+        return False, data
+    if not isinstance(data, dict):
+        data = {}
+
+    section = data.get(FM_SETTINGS_KEY)
+    if not isinstance(section, dict):
+        section = {}
+    if overrides:
+        section[BRANCH_OVERRIDES_KEY] = overrides
+    else:
+        section.pop(BRANCH_OVERRIDES_KEY, None)
+    if section:
+        data[FM_SETTINGS_KEY] = section
+    else:
+        data.pop(FM_SETTINGS_KEY, None)
+
+    target = os.path.join(WORKSPACES_ROOT, f"{workspace_name}.code-workspace")
+    try:
+        with open(target, "w", encoding="utf-8") as handle:
+            json.dump(data, handle, indent=4)
+        return True, "Branch overrides saved."
+    except OSError as exc:
+        return False, f"could not save branch overrides: {exc}"
+
+
+# --------------------------------------------------------------------------- #
 # Git Bash terminal launching
 # --------------------------------------------------------------------------- #
 
