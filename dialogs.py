@@ -10,11 +10,13 @@ from tkinter import ttk
 
 from gitutils import is_valid_branch_name
 import pbi
+import theme
 
 
 def _center_over_parent(dialog, parent):
     """Position *dialog* centred over the parent's top-level window."""
     dialog.update_idletasks()  # ensure the dialog has its real size
+    theme.enable_dark_titlebar(dialog)  # dark title bar to match the app
     top = parent.winfo_toplevel()
     px, py = top.winfo_rootx(), top.winfo_rooty()
     pw, ph = top.winfo_width(), top.winfo_height()
@@ -63,16 +65,16 @@ def ask_change_decision(parent, name, options, on_master=False, note=None):
     if on_master:
         warn = ttk.Frame(text)
         warn.pack(anchor="w", pady=(8, 0))
-        tk.Label(warn, text="\u26A0", foreground="#c0392b",
+        tk.Label(warn, text="\u26A0", foreground=theme.ERROR,
                  font=("", 11, "bold")).pack(side="left", padx=(0, 4))
         master_line = ttk.Frame(warn)
         master_line.pack(side="left")
         tk.Label(master_line, text="This repository is on the ",
-                 foreground="#c0392b").pack(side="left")
-        tk.Label(master_line, text="master", foreground="#c0392b",
+                 foreground=theme.ERROR).pack(side="left")
+        tk.Label(master_line, text="master", foreground=theme.ERROR,
                  font=("", 9, "bold")).pack(side="left")
         tk.Label(master_line, text=" branch. Committing on master is not allowed.",
-                 foreground="#c0392b").pack(side="left")
+                 foreground=theme.ERROR).pack(side="left")
 
     # Optional explanatory note (e.g. that a rebase requires committing first).
     if note:
@@ -127,7 +129,7 @@ def ask_branch_name(parent, title="Create feature branch", prefix="feature/",
         entry.insert(0, initial)
     entry.focus_set()
 
-    error_label = tk.Label(dialog, text="", foreground="#c0392b")
+    error_label = tk.Label(dialog, text="", foreground=theme.ERROR)
     error_label.pack(padx=16, anchor="w")
 
     result = {"name": None}
@@ -185,9 +187,9 @@ def ask_commit_message(parent, repo_count, branch_warning=None):
     if branch_warning:
         warn = ttk.Frame(dialog)
         warn.pack(padx=16, pady=(0, 4), anchor="w")
-        tk.Label(warn, text="\u26A0", foreground="#c0392b",
+        tk.Label(warn, text="\u26A0", foreground=theme.ERROR,
                  font=("", 11, "bold")).pack(side="left", padx=(0, 4))
-        tk.Label(warn, text=branch_warning, foreground="#c0392b",
+        tk.Label(warn, text=branch_warning, foreground=theme.ERROR,
                  justify="left", wraplength=360).pack(side="left")
 
     tk.Label(dialog, text="Commit message:").pack(padx=16, anchor="w")
@@ -195,7 +197,7 @@ def ask_commit_message(parent, repo_count, branch_warning=None):
     entry.pack(padx=16, pady=(0, 4), fill="x")
     entry.focus_set()
 
-    error_label = tk.Label(dialog, text="", foreground="#c0392b")
+    error_label = tk.Label(dialog, text="", foreground=theme.ERROR)
     error_label.pack(padx=16, anchor="w")
 
     result = {"message": None}
@@ -246,10 +248,10 @@ def ask_branch_warning(parent, repo_count, title="Push all changes",
 
     warn = ttk.Frame(dialog)
     warn.pack(padx=16, pady=(0, 4), anchor="w")
-    tk.Label(warn, text="\u26A0", foreground="#c0392b",
+    tk.Label(warn, text="\u26A0", foreground=theme.ERROR,
              font=("", 11, "bold")).pack(side="left", padx=(0, 4))
     tk.Label(warn, text="The selected repositories are not all on the same branch.",
-             foreground="#c0392b", justify="left", wraplength=360).pack(side="left")
+             foreground=theme.ERROR, justify="left", wraplength=360).pack(side="left")
 
     skip_empty = tk.BooleanVar(value=True)
     ttk.Checkbutton(
@@ -317,7 +319,7 @@ def ask_pr_details(parent, repo_count):
     tk.Label(
         dialog,
         text="e.g. feature/123_my_description \u2192 feature(123) My description",
-        foreground="#666666",
+        foreground=theme.FG_MUTED,
     ).pack(padx=36, anchor="w")
 
     ttk.Radiobutton(
@@ -344,7 +346,7 @@ def ask_pr_details(parent, repo_count):
         text="Create as draft",
     ).pack(padx=16, pady=(4, 0), anchor="w")
 
-    error_label = tk.Label(dialog, text="", foreground="#c0392b")
+    error_label = tk.Label(dialog, text="", foreground=theme.ERROR)
     error_label.pack(padx=16, anchor="w")
 
     _sync_title_state()
@@ -402,7 +404,7 @@ def ask_pbi_number(parent):
     entry.pack(padx=16, pady=(0, 4), anchor="w")
     entry.focus_set()
 
-    error_label = tk.Label(dialog, text="", foreground="#c0392b")
+    error_label = tk.Label(dialog, text="", foreground=theme.ERROR)
     error_label.pack(padx=16, anchor="w")
 
     result = {"id": None}
@@ -477,7 +479,7 @@ def resolve_pbi_repos(parent, mappings, folders, nuget_folders=None):
              "folder, or choose \"exclude\" to leave it out of the workspace. "
              "Shared NuGet repositories are listed at the end of each dropdown. "
              "New mappings are remembered for next time.",
-        foreground="#666666", justify="left", wraplength=420,
+        foreground=theme.FG_MUTED, justify="left", wraplength=420,
     ).pack(padx=16, pady=(0, 8), anchor="w")
 
     table = ttk.Frame(dialog)
@@ -515,11 +517,11 @@ def resolve_pbi_repos(parent, mappings, folders, nuget_folders=None):
         for _service, combo, status in rows:
             value = combo.get()
             if value == _EXCLUDE_LABEL:
-                status.config(text="excluded", foreground="#666666")
+                status.config(text="excluded", foreground=theme.FG_MUTED)
             elif value:
-                status.config(text="mapped", foreground="#1a9e1a")
+                status.config(text="mapped", foreground=theme.SUCCESS)
             else:
-                status.config(text="unknown", foreground="#c0392b")
+                status.config(text="unknown", foreground=theme.ERROR)
                 all_resolved = False
         if create_button is not None:
             create_button.config(state="normal" if all_resolved else "disabled")
@@ -629,15 +631,7 @@ def ask_workspace_branches(parent, repo_names, initial=""):
         branch_vars[repo] = branch_var
         ignore_vars[repo] = ignore_var
 
-    def _sync_from_name(*_args):
-        current = name_var.get()
-        for repo in repo_names:
-            if not overridden[repo] and not ignore_vars[repo].get():
-                branch_vars[repo].set(current)
-
-    name_var.trace_add("write", _sync_from_name)
-
-    error_label = tk.Label(dialog, text="", foreground="#c0392b",
+    error_label = tk.Label(dialog, text="", foreground=theme.ERROR,
                            justify="left", wraplength=460)
     error_label.pack(padx=16, anchor="w")
 
@@ -715,7 +709,7 @@ def edit_synonyms(parent):
     text.insert("1.0", json.dumps(pbi.load_synonyms(), indent=4, sort_keys=True))
     text.focus_set()
 
-    error_label = tk.Label(dialog, text="", foreground="#c0392b",
+    error_label = tk.Label(dialog, text="", foreground=theme.ERROR,
                            justify="left", wraplength=440)
     error_label.pack(padx=16, anchor="w")
 
@@ -794,7 +788,7 @@ def edit_branch_overrides(parent, workspace_name, entries):
              "feature branch has a different name. Tick \"Ignore git\" for a repo "
              "that keeps its own branch and should be left out of the git "
              "commands. Only differences are saved.",
-        foreground="#666666", justify="left", wraplength=460,
+        foreground=theme.FG_MUTED, justify="left", wraplength=460,
     ).pack(padx=16, pady=(0, 8), anchor="w")
 
     table = ttk.Frame(dialog)
@@ -841,7 +835,7 @@ def edit_branch_overrides(parent, workspace_name, entries):
 
         rows.append((name, is_git, branch_var, ignore_var))
 
-    error_label = tk.Label(dialog, text="", foreground="#c0392b",
+    error_label = tk.Label(dialog, text="", foreground=theme.ERROR,
                            justify="left", wraplength=460)
     error_label.pack(padx=16, anchor="w")
 

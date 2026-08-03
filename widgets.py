@@ -6,6 +6,8 @@ import webbrowser
 from datetime import datetime
 from tkinter import ttk
 
+import theme
+
 
 class Tooltip:
     """Lightweight hover tooltip for any widget (used for action button hints)."""
@@ -28,7 +30,8 @@ class Tooltip:
         self._tip.wm_geometry(f"+{x}+{y}")
         tk.Label(
             self._tip, text=self.text, justify="left",
-            background="#ffffe0", relief="solid", borderwidth=1,
+            background=theme.TOOLTIP_BG, foreground=theme.TOOLTIP_FG,
+            relief="solid", borderwidth=1,
             padx=6, pady=3, wraplength=260,
         ).pack()
 
@@ -67,11 +70,11 @@ class SelectableLabel(tk.Entry):
 
 # Visual indicators for each repository row, keyed by status.
 STATUS_STYLES = {
-    "pending":     ("\u25CB", "gray"),     # hollow circle
-    "in-progress": ("\u25CF", "#d98c00"),  # filled circle, amber
-    "done":        ("\u25CF", "#1a9e1a"),  # filled circle, green
-    "error":       ("\u25CF", "#c0392b"),  # filled circle, red
-    "skipped":     ("\u2013", "#888888"),  # en dash, gray (no-op / skipped)
+    "pending":     ("\u25CB", theme.FG_MUTED),   # hollow circle
+    "in-progress": ("\u25CF", theme.WARNING),    # filled circle, amber
+    "done":        ("\u25CF", theme.SUCCESS),    # filled circle, green
+    "error":       ("\u25CF", theme.ERROR),      # filled circle, red
+    "skipped":     ("\u2013", theme.FG_MUTED),   # en dash, gray (no-op / skipped)
 }
 
 
@@ -91,7 +94,7 @@ class ProgressPanel(ttk.Frame):
         # repo list and hidden by default.
         self._banner_frame = ttk.Frame(self)
         self._banner = tk.Label(self._banner_frame, text="",
-                                foreground="#1a9e1a", font=("", 10, "bold"),
+                                foreground=theme.SUCCESS, font=("", 10, "bold"),
                                 anchor="w")
         self._banner.pack(side="left")
         self._copy_button = ttk.Button(self._banner_frame, text="Copy all",
@@ -239,7 +242,7 @@ class ProgressPanel(ttk.Frame):
         if label is None or not url:
             return
         label.config(
-            text=text, foreground="#0a6cff", cursor="hand2",
+            text=text, foreground=theme.LINK, cursor="hand2",
             font=("", 9, "underline"),
         )
         # Rebind to the latest URL (avoid stacking handlers if called twice).
@@ -305,7 +308,7 @@ class ErrorList(ttk.Frame):
         super().__init__(master, **kwargs)
 
         self._text = tk.Text(self, height=6, wrap="word", state="disabled",
-                             foreground="#c0392b")
+                             foreground=theme.ERROR)
         scrollbar = ttk.Scrollbar(self, orient="vertical",
                                   command=self._text.yview)
         self._text.configure(yscrollcommand=scrollbar.set)

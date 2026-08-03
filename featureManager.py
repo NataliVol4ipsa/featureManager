@@ -13,12 +13,15 @@ are imported directly). This file only wires the two top-level tabs together:
 Shared building blocks live in: config, gitutils, widgets, tab_base, dialogs.
 """
 
+import os
+import sys
 import tkinter as tk
 from tkinter import ttk
 
 from manual_tab import ManualTab
 from workspaces_tab import WorkspacesTab
 from dialogs import edit_synonyms
+import theme
 
 
 class FeatureManagerApp(ttk.Notebook):
@@ -50,16 +53,73 @@ def main():
     root.title("Feature Manager")
     root.geometry("1160x740")
 
-    # Menu bar with a Settings menu for editing the repository synonyms used by
-    # the "Create workspace from PBI" action.
-    menubar = tk.Menu(root)
-    settings_menu = tk.Menu(menubar, tearoff=0)
-    settings_menu.add_command(
-        label="Repository synonyms\u2026",
-        command=lambda: edit_synonyms(root),
+    # Theme (dark or light). Persisted preference; must run before any widgets.
+    theme.apply_theme(root)
+
+    # Custom menu bar. The native Windows menu bar paints its empty strip with
+    # the system brush, and a native popup menu draws a white window frame -
+    # neither is themeable. So both the bar and its dropdown are hand-built.
+    menubar = tk.Frame(root, background=theme.BG_PANEL)
+    menubar.pack(side="top", fill="x")
+    settings_item = tk.Label(menubar, text="Settings", padx=10, pady=3,
+                             background=theme.BG_PANEL, foreground=theme.FG)
+    settings_item.pack(side="left")
+
+    def _toggle_theme():
+        theme.save_dark_preference(not theme.load_dark_preference())
+        # Re-launch so every widget is rebuilt cleanly with the new palette.
+        os.execv(sys.executable, [sys.executable, *sys.argv])
+
+    def _settings_entries():
+        return [
+            ("Repository synonyms\u2026", lambda: edit_synonyms(root), False),
+            ("Dark theme", _toggle_theme, theme.load_dark_preference()),
+        ]
+
+    def _post_settings(_event=None):
+        popup = tk.Toplevel(root)
+        popup.overrideredirect(True)  # no OS title bar / border
+        popup.configure(background=theme.BORDER)  # shows as a 1px border
+        popup.geometry(
+            f"+{settings_item.winfo_rootx()}"
+            f"+{settings_item.winfo_rooty() + settings_item.winfo_height()}"
+        )
+        inner = tk.Frame(popup, background=theme.BG_PANEL)
+        inner.pack(padx=1, pady=1)
+
+        def _dismiss(_e=None):
+            if popup.winfo_exists():
+                popup.destroy()
+
+        for label, command, checked in _settings_entries():
+            entry = tk.Label(
+                inner, text=("\u2713  " if checked else "     ") + label,
+                anchor="w", background=theme.BG_PANEL, foreground=theme.FG,
+                padx=12, pady=5,
+            )
+            entry.pack(fill="x")
+            entry.bind("<Enter>",
+                       lambda _e, w=entry: w.config(background=theme.ACCENT))
+            entry.bind("<Leave>",
+                       lambda _e, w=entry: w.config(background=theme.BG_PANEL))
+            entry.bind("<Button-1>",
+                       lambda _e, c=command: (_dismiss(), c()))
+
+        # A click anywhere else (grabbed) or losing focus closes the menu.
+        popup.bind("<Button-1>", _dismiss)
+        inner.bind("<Button-1>", _dismiss)
+        popup.bind("<Escape>", _dismiss)
+        popup.bind("<FocusOut>", _dismiss)
+        popup.grab_set()
+        popup.focus_set()
+
+    settings_item.bind("<Button-1>", _post_settings)
+    settings_item.bind(
+        "<Enter>", lambda _e: settings_item.config(background=theme.BG_RAISED)
     )
-    menubar.add_cascade(label="Settings", menu=settings_menu)
-    root.config(menu=menubar)
+    settings_item.bind(
+        "<Leave>", lambda _e: settings_item.config(background=theme.BG_PANEL)
+    )
 
     FeatureManagerApp(root)
 
@@ -69,9 +129,13 @@ def main():
         text="Feature Manager  -  by Nataliia Kolosova",
         anchor="e",
         padding=(8, 2),
-        foreground="gray40",
+        foreground=theme.FG_MUTED,
     )
     footer.pack(side="bottom", fill="x")
+
+    # Dark Windows title bar (matches Explorer's dark header). Applied after the
+    # window is mapped so it has a real HWND to set the DWM attribute on.
+    root.after(0, lambda: theme.enable_dark_titlebar(root))
 
     root.mainloop()
 
