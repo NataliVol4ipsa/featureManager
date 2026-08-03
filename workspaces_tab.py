@@ -641,6 +641,10 @@ class WorkspacesTab(ActionTabBase):
                 urls[n] for n, _ in ok_repos if urls.get(n)
             ],
             completion_open_label="Open pipelines",
+            completion_copy_fn=lambda ok_repos: "\n".join(
+                f"{n} - {urls[n]}" for n, _ in ok_repos if urls.get(n)
+            ),
+            completion_copy_label="Copy links",
         )
 
     # -- Open in Git Bash tabs --------------------------------------------- #

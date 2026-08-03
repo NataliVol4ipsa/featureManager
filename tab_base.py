@@ -391,7 +391,8 @@ class ActionTabBase(ttk.Frame):
                         link_fn=None, link_text="View branch",
                         link_header="Link", show_branch=True,
                         completion_copy_fn=None, skip_fn=None,
-                        completion_open_fn=None, completion_open_label="Open all"):
+                        completion_open_fn=None, completion_open_label="Open all",
+                        completion_copy_label="Copy all"):
         """Run *per_repo_fn(name, path)* for each repo off the UI thread.
 
         *per_repo_fn* must return (ok, error_message). The table shows each
@@ -422,14 +423,16 @@ class ActionTabBase(ttk.Frame):
             target=self._worker,
             args=(repos, per_repo_fn, success_msg, on_complete, link_fn,
                   link_text, show_branch, completion_copy_fn, skip_fn,
-                  completion_open_fn, completion_open_label),
+                  completion_open_fn, completion_open_label,
+                  completion_copy_label),
             daemon=True,
         ).start()
 
     def _worker(self, repos, per_repo_fn, success_msg, on_complete=None,
                 link_fn=None, link_text="View branch", show_branch=True,
                 completion_copy_fn=None, skip_fn=None,
-                completion_open_fn=None, completion_open_label="Open all"):
+                completion_open_fn=None, completion_open_label="Open all",
+                completion_copy_label="Copy all"):
         all_ok = True
         for name, path in repos:
             skip_result = skip_fn(name, path) if skip_fn is not None else False
@@ -463,7 +466,7 @@ class ActionTabBase(ttk.Frame):
             copy_text = completion_copy_fn(repos) if completion_copy_fn else None
             open_urls = completion_open_fn(repos) if completion_open_fn else None
             self.after(0, self.progress.show_completion, success_msg, copy_text,
-                       open_urls, completion_open_label)
+                       open_urls, completion_open_label, completion_copy_label)
         if on_complete is not None:
             self.after(0, on_complete, all_ok)
 

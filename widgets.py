@@ -247,10 +247,10 @@ class ProgressPanel(ttk.Frame):
         label.bind("<Button-1>", lambda _e, u=url: webbrowser.open(u))
 
     def show_completion(self, text, copy_text=None, open_urls=None,
-                        open_label="Open all"):
+                        open_label="Open all", copy_label="Copy all"):
         """Reveal the green completion banner above the repo list.
 
-        When *copy_text* is given, a "Copy all" button is shown next to the
+        When *copy_text* is given, a *copy_label* button is shown next to the
         banner that copies that text to the clipboard (used to copy every repo's
         PR link as "repo name - pr link" lines). When *open_urls* is given, an
         *open_label* button is shown that opens every URL in the browser (used to
@@ -259,7 +259,7 @@ class ProgressPanel(ttk.Frame):
         self._banner.config(text=text)
         if copy_text:
             self._copy_payload = copy_text
-            self._copy_button.config(text="Copy all")
+            self._copy_button.config(text=copy_label)
             self._copy_button.pack(side="left", padx=(10, 0))
         else:
             self._copy_payload = ""
