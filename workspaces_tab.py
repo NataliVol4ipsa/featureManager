@@ -25,6 +25,7 @@ from dialogs import (
     ask_include_skipped, ask_workspace_branches, ask_missing_remote_branches,
 )
 import pbi
+import packages
 from pipelines import run_pipeline_for_repo
 
 # Base message for the savepos commits created when switching workspaces.
@@ -120,8 +121,51 @@ class WorkspacesTab(ActionTabBase):
         return [
             ("Local", self._local_actions()),
             ("Remote", self._remote_actions()),
+            ("Packages", self._package_actions()),
             ("Pipelines", self._pipeline_actions()),
             ("Open", self._open_actions()),
+        ]
+
+    def _package_actions(self):
+        return [
+            (
+                "Bump NuGet packages (public)",
+                self._action_bump_public,
+                "For the selected workspace's repositories (excluding skipped "
+                "repos): reads each repo's root Directory.Packages.props "
+                "(Central Package Management), checks every PackageVersion "
+                "against the public NuGet feed (nuget.org) and rewrites any that "
+                "have a newer stable release. Prerelease versions are ignored; "
+                "packages not found on the public feed (e.g. private-feed "
+                "packages) are left untouched. The file is edited in place - "
+                "resulting build errors are ignored, so review and commit the "
+                "changes yourself. A per-repo report of the bumps is offered to "
+                "copy when the run finishes.",
+            ),
+            (
+                "Bump NuGet packages (private)",
+                self._action_bump_private,
+                "For the selected workspace's repositories (excluding skipped "
+                "repos): bumps only packages hosted on the private Azure DevOps "
+                "Artifacts feed(s) declared in each repo's nuget.config "
+                "(sources starting with https://pkgs.dev.azure.com). The feed is "
+                "queried with an Azure CLI token, so run 'az login' first. "
+                "Packages only on the public feed are left untouched. The props "
+                "file is edited in place (build errors ignored); a per-repo "
+                "report of the bumps is offered to copy when the run finishes.",
+            ),
+            (
+                "Bump all NuGet packages",
+                self._action_bump_all,
+                "For the selected workspace's repositories (excluding skipped "
+                "repos): bumps every PackageVersion to the highest stable "
+                "release found across both the public NuGet feed (nuget.org) and "
+                "the private Azure DevOps Artifacts feed(s) from each repo's "
+                "nuget.config. Requires 'az login' for the private feed. "
+                "Prerelease versions are ignored; the props file is edited in "
+                "place (build errors ignored) and a per-repo report of the bumps "
+                "is offered to copy when the run finishes.",
+            ),
         ]
 
     def _local_actions(self):
@@ -645,6 +689,116 @@ class WorkspacesTab(ActionTabBase):
                 f"{n} - {urls[n]}" for n, _ in ok_repos if urls.get(n)
             ),
             completion_copy_label="Copy links",
+        )
+
+    # -- Bump NuGet packages ----------------------------------------------- #
+    def _action_bump_public(self):
+        self._bump_packages(include_public=True, include_private=False,
+                            label="public feed")
+
+    def _action_bump_private(self):
+        self._bump_packages(include_public=False, include_private=True,
+                            label="private feed")
+
+    def _action_bump_all(self):
+        self._bump_packages(include_public=True, include_private=True,
+                            label="all feeds")
+
+    def _bump_packages(self, include_public, include_private, label):
+        """Bump each active repo's out-of-date package versions for *label* feeds.
+
+        Operates on the workspace's non-skipped repositories. Repos without a
+        Directory.Packages.props in their root are marked skipped. When the
+        private feed is involved an Azure CLI token is fetched once up front (on
+        a background thread) and the run is aborted with a clear message if the
+        user is not logged in. Each repo's props file is rewritten in place; a
+        per-repo report of the applied bumps is offered to copy on completion.
+        """
+        self.errors.clear()
+        ok, workspace, repos = self._selected_active_repos()
+        if not ok:
+            if workspace is not None:
+                self.errors.add(repos)
+            return
+        if not repos:
+            self.errors.add(
+                "this workspace has no repositories to bump packages for"
+            )
+            return
+
+        self.show_repos_async(repos, with_status=True)
+
+        # The private feed needs an Azure CLI token; fetch it once (off the UI
+        # thread) so a "not logged in" failure is reported once, not per repo.
+        # A reachability healthcheck follows the token (the private feed may need
+        # the VPN), so an unreachable feed is reported before any bump is tried.
+        if include_private:
+            def _prepare():
+                token = packages.get_azure_devops_token()
+                feed_error = ""
+                if token:
+                    ok_hc, feed_error = packages.healthcheck_private_feeds(
+                        [path for _, path in repos], token
+                    )
+                    if ok_hc:
+                        feed_error = ""
+                self.after(0, self._start_bump, repos, include_public,
+                           include_private, label, token, feed_error)
+            threading.Thread(target=_prepare, daemon=True).start()
+        else:
+            self._start_bump(repos, include_public, include_private, label, None)
+
+    def _start_bump(self, repos, include_public, include_private, label, token,
+                    feed_error=""):
+        """Run the actual per-repo bump once any required token/healthcheck passes."""
+        if include_private and not token:
+            self.progress.show_repos([])
+            self.errors.add(
+                "could not get an Azure DevOps token - run 'az login' first"
+            )
+            return
+        if include_private and feed_error:
+            self.progress.show_repos([])
+            self.errors.add(feed_error)
+            return
+
+        reports = {}
+        self._bump_reports = reports
+
+        def _skip(name, path):
+            if not packages.find_props_file(path):
+                return "no Directory.Packages.props in repo root"
+            return ""
+
+        def _bump(name, path):
+            ok_bump, result = packages.bump_repo_packages(
+                path, include_public=include_public,
+                include_private=include_private, token=token,
+            )
+            if not ok_bump:
+                return False, result
+            reports[name] = result
+            return True, ""
+
+        def _report_text(ok_repos):
+            lines = []
+            for name, _ in ok_repos:
+                bumps = reports.get(name, [])
+                if bumps:
+                    lines.append(name)
+                    for package_id, old, new in bumps:
+                        lines.append(f"  {package_id}: {old} -> {new}")
+                else:
+                    lines.append(f"{name} (up to date)")
+            return "\n".join(lines)
+
+        self.run_repo_action(
+            repos,
+            _bump,
+            f"Package versions bumped ({label}).",
+            skip_fn=_skip,
+            completion_copy_fn=_report_text,
+            completion_copy_label="Copy report",
         )
 
     # -- Open in Git Bash tabs --------------------------------------------- #
