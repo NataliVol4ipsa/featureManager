@@ -5,6 +5,7 @@ and a generic background runner that drives the per-repo status indicators.
 """
 
 import threading
+import tkinter as tk
 from tkinter import ttk
 
 from widgets import Tooltip, ProgressPanel, ErrorList
@@ -58,10 +59,39 @@ class ActionTabBase(ttk.Frame):
         *sections* is a list of (title, actions) pairs, where *actions* is the
         usual list of (label, command, hint) tuples. Each section becomes its
         own labelled frame, stacked top-to-bottom in a single column so related
-        actions are visually grouped.
+        actions are visually grouped. The whole column lives inside a vertically
+        scrollable canvas so it stays usable when there are more actions than
+        vertical space.
         """
-        middle = ttk.Frame(self._top)
-        middle.pack(side="left", fill="y", padx=6)
+        container = ttk.Frame(self._top)
+        container.pack(side="left", fill="y", padx=6)
+
+        canvas = tk.Canvas(container, highlightthickness=0, width=1)
+        scrollbar = ttk.Scrollbar(container, orient="vertical",
+                                  command=canvas.yview)
+        middle = ttk.Frame(canvas)
+
+        # Keep the scrollregion in sync with the inner frame's size, and match
+        # the canvas width to the buttons so nothing is clipped horizontally.
+        def _on_configure(_event):
+            canvas.configure(scrollregion=canvas.bbox("all"))
+            canvas.configure(width=middle.winfo_reqwidth())
+
+        middle.bind("<Configure>", _on_configure)
+        canvas.create_window((0, 0), window=middle, anchor="nw")
+        canvas.configure(yscrollcommand=scrollbar.set)
+
+        canvas.pack(side="left", fill="both", expand=True)
+        scrollbar.pack(side="right", fill="y")
+
+        # Mouse-wheel scrolling while hovering the actions column.
+        canvas.bind("<Enter>",
+                    lambda _e: canvas.bind_all("<MouseWheel>", _on_mousewheel))
+        canvas.bind("<Leave>", lambda _e: canvas.unbind_all("<MouseWheel>"))
+
+        def _on_mousewheel(event):
+            canvas.yview_scroll(int(-event.delta / 120), "units")
+
         for title, actions in sections:
             frame = ttk.LabelFrame(middle, text=title)
             frame.pack(side="top", fill="x", pady=(0, 6))
