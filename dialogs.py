@@ -285,8 +285,8 @@ def ask_pr_details(parent, repo_count):
     The user can either auto-generate each PR title from that repo's own branch
     name (e.g. ``feature/123_my_description`` -> ``feature(123) My description``)
     or enter one custom title applied to every repo. A description is optional
-    and shared by all. Returns a dict {"mode", "title", "description"} where
-    *mode* is "auto" or "custom", or None if cancelled.
+    and shared by all. Returns a dict {"mode", "title", "description", "draft"}
+    where *mode* is "auto" or "custom", or None if cancelled.
     """
     dialog = tk.Toplevel(parent)
     dialog.title("Create pull requests")
@@ -338,6 +338,12 @@ def ask_pr_details(parent, repo_count):
         text="Skip empty branches (no changes vs master)",
     ).pack(padx=16, pady=(4, 0), anchor="w")
 
+    draft = tk.BooleanVar(value=False)
+    ttk.Checkbutton(
+        dialog, variable=draft,
+        text="Create as draft",
+    ).pack(padx=16, pady=(4, 0), anchor="w")
+
     error_label = tk.Label(dialog, text="", foreground="#c0392b")
     error_label.pack(padx=16, anchor="w")
 
@@ -356,6 +362,7 @@ def ask_pr_details(parent, repo_count):
             "title": title,
             "description": desc_text.get("1.0", "end").strip(),
             "skip_empty": bool(skip_empty.get()),
+            "draft": bool(draft.get()),
         }
         dialog.destroy()
 
@@ -923,6 +930,63 @@ def ask_include_skipped(parent, action_label, names):
     ttk.Button(bar, text="Cancel", command=_cancel).pack(side="left", padx=4)
 
     dialog.protocol("WM_DELETE_WINDOW", _cancel)
+    _center_over_parent(dialog, parent)
+    dialog.grab_set()
+    parent.wait_window(dialog)
+    return result["value"]
+
+
+def ask_missing_remote_branches(parent, names, environment_label):
+    """Modal warning that some repos have no remote feature branch.
+
+    *names* is the list of repo folder names whose feature branch does not exist
+    on origin (so no pipeline can be started for them). Returns True to continue
+    for the repositories that do have a remote branch, or False to abort the
+    whole run. *environment_label* (e.g. "Development") is shown for context.
+    """
+    dialog = tk.Toplevel(parent)
+    dialog.title("Missing remote branches")
+    dialog.transient(parent.winfo_toplevel())
+    dialog.resizable(False, False)
+
+    tk.Label(
+        dialog,
+        text=f"These repositories do not have a remote branch, so no "
+             f"{environment_label} pipeline can be started for them:",
+        justify="left", wraplength=420,
+    ).pack(padx=16, pady=(16, 8), anchor="w")
+
+    box = ttk.Frame(dialog)
+    box.pack(padx=16, fill="x")
+    for name in names:
+        tk.Label(box, text=f"\u2022 {name}", font=("", 9, "bold")).pack(
+            anchor="w", pady=1
+        )
+
+    tk.Label(
+        dialog,
+        text="Do you want to abort, or continue and run pipelines only for the "
+             "repositories that do have a remote branch?",
+        justify="left", wraplength=420,
+    ).pack(padx=16, pady=(8, 0), anchor="w")
+
+    result = {"value": False}
+
+    def _continue():
+        result["value"] = True
+        dialog.destroy()
+
+    def _abort():
+        result["value"] = False
+        dialog.destroy()
+
+    bar = ttk.Frame(dialog)
+    bar.pack(padx=16, pady=12)
+    ttk.Button(bar, text="Continue for existing branches",
+               command=_continue).pack(side="left", padx=4)
+    ttk.Button(bar, text="Abort", command=_abort).pack(side="left", padx=4)
+
+    dialog.protocol("WM_DELETE_WINDOW", _abort)
     _center_over_parent(dialog, parent)
     dialog.grab_set()
     parent.wait_window(dialog)

@@ -14,7 +14,7 @@ from gitutils import (
     save_uncommitted, has_savepos, restore_uncommitted,
     git_current_branch, create_feature_branch, rebase_on_master,
     git_branch_url, get_ado_pr_url, open_in_vscode,
-    get_nuget_folders,
+    get_nuget_folders, remote_branch_exists,
     workspace_branch_entries, save_branch_overrides, IGNORE_GIT_KEY,
     SAVEPOS_MSG,
 )
@@ -22,9 +22,10 @@ from widgets import WorkspaceList, Tooltip
 from tab_base import ActionTabBase
 from dialogs import (
     ask_branch_name, ask_pbi_number, resolve_pbi_repos, edit_branch_overrides,
-    ask_include_skipped, ask_workspace_branches,
+    ask_include_skipped, ask_workspace_branches, ask_missing_remote_branches,
 )
 import pbi
+from pipelines import run_pipeline_for_repo
 
 # Base message for the savepos commits created when switching workspaces.
 SWITCH_SAVE_MSG = "savepos before workspace switch"
@@ -115,13 +116,15 @@ class WorkspacesTab(ActionTabBase):
         return items
 
     def _sections(self):
-        """Two stacked action groups: state-changing actions, then open actions."""
+        """Stacked action groups: local git, remote git, pipelines, then open."""
         return [
-            ("Manipulate", self._manipulate_actions()),
+            ("Local", self._local_actions()),
+            ("Remote", self._remote_actions()),
+            ("Pipelines", self._pipeline_actions()),
             ("Open", self._open_actions()),
         ]
 
-    def _manipulate_actions(self):
+    def _local_actions(self):
         return [
             (
                 "Create workspace from PBI",
@@ -182,6 +185,10 @@ class WorkspacesTab(ActionTabBase):
                 "commit message you enter. If the repos with changes are on "
                 "different branches, a warning is shown before committing.",
             ),
+        ]
+
+    def _remote_actions(self):
+        return [
             (
                 "Git push",
                 self._action_push,
@@ -200,6 +207,41 @@ class WorkspacesTab(ActionTabBase):
                 "title or let each title be auto-generated from its branch name "
                 "(feature/123_my_desc \u2192 feature(123) My desc). A link to "
                 "each new PR is shown.",
+            ),
+            (
+                "Copy PR links",
+                self._action_copy_pr_links,
+                "For the selected workspace's repositories (excluding skipped "
+                "repos): looks up each repo's open Azure DevOps pull request "
+                "(current branch \u2192 master) and copies all 'repo name - pr "
+                "link' lines to the clipboard. Repos without an open PR are "
+                "listed in the Errors panel.",
+            ),
+        ]
+
+    def _pipeline_actions(self):
+        return [
+            (
+                "Run dev pipelines",
+                self._action_run_dev_pipeline,
+                "For the selected workspace's repositories (excluding skipped "
+                "repos): starts each repository's Azure DevOps pipeline on its "
+                "feature branch, deploying to the Development environment only "
+                "(infrastructure + Development on; Acceptance and Production "
+                "off). Repositories whose feature branch is not on the remote "
+                "are reported first, letting you abort or continue for the rest. "
+                "Needs an ADO_PAT with Build (Read & execute) permission.",
+            ),
+            (
+                "Run acc pipelines",
+                self._action_run_acc_pipeline,
+                "For the selected workspace's repositories (excluding skipped "
+                "repos): starts each repository's Azure DevOps pipeline on its "
+                "feature branch, deploying to the Acceptance environment only "
+                "(infrastructure + Acceptance on; Development and Production "
+                "off). Repositories whose feature branch is not on the remote "
+                "are reported first, letting you abort or continue for the rest. "
+                "Needs an ADO_PAT with Build (Read & execute) permission.",
             ),
         ]
 
@@ -505,6 +547,101 @@ class WorkspacesTab(ActionTabBase):
                 self.errors.add(repos)
             return
         self.create_prs(repos)
+
+    # -- Copy PR links ----------------------------------------------------- #
+    def _action_copy_pr_links(self):
+        ok, workspace, repos = self._selected_active_repos()
+        self.errors.clear()
+        if not ok:
+            if workspace is not None:
+                self.errors.add(repos)
+            return
+        self.copy_pr_links(repos)
+
+    # -- Run pipelines ----------------------------------------------------- #
+    def _action_run_dev_pipeline(self):
+        self._run_pipelines("dev")
+
+    def _action_run_acc_pipeline(self):
+        self._run_pipelines("acc")
+
+    def _run_pipelines(self, environment):
+        """Start each active repo's pipeline on its feature branch.
+
+        Only the workspace's non-skipped ("ignore git" off) repositories are
+        run. Each repo's remote feature branch must exist; those that do not are
+        reported in a modal that lets the user abort or continue for the rest.
+        The remote check hits the network so it runs on a background thread.
+        """
+        self.errors.clear()
+        ok, workspace, entries = self._selected_entries()
+        if not ok:
+            if workspace is not None:
+                self.errors.add(entries)
+            return
+
+        active = [
+            (e["name"], e["path"], e["branch"])
+            for e in entries if not e["ignoreGit"]
+        ]
+        if not active:
+            self.errors.add(
+                "this workspace has no repositories to run pipelines for"
+            )
+            return
+
+        self.show_repos_async([(n, p) for n, p, _ in active], with_status=True)
+
+        def _check():
+            existing, missing = [], []
+            for name, path, branch in active:
+                if is_git_repo(path) and remote_branch_exists(path, branch):
+                    existing.append((name, path, branch))
+                else:
+                    missing.append(name)
+            self.after(0, self._on_branches_checked, environment, existing, missing)
+
+        threading.Thread(target=_check, daemon=True).start()
+
+    def _on_branches_checked(self, environment, existing, missing):
+        """After the remote-branch scan: confirm missing repos, then run."""
+        env_label = "Development" if environment == "dev" else "Acceptance"
+        if missing:
+            if not ask_missing_remote_branches(self, missing, env_label):
+                self.progress.show_repos([])
+                return
+        if not existing:
+            self.errors.add(
+                "None of the selected repositories have a remote branch to run."
+            )
+            return
+
+        repos = [(name, path) for name, path, _ in existing]
+        branch_of = {name: branch for name, _, branch in existing}
+        urls = {}
+        self._pipeline_urls = urls
+
+        def _run(name, path):
+            ok, result = run_pipeline_for_repo(
+                name, path, branch_of[name], environment
+            )
+            if ok:
+                urls[name] = result
+                return True, ""
+            return False, result
+
+        self.run_repo_action(
+            repos,
+            _run,
+            f"Pipelines started for the {env_label} environment.",
+            link_fn=lambda n, p: urls.get(n, ""),
+            link_text="View run",
+            link_header="Pipeline run",
+            completion_open_fn=lambda ok_repos: [
+                urls[n] for n, _ in ok_repos if urls.get(n)
+            ],
+            completion_open_label="Open pipelines",
+        )
 
     # -- Open in Git Bash tabs --------------------------------------------- #
     def _action_open_terminals(self):

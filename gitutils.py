@@ -458,6 +458,16 @@ def git_branch_exists(repo_path, branch):
     return ok
 
 
+def remote_branch_exists(repo_path, branch):
+    """Return True if *branch* exists on origin (queried live via ls-remote).
+
+    Hits the network, so call it off the UI thread. A missing remote, auth
+    failure or any git error yields False (treated as "branch not present").
+    """
+    ok, out = run_git(repo_path, ["ls-remote", "--heads", "origin", branch])
+    return ok and bool(out.strip())
+
+
 def git_commit_message(repo_path, ref):
     """Return the subject line of the commit at *ref*, or '' on failure."""
     ok, out = run_git(repo_path, ["log", "-1", "--format=%s", ref])
@@ -811,11 +821,12 @@ def get_git_credential(host):
     return creds.get("username"), creds.get("password")
 
 
-def create_ado_pr(name, path, title, description="", target="master"):
+def create_ado_pr(name, path, title, description="", target="master", draft=False):
     """Create an Azure DevOps pull request for one repo.
 
     Returns (ok, url_or_err, warning). The PR goes from the repo's current
-    branch to *target* (master). The remote branch must already be pushed.
+    branch to *target* (master). When *draft* is true the PR is created as a
+    draft. The remote branch must already be pushed.
     Authentication reuses the Git credential already stored for the host, so no
     extra credentials are requested. When the branch name embeds a work-item id
     (e.g. ``feature/514231_...``) that work item is linked to the new PR; a link
@@ -850,6 +861,7 @@ def create_ado_pr(name, path, title, description="", target="master"):
         "targetRefName": f"refs/heads/{target}",
         "title": title,
         "description": description,
+        "isDraft": bool(draft),
     }).encode("utf-8")
     auth = base64.b64encode(
         f"{username or ''}:{password}".encode("utf-8")

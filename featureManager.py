@@ -45,7 +45,7 @@ class FeatureManagerApp(ttk.Notebook):
 def main():
     root = tk.Tk()
     root.title("Feature Manager")
-    root.geometry("960x640")
+    root.geometry("1160x740")
 
     # Menu bar with a Settings menu for editing the repository synonyms used by
     # the "Create workspace from PBI" action.

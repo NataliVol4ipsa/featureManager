@@ -11,7 +11,7 @@ from widgets import Tooltip, ProgressPanel, ErrorList
 from gitutils import (
     is_git_repo, git_current_branch, git_has_changes, commit_all, git_push,
     git_branch_url, create_ado_pr, ado_pr_title_from_branch,
-    git_branch_is_empty, open_in_terminal_tabs,
+    git_branch_is_empty, open_in_terminal_tabs, get_ado_pr_url,
 )
 from dialogs import (
     ask_change_decision, ask_commit_message, ask_branch_warning, ask_pr_details,
@@ -37,6 +37,10 @@ class ActionTabBase(ttk.Frame):
         errors_frame.pack(side="bottom", fill="x")
         self.errors = ErrorList(errors_frame)
         self.errors.pack(fill="x", expand=False, padx=4, pady=4)
+
+        # Links of the most recently created pull requests ({name: url}), kept
+        # so a standalone action can copy them after the create-PR run.
+        self._last_pr_urls = {}
 
     # -- Shared panel builders --------------------------------------------- #
     def build_middle_actions(self, actions):
@@ -230,8 +234,10 @@ class ActionTabBase(ttk.Frame):
             return
 
         # PR URLs are produced by the action itself; stash them so the link
-        # column can show them without creating the PR a second time.
+        # column can show them without creating the PR a second time. The same
+        # dict is kept on the instance so "Copy PR links" can reuse it later.
         pr_urls = {}
+        self._last_pr_urls = pr_urls
 
         def _create(name, path):
             if options["mode"] == "auto":
@@ -239,7 +245,8 @@ class ActionTabBase(ttk.Frame):
             else:
                 title = options["title"]
             ok, result, warning = create_ado_pr(
-                name, path, title, options["description"]
+                name, path, title, options["description"],
+                draft=options["draft"],
             )
             if ok:
                 pr_urls[name] = result
@@ -267,6 +274,61 @@ class ActionTabBase(ttk.Frame):
             show_branch=False,
             completion_copy_fn=_copy_text,
             skip_fn=git_branch_is_empty if options["skip_empty"] else None,
+        )
+
+
+    def copy_pr_links(self, repos):
+        """Look up each selected repo's open pull request and copy the links.
+
+        Queries Azure DevOps for the active PR of every repo's current branch
+        (no reliance on PRs created in this session), lists a clickable link per
+        repo in the Details table, and copies all "repo name - pr link" lines to
+        the clipboard. Repos without an open PR are reported in the Errors panel.
+        """
+        self.errors.clear()
+        if not repos:
+            return
+
+        self.show_repos_async(repos, with_status=False)
+
+        pr_urls = {}
+        self._last_pr_urls = pr_urls
+
+        def _lookup(name, path):
+            ok, result = get_ado_pr_url(name, path)
+            if ok:
+                pr_urls[name] = result
+                return True, ""
+            return False, result
+
+        def _copy_text(ok_repos):
+            return "\n".join(
+                f"{name} - {pr_urls[name]}"
+                for name, _ in ok_repos if name in pr_urls
+            )
+
+        # Copy to the clipboard as soon as the lookups finish, even if some
+        # repos had no open PR (the ones that were found are still useful).
+        def _on_complete(_all_ok):
+            if not pr_urls:
+                return
+            text = "\n".join(f"{n} - {u}" for n, u in pr_urls.items())
+            self.clipboard_clear()
+            self.clipboard_append(text)
+            self.progress.show_completion(
+                "Pull request links copied to clipboard.", text
+            )
+
+        self.run_repo_action(
+            repos,
+            _lookup,
+            "Pull request links copied to clipboard.",
+            link_fn=lambda n, p: pr_urls.get(n, ""),
+            link_text="View PR",
+            link_header="Pull request",
+            show_branch=False,
+            completion_copy_fn=_copy_text,
+            on_complete=_on_complete,
         )
 
 
@@ -328,7 +390,8 @@ class ActionTabBase(ttk.Frame):
     def run_repo_action(self, repos, per_repo_fn, success_msg, on_complete=None,
                         link_fn=None, link_text="View branch",
                         link_header="Link", show_branch=True,
-                        completion_copy_fn=None, skip_fn=None):
+                        completion_copy_fn=None, skip_fn=None,
+                        completion_open_fn=None, completion_open_label="Open all"):
         """Run *per_repo_fn(name, path)* for each repo off the UI thread.
 
         *per_repo_fn* must return (ok, error_message). The table shows each
@@ -358,13 +421,15 @@ class ActionTabBase(ttk.Frame):
         threading.Thread(
             target=self._worker,
             args=(repos, per_repo_fn, success_msg, on_complete, link_fn,
-                  link_text, show_branch, completion_copy_fn, skip_fn),
+                  link_text, show_branch, completion_copy_fn, skip_fn,
+                  completion_open_fn, completion_open_label),
             daemon=True,
         ).start()
 
     def _worker(self, repos, per_repo_fn, success_msg, on_complete=None,
                 link_fn=None, link_text="View branch", show_branch=True,
-                completion_copy_fn=None, skip_fn=None):
+                completion_copy_fn=None, skip_fn=None,
+                completion_open_fn=None, completion_open_label="Open all"):
         all_ok = True
         for name, path in repos:
             skip_result = skip_fn(name, path) if skip_fn is not None else False
@@ -396,7 +461,9 @@ class ActionTabBase(ttk.Frame):
 
         if all_ok and success_msg:
             copy_text = completion_copy_fn(repos) if completion_copy_fn else None
-            self.after(0, self.progress.show_completion, success_msg, copy_text)
+            open_urls = completion_open_fn(repos) if completion_open_fn else None
+            self.after(0, self.progress.show_completion, success_msg, copy_text,
+                       open_urls, completion_open_label)
         if on_complete is not None:
             self.after(0, on_complete, all_ok)
 

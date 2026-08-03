@@ -98,6 +98,10 @@ class ProgressPanel(ttk.Frame):
                                        command=self._do_copy)
         # The text to place on the clipboard when the copy button is clicked.
         self._copy_payload = ""
+        self._open_button = ttk.Button(self._banner_frame, text="Open all",
+                                       command=self._do_open)
+        # The URLs opened in the browser when the open button is clicked.
+        self._open_payload = []
 
         # Scrollable table area for repo rows.
         self._canvas = tk.Canvas(self, highlightthickness=0)
@@ -242,12 +246,15 @@ class ProgressPanel(ttk.Frame):
         label.unbind("<Button-1>")
         label.bind("<Button-1>", lambda _e, u=url: webbrowser.open(u))
 
-    def show_completion(self, text, copy_text=None):
+    def show_completion(self, text, copy_text=None, open_urls=None,
+                        open_label="Open all"):
         """Reveal the green completion banner above the repo list.
 
         When *copy_text* is given, a "Copy all" button is shown next to the
         banner that copies that text to the clipboard (used to copy every repo's
-        PR link as "repo name - pr link" lines).
+        PR link as "repo name - pr link" lines). When *open_urls* is given, an
+        *open_label* button is shown that opens every URL in the browser (used to
+        open every started pipeline run).
         """
         self._banner.config(text=text)
         if copy_text:
@@ -257,6 +264,13 @@ class ProgressPanel(ttk.Frame):
         else:
             self._copy_payload = ""
             self._copy_button.pack_forget()
+        if open_urls:
+            self._open_payload = list(open_urls)
+            self._open_button.config(text=open_label)
+            self._open_button.pack(side="left", padx=(10, 0))
+        else:
+            self._open_payload = []
+            self._open_button.pack_forget()
         self._banner_frame.pack(fill="x", padx=6, pady=(4, 6), before=self._canvas)
 
     def _do_copy(self, _event=None):
@@ -265,11 +279,19 @@ class ProgressPanel(ttk.Frame):
         self.clipboard_append(self._copy_payload)
         self._copy_button.config(text="Copied!")
 
+    def _do_open(self, _event=None):
+        """Open every stored URL in the default web browser."""
+        for url in self._open_payload:
+            if url:
+                webbrowser.open(url)
+
     def clear_completion(self):
         """Hide the completion banner (e.g. when a new action starts)."""
         self._banner.config(text="")
         self._copy_payload = ""
         self._copy_button.pack_forget()
+        self._open_payload = []
+        self._open_button.pack_forget()
         self._banner_frame.pack_forget()
 
 
