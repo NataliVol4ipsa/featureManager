@@ -426,7 +426,7 @@ def ask_pbi_number(parent):
 
     bar = ttk.Frame(dialog)
     bar.pack(padx=16, pady=12)
-    ttk.Button(bar, text="Download", command=_ok).pack(side="left", padx=4)
+    ttk.Button(bar, text="Next", command=_ok).pack(side="left", padx=4)
     ttk.Button(bar, text="Cancel", command=_cancel).pack(side="left", padx=4)
 
     entry.bind("<Return>", lambda _e: _ok())
@@ -455,7 +455,7 @@ def resolve_pbi_repos(parent, mappings, folders, nuget_folders=None):
     offered at the *end* of every folder dropdown so a service can be mapped to a
     shared NuGet repository as well.
 
-    The Create button is disabled until every service is either mapped or
+    The Next button is disabled until every service is either mapped or
     excluded. Returns a ``{service_name: folder_or_None}`` dict on submit (an
     excluded service maps to ``None``), or ``None`` if cancelled.
     """
@@ -543,7 +543,7 @@ def resolve_pbi_repos(parent, mappings, folders, nuget_folders=None):
 
     bar = ttk.Frame(dialog)
     bar.pack(padx=16, pady=12)
-    create_button = ttk.Button(bar, text="Create", command=_ok)
+    create_button = ttk.Button(bar, text="Next", command=_ok)
     create_button.pack(side="left", padx=4)
     ttk.Button(bar, text="Cancel", command=_cancel).pack(side="left", padx=4)
 
@@ -555,14 +555,19 @@ def resolve_pbi_repos(parent, mappings, folders, nuget_folders=None):
     return result["value"]
 
 
-def ask_workspace_branches(parent, repo_names, initial=""):
+def ask_workspace_branches(parent, repo_names, initial="", current_branches=None):
     """Modal to name the workspace and set a feature branch per repository.
 
     The first field is the workspace name; each following field is one repo's
     feature branch, pre-filled with the workspace name and editable. A per-repo
     "Ignore git" checkbox marks a repo that is included in the workspace but
-    excluded from git commands (it keeps its own branch). Returns
-    ``{"name": str, "branches": {repo: suffix}, "ignore_git": {repo: bool}}``
+    excluded from git commands (it keeps its own branch). Ticking it shows the
+    repo's *current* branch (from *current_branches*, a {repo: branch} map) in
+    the now-disabled field; that branch is returned so it can be recorded in the
+    workspace file. Unticking restores the value the field held before ticking.
+
+    Returns ``{"name": str, "branches": {repo: suffix},
+    "ignore_git": {repo: bool}, "ignore_branches": {repo: current_branch}}``
     (branch suffixes exclude the "feature/" prefix), or None if cancelled.
     """
     dialog = tk.Toplevel(parent)
@@ -599,31 +604,37 @@ def ask_workspace_branches(parent, repo_names, initial=""):
         row=1, column=2, sticky="w", padx=4, pady=(4, 4)
     )
 
-    branch_vars, ignore_vars, overridden = {}, {}, {}
+    branch_vars, ignore_vars = {}, {}
+    # The value each field held just before "Ignore git" was ticked, so
+    # unticking can restore it instead of resetting to the workspace name.
+    pre_tick = {}
+    current_branches = current_branches or {}
 
     for index, repo in enumerate(repo_names, start=2):
-        overridden[repo] = False
         ttk.Label(body, text=repo, justify="left", wraplength=180).grid(
             row=index, column=0, sticky="w", padx=4, pady=2
         )
         cell = ttk.Frame(body)
         cell.grid(row=index, column=1, sticky="w", padx=4, pady=2)
-        ttk.Label(cell, text="feature/").pack(side="left")
+        prefix = ttk.Label(cell, text="feature/")
+        prefix.pack(side="left")
         branch_var = tk.StringVar(value=initial)
         branch_entry = ttk.Entry(cell, textvariable=branch_var, width=28)
         branch_entry.pack(side="left")
         ignore_var = tk.BooleanVar(value=False)
 
-        # A manual keystroke stops this field from tracking the workspace name.
-        branch_entry.bind(
-            "<KeyRelease>", lambda _e, r=repo: overridden.__setitem__(r, True)
-        )
-
-        def _toggle(r=repo, e=branch_entry):
-            ignored = ignore_vars[r].get()
-            e.config(state="disabled" if ignored else "normal")
-            if not ignored and not overridden[r]:
-                branch_vars[r].set(name_var.get())
+        # Ticking "Ignore git" shows the repo's current branch (disabled); it is
+        # stored in the workspace file. Unticking restores the pre-tick value.
+        def _toggle(r=repo, e=branch_entry, p=prefix):
+            if ignore_vars[r].get():
+                pre_tick[r] = branch_vars[r].get()
+                p.pack_forget()  # a full branch is shown, not a 'feature/' suffix
+                branch_vars[r].set(current_branches.get(r, ""))
+                e.config(state="disabled")
+            else:
+                p.pack(side="left", before=e)
+                e.config(state="normal")
+                branch_vars[r].set(pre_tick.get(r, initial))
 
         ttk.Checkbutton(body, variable=ignore_var, command=_toggle).grid(
             row=index, column=2, padx=4, pady=2
@@ -648,11 +659,13 @@ def ask_workspace_branches(parent, repo_names, initial=""):
                      ". _ / -"
             )
             return
-        branches, ignore_git = {}, {}
+        branches, ignore_git, ignore_branches = {}, {}, {}
         for repo in repo_names:
             ignore = ignore_vars[repo].get()
             ignore_git[repo] = ignore
             if ignore:
+                # Keep the repo's current branch so it can be recorded verbatim.
+                ignore_branches[repo] = branch_vars[repo].get().strip()
                 continue
             suffix = branch_vars[repo].get().strip()
             if not suffix:
@@ -667,6 +680,7 @@ def ask_workspace_branches(parent, repo_names, initial=""):
             branches[repo] = suffix
         result["value"] = {
             "name": name, "branches": branches, "ignore_git": ignore_git,
+            "ignore_branches": ignore_branches,
         }
         dialog.destroy()
 

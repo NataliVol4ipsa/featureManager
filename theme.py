@@ -186,9 +186,17 @@ def apply_theme(root, dark=None):
                     troughcolor=BG_PANEL, bordercolor=BORDER)
 
     style.configure("Treeview", background=BG_INPUT, fieldbackground=BG_INPUT,
-                    foreground=FG, bordercolor=BORDER)
-    style.map("Treeview", background=[("selected", SELECT)],
-              foreground=[("selected", FG)])
+                    foreground=FG, bordercolor=BORDER, borderwidth=1,
+                    relief="flat", focuscolor=BG_INPUT)
+    style.map(
+        "Treeview",
+        background=[("selected", SELECT)],
+        foreground=[("selected", FG)],
+        # Keep the border colour constant so the blue focus ring doesn't appear.
+        bordercolor=[("focus", BORDER), ("!focus", BORDER)],
+        lightcolor=[("focus", BG_INPUT)],
+        darkcolor=[("focus", BG_INPUT)],
+    )
     style.configure("Treeview.Heading", background=BG_PANEL, foreground=FG_MUTED)
 
     # -- classic tk widgets (via the option database) --------------------- #

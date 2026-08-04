@@ -315,7 +315,7 @@ class WorkspacesTab(ActionTabBase):
                 "GitHub / \u2026) in your default web browser, one tab per repo.",
             ),
             (
-                "Open branches",
+                "Open remote branches",
                 self._action_open_branches,
                 "For the selected workspace's repositories: opens each "
                 "repository's current branch on the remote host in your default "
@@ -1014,8 +1014,10 @@ class WorkspacesTab(ActionTabBase):
         # Name the workspace and set a per-repo feature branch (pre-filled with
         # the workspace name). Repos ticked "Ignore git" keep their own branch.
         initial = f"{result['id']}_{pbi.slugify_title(result['title'])}"
+        current_branches = {n: git_current_branch(p) for n, p in chosen}
         info = ask_workspace_branches(
-            self, [n for n, _ in chosen], initial=initial
+            self, [n for n, _ in chosen], initial=initial,
+            current_branches=current_branches,
         )
         if info is None:
             return
@@ -1026,9 +1028,15 @@ class WorkspacesTab(ActionTabBase):
         # the workspace name gets a branch override. Matches are left implicit.
         branch_suffix = {}
         overrides, ignore_folders = {}, set()
+        ignore_branches = info.get("ignore_branches", {})
         for repo_name, _ in chosen:
             if info["ignore_git"].get(repo_name):
-                overrides[repo_name] = {IGNORE_GIT_KEY: True}
+                override = {IGNORE_GIT_KEY: True}
+                # Record the repo's current branch so the workspace remembers it.
+                current = ignore_branches.get(repo_name)
+                if current:
+                    override["branch"] = current
+                overrides[repo_name] = override
                 ignore_folders.add(repo_name)
                 continue
             suffix = info["branches"].get(repo_name, name)
