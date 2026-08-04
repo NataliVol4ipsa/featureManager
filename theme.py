@@ -40,6 +40,7 @@ DARK = {
     "ERROR":        "#e06c6c",  # errors (lightened for a dark background)
     "SUCCESS":      "#5cba5c",  # done / mapped (green)
     "WARNING":      "#e0a23c",  # in-progress / warnings (amber)
+    "READY":        "#8fc4f2",  # ready (partial approval done) - light blue
     "TOOLTIP_BG":   "#2c323c",  # tooltip background
     "TOOLTIP_FG":   "#dfe3e8",  # tooltip text
 }
@@ -60,6 +61,7 @@ LIGHT = {
     "ERROR":        "#c0392b",
     "SUCCESS":      "#1a9e1a",
     "WARNING":      "#d98c00",
+    "READY":        "#3d7fbf",  # ready - kept visible on the light background
     "TOOLTIP_BG":   "#ffffe0",
     "TOOLTIP_FG":   "#1e2226",
 }
@@ -95,6 +97,36 @@ def _save_prefs(data):
             json.dump(data, handle, indent=4)
     except OSError:
         pass
+
+
+# Transient snapshot of open pipeline monitors, written just before a
+# theme-change relaunch and consumed (then deleted) on the next startup.
+_MONITOR_SESSION_PATH = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "monitor_session.json"
+)
+
+
+def save_monitor_session(sessions):
+    """Persist open pipeline-monitor snapshots so a relaunch can restore them."""
+    try:
+        with open(_MONITOR_SESSION_PATH, "w", encoding="utf-8") as handle:
+            json.dump(list(sessions), handle)
+    except (OSError, TypeError):
+        pass
+
+
+def pop_monitor_session():
+    """Return the saved monitor snapshots (list) and delete the file; [] if none."""
+    try:
+        with open(_MONITOR_SESSION_PATH, "r", encoding="utf-8") as handle:
+            data = json.load(handle)
+    except (OSError, ValueError):
+        data = []
+    try:
+        os.remove(_MONITOR_SESSION_PATH)
+    except OSError:
+        pass
+    return data if isinstance(data, list) else []
 
 
 def load_dark_preference():

@@ -73,6 +73,7 @@ _out.log
 secrets.json
 repo_synonyms.json
 ui_prefs.json
+monitor_session.json
 
 # Local-only Copilot working notes (not shared with the team).
 .github/copilot-instructions.md

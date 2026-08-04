@@ -41,6 +41,12 @@ _STAGE_STYLE = {
         "text": theme.FG,
         "label": "running",
     },
+    "ready": {
+        "fill": theme.READY,
+        "outline": theme.READY,
+        "text": theme.FG,
+        "label": "ready",
+    },
     "approval": {
         "fill": theme.WARNING,
         "outline": theme.WARNING,
@@ -151,8 +157,7 @@ class PipelineMonitorWindow(tk.Toplevel):
             Tooltip(
                 self._acc_button,
                 "Toggle auto-approval of the Acceptance (ACC) deployment gate "
-                "for the tracked master runs. Disabled once master is already "
-                "deployed to ACC for every tracked repository.",
+                "for the tracked master runs.",
             )
 
             self._prod_button = ttk.Button(
@@ -163,8 +168,7 @@ class PipelineMonitorWindow(tk.Toplevel):
             Tooltip(
                 self._prod_button,
                 "Toggle auto-approval of the Production (PRD) deployment gate "
-                "for the tracked master runs. Disabled once master is already "
-                "deployed to PRD for every tracked repository.",
+                "for the tracked master runs.",
             )
 
         if self._show_autoapprove_controls:
@@ -270,13 +274,13 @@ class PipelineMonitorWindow(tk.Toplevel):
             return
 
         if self._acc_locked_by_master:
-            acc_text = "Auto-approve ACC: DISABLED (master deployed)"
+            acc_text = "Auto-approve ACC: DISABLED"
         else:
             acc_state = "ON" if self._autoapprove_acceptance else "OFF"
             acc_text = f"Auto-approve ACC: {acc_state}"
 
         if self._prod_locked_by_master:
-            prod_text = "Auto-approve PRD: DISABLED (master deployed)"
+            prod_text = "Auto-approve PRD: DISABLED"
         else:
             prod_state = "ON" if self._autoapprove_production else "OFF"
             prod_text = f"Auto-approve PRD: {prod_state}"
@@ -320,14 +324,16 @@ class PipelineMonitorWindow(tk.Toplevel):
             if info.get("is_master_run")
         ]
         if master_repos:
+            # A gate no longer needs auto-approval once every tracked run has
+            # deployed it ("done") or already has my approval in ("ready").
             acc_locked = all(
                 ((self._rows.get(repo) or {}).get("stages") or {}).get("acceptance")
-                == "done"
+                in ("done", "ready")
                 for repo in master_repos
             )
             prod_locked = all(
                 ((self._rows.get(repo) or {}).get("stages") or {}).get("production")
-                == "done"
+                in ("done", "ready")
                 for repo in master_repos
             )
         else:
@@ -353,6 +359,21 @@ class PipelineMonitorWindow(tk.Toplevel):
             self._apply_autoapprove_flags()
         if lock_changed or flags_changed:
             self._sync_control_labels()
+
+    def session_state(self):
+        """Return a JSON-serialisable snapshot for restoring after a relaunch."""
+        infos = {}
+        for repo, info in self._run_infos.items():
+            infos[repo] = {
+                key: value for key, value in info.items()
+                if not str(key).startswith("_")
+            }
+        return {
+            "show_autoapprove_controls": self._show_autoapprove_controls,
+            "pbi_title": self._pbi_title,
+            "test_reports": [list(item) for item in self._test_reports],
+            "run_infos": infos,
+        }
 
     def _copy_all_links(self):
         """Copy multiline '<service> - <link>' output for all rows with URLs."""
@@ -468,8 +489,11 @@ class PipelineMonitorWindow(tk.Toplevel):
                 fill=style["fill"], outline=style["outline"], width=2,
             )
             canvas.create_text(x, y + 24, text=title, fill=theme.FG, font=("", 8))
+            # Live theme colour so the state label stays visible in the light theme.
+            label_color = (theme.FG_MUTED if state in ("waiting", "skipped")
+                           else theme.FG)
             canvas.create_text(
-                x, y - 18, text=style["label"], fill=style["text"], font=("", 8)
+                x, y - 18, text=style["label"], fill=label_color, font=("", 8)
             )
 
     def _poll_once(self):

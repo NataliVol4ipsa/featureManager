@@ -68,6 +68,13 @@ def main():
 
     def _toggle_theme():
         theme.save_dark_preference(not theme.load_dark_preference())
+        # Preserve any open pipeline monitors across the relaunch.
+        sessions = []
+        for tab in (app.workspaces_tab, app.manual_tab):
+            for win in getattr(tab, "_pipeline_monitors", []):
+                if win.winfo_exists():
+                    sessions.append(win.session_state())
+        theme.save_monitor_session(sessions)
         # Re-launch so every widget is rebuilt cleanly with the new palette.
         os.execv(sys.executable, [sys.executable, *sys.argv])
 
@@ -138,7 +145,7 @@ def main():
         "<Leave>", lambda _e: settings_item.config(background=theme.BG_PANEL)
     )
 
-    FeatureManagerApp(root)
+    app = FeatureManagerApp(root)
 
     # Author credit footer - always visible at the bottom of the window.
     footer = ttk.Label(
@@ -154,6 +161,12 @@ def main():
     # window is mapped so it has a real HWND to set the DWM attribute on.
     root.after(0, lambda: theme.apply_window_icon(root))
     root.after(0, lambda: theme.enable_dark_titlebar(root))
+
+    # Reopen any pipeline monitors that were open before a theme-change relaunch.
+    root.after(0, lambda: [
+        app.workspaces_tab.reopen_monitor_session(session)
+        for session in theme.pop_monitor_session()
+    ])
 
     root.mainloop()
 

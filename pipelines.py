@@ -444,10 +444,16 @@ def _api_build_timeline(org, project, build_id, auth):
     return _api_get(url, auth)
 
 
-def _pending_approval_ids_for_build(org, project, build_id, auth):
-    """Return pending approval ids associated with *build_id*."""
+def _pending_approvals_for_build(org, project, build_id, auth):
+    """Return pending approvals for *build_id* as [{"id", "partially_approved"}].
+
+    *partially_approved* is True when at least one approval step is already
+    recorded (e.g. the first of two required Production approvals is in): the
+    gate is still pending but must not be auto-approved again.
+    """
     query = urllib.parse.urlencode({
         "state": "pending",
+        "$expand": "steps",
         "api-version": "7.1-preview.1",
     })
     url = (
@@ -455,14 +461,23 @@ def _pending_approval_ids_for_build(org, project, build_id, auth):
         f"{urllib.parse.quote(project)}/_apis/pipelines/approvals?{query}"
     )
     pending = (_api_get(url, auth).get("value") or [])
-    ids = []
+    approvals = []
     for approval in pending:
         owner = ((approval.get("pipeline") or {}).get("owner") or {})
-        if str(owner.get("id") or "") == str(build_id):
-            approval_id = approval.get("id")
-            if approval_id:
-                ids.append(str(approval_id))
-    return ids
+        if str(owner.get("id") or "") != str(build_id):
+            continue
+        approval_id = approval.get("id")
+        if not approval_id:
+            continue
+        steps = approval.get("steps") or []
+        partially = any(
+            (step.get("status") or "").lower() == "approved" for step in steps
+        )
+        approvals.append({
+            "id": str(approval_id),
+            "partially_approved": partially,
+        })
+    return approvals
 
 
 def _approve_pending_approvals(org, project, approval_ids, auth):
@@ -535,10 +550,13 @@ def get_pipeline_stage_statuses(run_info):
         stages[key] = _timeline_state(record)
 
     pending_approval_ids = []
+    any_partially_approved = False
     try:
-        pending_approval_ids = _pending_approval_ids_for_build(
+        pending = _pending_approvals_for_build(
             org, project, int(build_id), auth
         )
+        pending_approval_ids = [a["id"] for a in pending]
+        any_partially_approved = any(a["partially_approved"] for a in pending)
     except urllib.error.HTTPError as exc:
         # Non-fatal for status rendering: keep stage view even if approvals fail.
         pending_approval_ids = []
@@ -571,6 +589,11 @@ def get_pipeline_stage_statuses(run_info):
             stages["production"] = "approval"
             approval_target = "production"
 
+    # A partially approved gate (e.g. the first of Production's two required
+    # approvals is already in) is shown as "ready" and never auto-approved again.
+    if approval_target and any_partially_approved:
+        stages[approval_target] = "ready"
+
     autoapprove_acceptance = bool(run_info.get("autoapprove_acceptance")) or (
         run_info.get("environment") == "acc"
         and bool(run_info.get("autoapprove_acc"))
@@ -584,6 +607,7 @@ def get_pipeline_stage_statuses(run_info):
         approval_target == "acceptance"
         and autoapprove_acceptance
         and pending_approval_ids
+        and not any_partially_approved
         and not run_info.get("_autoapprove_acceptance_done")
     ):
         ok_approve, approve_error = _approve_pending_approvals(
@@ -600,6 +624,7 @@ def get_pipeline_stage_statuses(run_info):
         approval_target == "production"
         and autoapprove_production
         and pending_approval_ids
+        and not any_partially_approved
         and not run_info.get("_autoapprove_production_done")
     ):
         ok_approve, approve_error = _approve_pending_approvals(

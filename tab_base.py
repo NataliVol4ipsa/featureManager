@@ -589,6 +589,19 @@ class ActionTabBase(ttk.Frame):
         ]
         self._pipeline_monitors.append(monitor)
 
+    def reopen_monitor_session(self, session):
+        """Reopen a pipeline monitor from a saved snapshot (see session_state)."""
+        run_infos = (session or {}).get("run_infos") or {}
+        if not run_infos:
+            return
+        test_reports = [tuple(item) for item in (session.get("test_reports") or [])]
+        self._open_pipeline_monitor(
+            run_infos,
+            show_autoapprove_controls=bool(session.get("show_autoapprove_controls")),
+            pbi_title=session.get("pbi_title", "") or "",
+            test_reports=test_reports,
+        )
+
     def show_master_pipeline_monitor_for_merged_prs(self, active):
         """Open monitor window for master runs tied to merged PR commits.
 
