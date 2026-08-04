@@ -203,6 +203,16 @@ class ManualTab(ActionTabBase):
                 "continue for the rest. Needs an ADO_PAT with Build (Read & "
                 "execute) permission.",
             ),
+            (
+                "View merged master pipelines",
+                self._action_show_master_pipelines_merged_pr,
+                "For every selected repository: finds the latest completed "
+                "Azure DevOps pull request from that repository's current "
+                "branch to master, resolves the matching master pipeline run "
+                "for that exact merge commit, and opens a live monitor. "
+                "Auto-approve controls are shown only in this master-pipeline "
+                "monitor.",
+            ),
         ]
 
     def _open_actions(self):
@@ -237,15 +247,6 @@ class ManualTab(ActionTabBase):
                 "pull request for each repo's current branch and opens it in your "
                 "default web browser. Repos with no open PR are reported in the "
                 "Errors panel.",
-            ),
-            (
-                "Open master pipeline runs (merged PR)",
-                self._action_open_master_pipeline_runs,
-                "For every selected repository: finds the latest completed Azure "
-                "DevOps pull request from that repository's current branch to "
-                "master, then opens the master pipeline run triggered for that "
-                "specific merge commit. If no merged PR or matching master run "
-                "exists yet, the repository is listed in the Errors panel.",
             ),
         ]
 
@@ -440,6 +441,13 @@ class ManualTab(ActionTabBase):
         active = [(name, path, git_current_branch(path)) for name, path in repos]
         self.run_pipelines(active, environment)
 
+    def _action_show_master_pipelines_merged_pr(self):
+        repos = self._all_selected_repos()
+        if not repos:
+            return
+        active = [(name, path, git_current_branch(path)) for name, path in repos]
+        self.show_master_pipeline_monitor_for_merged_prs(active)
+
     # -- Open on the remote host ------------------------------------------- #
     def _action_open_repos_master(self):
         self.open_repos_master(self._all_selected_repos())
@@ -449,13 +457,6 @@ class ManualTab(ActionTabBase):
 
     def _action_open_prs(self):
         self.open_prs(self._all_selected_repos())
-
-    def _action_open_master_pipeline_runs(self):
-        repos = self._all_selected_repos()
-        if not repos:
-            return
-        active = [(name, path, git_current_branch(path)) for name, path in repos]
-        self.open_master_pipeline_runs_for_merged_prs(active)
 
     # -- Create feature workspace ------------------------------------------ #
     def _action_create_workspace(self):

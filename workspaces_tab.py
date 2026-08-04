@@ -283,7 +283,36 @@ class WorkspacesTab(ActionTabBase):
                 "are reported first, letting you abort or continue for the rest. "
                 "Needs an ADO_PAT with Build (Read & execute) permission.",
             ),
+            (
+                "View merged master pipelines",
+                self._action_show_master_pipelines_merged_pr,
+                "For the selected workspace's non-skipped repositories: "
+                "finds the latest completed pull request from each workspace "
+                "feature branch to master, resolves the matching master "
+                "pipeline run for that exact merge commit, and opens a live "
+                "monitor window with one row per repository. Auto-approve "
+                "controls are shown only in this master-pipeline monitor.",
+            ),
         ]
+
+    def _action_show_master_pipelines_merged_pr(self):
+        """Open a monitor for merged-PR master pipeline runs of active repos."""
+        self.errors.clear()
+        ok, workspace, entries = self._selected_entries()
+        if not ok:
+            self.errors.add(entries)
+            return
+
+        active = [
+            (e["name"], e["path"], e["branch"])
+            for e in entries if not e["ignoreGit"]
+        ]
+        if not active:
+            self.errors.add(
+                "this workspace has no repositories to show master pipelines for"
+            )
+            return
+        self.show_master_pipeline_monitor_for_merged_prs(active)
 
     def _open_actions(self):
         return [
@@ -325,17 +354,6 @@ class WorkspacesTab(ActionTabBase):
                 "Azure DevOps pull request for each repo's current branch and "
                 "opens it in your default web browser. Repos with no open PR are "
                 "reported in the Errors panel.",
-            ),
-            (
-                "Open master pipeline runs (merged PR)",
-                self._action_open_master_pipeline_runs,
-                "For the selected workspace's non-skipped repositories: finds "
-                "the latest completed Azure DevOps pull request from each "
-                "workspace feature branch to master, then opens the master "
-                "pipeline run for that specific PR merge commit. This does not "
-                "require the feature branch to still exist on the remote. "
-                "Repositories with no merged PR or no matching run are listed "
-                "in the Errors panel.",
             ),
         ]
 
@@ -719,26 +737,6 @@ class WorkspacesTab(ActionTabBase):
                 self.errors.add(repos)
             return
         self.open_prs(repos)
-
-    # -- Open master pipeline runs tied to merged PRs --------------------- #
-    def _action_open_master_pipeline_runs(self):
-        self.errors.clear()
-        ok, workspace, entries = self._selected_entries()
-        if not ok:
-            if workspace is not None:
-                self.errors.add(entries)
-            return
-
-        active = [
-            (e["name"], e["path"], e["branch"])
-            for e in entries if not e["ignoreGit"]
-        ]
-        if not active:
-            self.errors.add(
-                "this workspace has no repositories to open master pipeline runs for"
-            )
-            return
-        self.open_master_pipeline_runs_for_merged_prs(active)
 
     # -- Create workspace from a PBI --------------------------------------- #
     def _action_create_from_pbi(self):

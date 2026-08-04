@@ -11,7 +11,7 @@ This module contains no UI. For one repository it:
 The deploy toggles shown in the "Run pipeline" dialog are YAML *runtime
 parameters*. Their real names are discovered from the repository's local
 pipeline YAML (no YAML dependency - a light regex scan of the top-level
-``parameters:`` block), falling back to the standard Equity Value Chain
+``parameters:`` block), falling back to the standard
 deployment-template names when the file cannot be read.
 
 Authentication reuses the ``ADO_PAT`` environment variable (the same one used
@@ -49,6 +49,25 @@ _PIPELINE_YAML_NAMES = (
     "azure-pipelines.yml", "azure-pipeline.yml",
     "azure-pipelines.yaml", "azure-pipeline.yaml",
 )
+
+# Words in a build/pipeline definition name that mark it as a non-deployment
+# build (PR validation, Veracode, NuGet library, etc.). When a repository has
+# several definitions, these are skipped in favour of the deployment pipeline.
+_NON_DEPLOY_DEFINITION_WORDS = ("pr", "veracode", "validation", "nuget", "library")
+
+
+def _is_deploy_definition_name(name):
+    """Return True when *name* looks like a deployment pipeline (not a PR/library build).
+
+    Matches on whole words only so a repo name that merely contains one of the
+    words (e.g. "MyValidations" contains "validation") is not misclassified.
+    """
+    lowered = (name or "").lower()
+    return not any(
+        re.search(rf"\b{re.escape(word)}\b", lowered)
+        for word in _NON_DEPLOY_DEFINITION_WORDS
+    )
+
 
 PIPELINE_STAGE_KEYS = ("build", "development", "acceptance", "production")
 PIPELINE_STAGE_DEFAULTS = {
@@ -268,10 +287,9 @@ def _resolve_pipeline_id(org, project, repo_id, auth):
     if len(definitions) == 1:
         return definitions[0].get("id")
 
-    skip_words = ("pr", "veracode", "validation", "nuget")
     preferred = [
         d for d in definitions
-        if not any(word in (d.get("name") or "").lower() for word in skip_words)
+        if _is_deploy_definition_name(d.get("name"))
     ]
     chosen = preferred[0] if preferred else definitions[0]
     return chosen.get("id")
@@ -353,11 +371,19 @@ def _pipeline_build_for_commit(org, project, repo_id, commit_id, auth):
     ]
     if not matched:
         return None
-    matched.sort(
+    # A repo can have several definitions build the same merge commit (e.g. a
+    # deployment pipeline plus a NuGet "Library" build). Prefer the deployment
+    # pipeline so viewing opens the run that actually deploys the branch.
+    deploy_builds = [
+        build for build in matched
+        if _is_deploy_definition_name((build.get("definition") or {}).get("name"))
+    ]
+    candidates = deploy_builds or matched
+    candidates.sort(
         key=lambda build: build.get("queueTime") or "",
         reverse=True,
     )
-    return matched[0]
+    return candidates[0]
 
 
 def _build_web_url(org, project, build):
@@ -545,22 +571,45 @@ def get_pipeline_stage_statuses(run_info):
             stages["production"] = "approval"
             approval_target = "production"
 
-    autoapproved = False
-    autoapprove_error = ""
-    if (
+    autoapprove_acceptance = bool(run_info.get("autoapprove_acceptance")) or (
         run_info.get("environment") == "acc"
         and bool(run_info.get("autoapprove_acc"))
-        and approval_target == "acceptance"
+    )
+    autoapprove_production = bool(run_info.get("autoapprove_production"))
+
+    autoapproved = False
+    autoapproved_target = ""
+    autoapprove_error = ""
+    if (
+        approval_target == "acceptance"
+        and autoapprove_acceptance
         and pending_approval_ids
-        and not run_info.get("_autoapprove_done")
+        and not run_info.get("_autoapprove_acceptance_done")
     ):
         ok_approve, approve_error = _approve_pending_approvals(
             org, project, pending_approval_ids, auth
         )
         if ok_approve:
-            run_info["_autoapprove_done"] = True
+            run_info["_autoapprove_acceptance_done"] = True
             autoapproved = True
+            autoapproved_target = "acceptance"
             stages["acceptance"] = "running"
+        else:
+            autoapprove_error = approve_error
+    elif (
+        approval_target == "production"
+        and autoapprove_production
+        and pending_approval_ids
+        and not run_info.get("_autoapprove_production_done")
+    ):
+        ok_approve, approve_error = _approve_pending_approvals(
+            org, project, pending_approval_ids, auth
+        )
+        if ok_approve:
+            run_info["_autoapprove_production_done"] = True
+            autoapproved = True
+            autoapproved_target = "production"
+            stages["production"] = "running"
         else:
             autoapprove_error = approve_error
 
@@ -572,6 +621,7 @@ def get_pipeline_stage_statuses(run_info):
         "stages": stages,
         "approval_target": approval_target,
         "autoapproved": autoapproved,
+        "autoapproved_target": autoapproved_target,
         "autoapprove_error": autoapprove_error,
     }
 
@@ -638,13 +688,10 @@ def run_pipeline_for_repo(name, path, branch, environment):
     return True, result.get("url") or ""
 
 
-def get_master_pipeline_run_for_merged_branch(name, path, branch):
-    """Return (ok, url_or_error) for the master run tied to *branch*'s merged PR.
+def get_master_pipeline_run_for_merged_branch_details(name, path, branch):
+    """Return (ok, details_or_error) for merged-PR master pipeline run lookup.
 
-    Flow:
-      1. Find the latest completed PR from refs/heads/<branch> to master.
-      2. Read its merge commit id.
-      3. Find the repository pipeline build on refs/heads/master for that commit.
+    The returned details are monitor-ready and include build id and ADO context.
     """
     if not is_git_repo(path):
         return False, f"{name}: not a git repository"
@@ -691,4 +738,113 @@ def get_master_pipeline_run_for_merged_branch(name, path, branch):
     web = _build_web_url(org, project, build)
     if not web:
         return False, f"{name}: pipeline run found but could not build a web URL"
-    return True, web
+    return True, {
+        "url": web,
+        "build_id": build.get("id"),
+        "org": org,
+        "project": project,
+        "repo": repo,
+        "host": host,
+        "branch": branch,
+    }
+
+
+def get_master_pipeline_run_for_merged_branch(name, path, branch):
+    """Return (ok, url_or_error) for the master run tied to *branch*'s merged PR.
+
+    Flow:
+      1. Find the latest completed PR from refs/heads/<branch> to master.
+      2. Read its merge commit id.
+      3. Find the repository pipeline build on refs/heads/master for that commit.
+    """
+    ok, result = get_master_pipeline_run_for_merged_branch_details(name, path, branch)
+    if not ok:
+        return False, result
+    return True, result.get("url") or ""
+
+
+# --------------------------------------------------------------------------- #
+# Work item title + test reports (the "Tested By" linked work items)
+# --------------------------------------------------------------------------- #
+
+# Reference name of the "Tested By" (forward) work-item relation.
+_TESTED_BY_REL = "Microsoft.VSTS.Common.TestedBy-Forward"
+
+
+def _work_item_edit_url(org, project, work_item_id):
+    """Return the human-facing Azure DevOps edit URL for a work item."""
+    return (
+        f"https://dev.azure.com/{urllib.parse.quote(org)}/"
+        f"{urllib.parse.quote(project)}/_workitems/edit/{work_item_id}"
+    )
+
+
+def get_work_item_report_details(org, project, work_item_id, host):
+    """Return (ok, details_or_error) for a work item's title and test reports.
+
+    On success *details* is ``{"title": str, "test_reports": [(name, url), ...]}``
+    where each test report is a work item linked to *work_item_id* via the
+    "Tested By" relation (name is its title, url is its edit page).
+    """
+    auth, err = _auth_for_host(host)
+    if err:
+        return False, err
+
+    url = (
+        f"https://dev.azure.com/{urllib.parse.quote(org)}/"
+        f"{urllib.parse.quote(project)}/_apis/wit/workitems/"
+        f"{urllib.parse.quote(str(work_item_id))}"
+        "?$expand=relations&api-version=7.1"
+    )
+    try:
+        data = _api_get(url, auth)
+    except urllib.error.HTTPError as exc:
+        return False, (
+            f"work item {work_item_id} lookup failed ({exc.code}): "
+            f"{_http_error_detail(exc)}"
+        )
+    except (urllib.error.URLError, OSError, ValueError) as exc:
+        return False, f"work item {work_item_id} lookup failed: {exc}"
+
+    title = ((data.get("fields") or {}).get("System.Title") or "").strip()
+
+    tested_by_ids = []
+    for rel in data.get("relations") or []:
+        if (rel.get("rel") or "") != _TESTED_BY_REL:
+            continue
+        rel_id = (rel.get("url") or "").rstrip("/").rsplit("/", 1)[-1]
+        if rel_id.isdigit() and rel_id not in tested_by_ids:
+            tested_by_ids.append(rel_id)
+
+    test_reports = []
+    for rid in tested_by_ids:
+        report_url = (
+            f"https://dev.azure.com/{urllib.parse.quote(org)}/"
+            f"{urllib.parse.quote(project)}/_apis/wit/workitems/"
+            f"{urllib.parse.quote(rid)}?fields=System.Title&api-version=7.1"
+        )
+        try:
+            report_data = _api_get(report_url, auth)
+            name = ((report_data.get("fields") or {}).get("System.Title")
+                    or "").strip() or f"Work item {rid}"
+        except (urllib.error.HTTPError, urllib.error.URLError,
+                OSError, ValueError):
+            name = f"Work item {rid}"
+        test_reports.append((name, _work_item_edit_url(org, project, rid)))
+
+    return True, {"title": title, "test_reports": test_reports}
+
+
+def get_work_item_report_details_for_repo(name, path, work_item_id):
+    """Return (ok, details_or_error) using *path*'s Azure DevOps org/project.
+
+    Convenience wrapper around ``get_work_item_report_details`` that resolves the
+    org/project/host from the repository remote.
+    """
+    if not is_git_repo(path):
+        return False, f"{name}: not a git repository"
+    parsed = parse_ado_remote(git_remote_url(path))
+    if not parsed:
+        return False, f"{name}: remote is not an Azure DevOps repository"
+    org, project, _repo, host = parsed
+    return get_work_item_report_details(org, project, work_item_id, host)

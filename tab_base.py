@@ -14,7 +14,7 @@ from gitutils import (
     is_git_repo, git_current_branch, git_has_changes, commit_all, git_push,
     git_branch_url, create_ado_pr, ado_pr_title_from_branch,
     git_branch_is_empty, open_in_terminal_tabs, get_ado_pr_url,
-    remote_branch_exists,
+    remote_branch_exists, ado_work_item_id_from_branch,
 )
 from dialogs import (
     ask_change_decision, ask_commit_message, ask_branch_warning, ask_pr_details,
@@ -22,7 +22,8 @@ from dialogs import (
 )
 from pipelines import (
     run_pipeline_for_repo_details,
-    get_master_pipeline_run_for_merged_branch,
+    get_master_pipeline_run_for_merged_branch_details,
+    get_work_item_report_details_for_repo,
 )
 import packages
 from pipeline_monitor import PipelineMonitorWindow
@@ -571,9 +572,16 @@ class ActionTabBase(ttk.Frame):
             on_complete=_on_complete,
         )
 
-    def _open_pipeline_monitor(self, run_infos):
+    def _open_pipeline_monitor(self, run_infos, show_autoapprove_controls=False,
+                               pbi_title="", test_reports=None):
         """Create a floating always-on-top window tracking started pipeline runs."""
-        monitor = PipelineMonitorWindow(self, run_infos)
+        monitor = PipelineMonitorWindow(
+            self,
+            run_infos,
+            show_autoapprove_controls=show_autoapprove_controls,
+            pbi_title=pbi_title,
+            test_reports=test_reports,
+        )
         # Drop dead references before storing the new monitor.
         self._pipeline_monitors = [
             win for win in self._pipeline_monitors
@@ -581,12 +589,10 @@ class ActionTabBase(ttk.Frame):
         ]
         self._pipeline_monitors.append(monitor)
 
-    def open_master_pipeline_runs_for_merged_prs(self, active):
-        """Open each branch's master pipeline run tied to that branch's merged PR.
+    def show_master_pipeline_monitor_for_merged_prs(self, active):
+        """Open monitor window for master runs tied to merged PR commits.
 
-        *active* is a list of (name, path, branch). For each repo, this looks up
-        the latest completed PR from that specific branch into master, then opens
-        the master pipeline run for that PR merge commit.
+        *active* is a list of (name, path, branch).
         """
         self.errors.clear()
         if not active:
@@ -597,27 +603,88 @@ class ActionTabBase(ttk.Frame):
 
         self.show_repos_async(repos, with_status=False)
         self.progress.show_completion(
-            "Resolving merged-PR master pipeline runs..."
+            "Resolving merged-PR master pipeline runs for monitor..."
         )
 
         def _work():
-            results = []
+            run_infos = {}
+            errors = []
             for name, path, _ in active:
-                ok, result = get_master_pipeline_run_for_merged_branch(
+                ok, result = get_master_pipeline_run_for_merged_branch_details(
                     name, path, branch_of[name]
                 )
                 if ok:
-                    results.append((name, result, ""))
+                    run_infos[name] = result
                 else:
-                    results.append((name, "", result))
+                    errors.append(result)
+            pbi_title, test_reports, wi_errors = self._resolve_master_pbi_info(active)
+            errors.extend(wi_errors)
             self.after(
                 0,
-                self._on_urls_resolved,
-                results,
-                "master pipeline run(s)",
+                self._on_master_pipeline_monitor_resolved,
+                run_infos,
+                errors,
+                pbi_title,
+                test_reports,
             )
 
         threading.Thread(target=_work, daemon=True).start()
+
+    def _resolve_master_pbi_info(self, active):
+        """Return (pbi_title, test_reports, errors) from the branches' work items.
+
+        Work item ids are read from the feature branch names; duplicates (repos
+        sharing the same PBI) are resolved once. *test_reports* is a de-duplicated
+        list of (name, url) for every "Tested By" linked work item.
+        """
+        seen_wid = {}
+        for name, path, branch in active:
+            wid = ado_work_item_id_from_branch(branch)
+            if wid and wid not in seen_wid:
+                seen_wid[wid] = (name, path)
+
+        titles = []
+        test_reports = []
+        seen_report_urls = set()
+        errors = []
+        for wid, (name, path) in seen_wid.items():
+            ok, result = get_work_item_report_details_for_repo(name, path, wid)
+            if not ok:
+                errors.append(result)
+                continue
+            if result.get("title"):
+                titles.append(result["title"])
+            for report_name, report_url in result.get("test_reports", []):
+                if report_url not in seen_report_urls:
+                    seen_report_urls.add(report_url)
+                    test_reports.append((report_name, report_url))
+
+        return " | ".join(titles), test_reports, errors
+
+    def _on_master_pipeline_monitor_resolved(self, run_infos, errors,
+                                             pbi_title="", test_reports=None):
+        """Show lookup errors and open monitor for all resolved merged-PR runs."""
+        self.progress.clear_completion()
+        for message in errors:
+            self.errors.add(message)
+
+        if not run_infos:
+            return
+
+        for info in run_infos.values():
+            info["is_master_run"] = True
+
+        self._open_pipeline_monitor(
+            run_infos,
+            show_autoapprove_controls=True,
+            pbi_title=pbi_title,
+            test_reports=test_reports,
+        )
+        count = len(run_infos)
+        self.progress.show_completion(
+            f"Opened monitor for {count} master pipeline run"
+            f"{'s' if count != 1 else ''}."
+        )
 
     # -- Open on the remote host in the browser ---------------------------- #
     def open_repos_master(self, repos):

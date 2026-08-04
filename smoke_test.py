@@ -51,16 +51,16 @@ REQUIRED_REPO_LABELS = {
     "Bump all NuGet packages",
     "Run dev pipelines",
     "Run acc pipelines",
+    "View merged master pipelines",
     "Open repositories (master)",
     "Open remote branches",
     "Open pull requests",
-    "Open master pipeline runs (merged PR)",
 }
 
 # Shared helpers that must live on the base class after the refactor.
 BASE_SHARED_METHODS = [
     "bump_packages", "run_pipelines", "open_repos_master", "open_branches",
-    "open_prs", "open_master_pipeline_runs_for_merged_prs", "copy_pr_links",
+    "open_prs", "show_master_pipeline_monitor_for_merged_prs", "copy_pr_links",
     "open_terminals", "push_all", "create_prs", "commit_all_changes",
 ]
 
@@ -115,7 +115,7 @@ def _check_repo_delegation(repo_tab):
     # Stub every heavy base method on the instance so nothing external runs.
     for name in ("bump_packages", "run_pipelines", "copy_pr_links",
                  "open_repos_master", "open_branches", "open_prs",
-                 "open_master_pipeline_runs_for_merged_prs",
+                 "show_master_pipeline_monitor_for_merged_prs",
                  "open_terminals", "push_all", "create_prs",
                  "commit_all_changes"):
         setattr(repo_tab, name, recorder(name))
@@ -180,11 +180,11 @@ def _check_repo_delegation(repo_tab):
         check(name == "open_prs" and args == (FAKE_REPOS,),
               f"Open pull requests did not delegate correctly: {last()!r}")
 
-        repo_tab._action_open_master_pipeline_runs()
+        repo_tab._action_show_master_pipelines_merged_pr()
         name, args, _ = last()
-        check(name == "open_master_pipeline_runs_for_merged_prs"
+        check(name == "show_master_pipeline_monitor_for_merged_prs"
               and args == (expected_active,),
-              "Open master pipeline runs (merged PR) did not delegate "
+              "View merged master pipelines did not delegate "
               f"correctly: {last()!r}")
 
         repo_tab._action_open_terminals()

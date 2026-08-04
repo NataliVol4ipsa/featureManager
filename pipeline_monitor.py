@@ -11,6 +11,7 @@ import webbrowser
 from tkinter import ttk
 
 import theme
+from widgets import Tooltip
 from pipelines import get_pipeline_stage_statuses
 
 
@@ -86,7 +87,8 @@ def _format_local_time(value):
 class PipelineMonitorWindow(tk.Toplevel):
     """Always-on-top floating monitor for pipeline stage statuses."""
 
-    def __init__(self, parent, run_infos):
+    def __init__(self, parent, run_infos, show_autoapprove_controls=False,
+                 pbi_title="", test_reports=None):
         super().__init__(parent.winfo_toplevel())
         self.title("Pipeline monitor")
         self.geometry("760x250")
@@ -100,15 +102,99 @@ class PipelineMonitorWindow(tk.Toplevel):
         self._poll_in_progress = False
         self._next_poll_token = None
         self._run_infos = dict(run_infos)
+        self._show_autoapprove_controls = bool(show_autoapprove_controls)
+        self._pbi_title = (pbi_title or "").strip()
+        self._test_reports = list(test_reports or [])
         self._rows = {}
         self._scrollbar_visible = True
         self._pan_anchor = None
+        self._acc_locked_by_master = False
+        self._prod_locked_by_master = False
+        self._autoapprove_acceptance = any(
+            bool(info.get("autoapprove_acceptance")) or (
+                info.get("environment") == "acc"
+                and bool(info.get("autoapprove_acc"))
+            )
+            for info in self._run_infos.values()
+        )
+        self._autoapprove_production = any(
+            bool(info.get("autoapprove_production"))
+            for info in self._run_infos.values()
+        )
 
         self._build_ui()
+        self._apply_autoapprove_flags()
         self.protocol("WM_DELETE_WINDOW", self._on_close)
         self.after(150, self._poll_once)
 
     def _build_ui(self):
+        # Master monitors show the PBI title centered above the controls row.
+        if self._show_autoapprove_controls and self._pbi_title:
+            title_bar = ttk.Frame(self)
+            title_bar.pack(side="top", fill="x", padx=10, pady=(8, 0))
+            ttk.Label(
+                title_bar, text=self._pbi_title, anchor="center",
+                font=("", 10, "bold"),
+            ).pack(fill="x")
+
+        controls = ttk.Frame(self)
+        controls.pack(side="top", fill="x", padx=10, pady=(8, 0))
+
+        self._acc_button = None
+        self._prod_button = None
+        if self._show_autoapprove_controls:
+            self._acc_button = ttk.Button(
+                controls,
+                command=self._toggle_autoapprove_acceptance,
+            )
+            self._acc_button.pack(side="left")
+            Tooltip(
+                self._acc_button,
+                "Toggle auto-approval of the Acceptance (ACC) deployment gate "
+                "for the tracked master runs. Disabled once master is already "
+                "deployed to ACC for every tracked repository.",
+            )
+
+            self._prod_button = ttk.Button(
+                controls,
+                command=self._toggle_autoapprove_production,
+            )
+            self._prod_button.pack(side="left", padx=(6, 0))
+            Tooltip(
+                self._prod_button,
+                "Toggle auto-approval of the Production (PRD) deployment gate "
+                "for the tracked master runs. Disabled once master is already "
+                "deployed to PRD for every tracked repository.",
+            )
+
+        if self._show_autoapprove_controls:
+            self._copy_links_button = ttk.Button(
+                controls,
+                text="Generate release message",
+                command=self._generate_release_message,
+            )
+            Tooltip(
+                self._copy_links_button,
+                "Copy a release message to the clipboard: the feature name, "
+                "then a '<service>: run link' line for every tracked "
+                "repository, then each 'Tested By' work item as "
+                "'test name: link'.",
+            )
+        else:
+            self._copy_links_button = ttk.Button(
+                controls,
+                text="Copy all links",
+                command=self._copy_all_links,
+            )
+            Tooltip(
+                self._copy_links_button,
+                "Copy a '<service> - run link' line for every tracked "
+                "repository to the clipboard.",
+            )
+        self._copy_links_button.pack(side="left", padx=(12, 0))
+
+        self._sync_control_labels()
+
         table_shell = ttk.Frame(self)
         table_shell.pack(side="top", fill="both", expand=True, padx=10, pady=(8, 10))
 
@@ -177,6 +263,131 @@ class PipelineMonitorWindow(tk.Toplevel):
             self._draw_row(repo)
 
         self.after_idle(self._update_scrollregion_and_scrollbar)
+
+    def _sync_control_labels(self):
+        """Refresh monitor control labels to reflect current toggle states."""
+        if not self._show_autoapprove_controls:
+            return
+
+        if self._acc_locked_by_master:
+            acc_text = "Auto-approve ACC: DISABLED (master deployed)"
+        else:
+            acc_state = "ON" if self._autoapprove_acceptance else "OFF"
+            acc_text = f"Auto-approve ACC: {acc_state}"
+
+        if self._prod_locked_by_master:
+            prod_text = "Auto-approve PRD: DISABLED (master deployed)"
+        else:
+            prod_state = "ON" if self._autoapprove_production else "OFF"
+            prod_text = f"Auto-approve PRD: {prod_state}"
+
+        self._acc_button.configure(
+            text=acc_text,
+            state=("disabled" if self._acc_locked_by_master else "normal"),
+        )
+        self._prod_button.configure(
+            text=prod_text,
+            state=("disabled" if self._prod_locked_by_master else "normal"),
+        )
+
+    def _apply_autoapprove_flags(self):
+        """Propagate monitor toggle state into each tracked run info payload."""
+        for info in self._run_infos.values():
+            info["autoapprove_acceptance"] = bool(self._autoapprove_acceptance)
+            info["autoapprove_production"] = bool(self._autoapprove_production)
+
+    def _toggle_autoapprove_acceptance(self):
+        if self._acc_locked_by_master:
+            return
+        self._autoapprove_acceptance = not self._autoapprove_acceptance
+        self._apply_autoapprove_flags()
+        self._sync_control_labels()
+
+    def _toggle_autoapprove_production(self):
+        if self._prod_locked_by_master:
+            return
+        self._autoapprove_production = not self._autoapprove_production
+        self._apply_autoapprove_flags()
+        self._sync_control_labels()
+
+    def _refresh_autoapprove_locks(self):
+        """Lock autoapprove controls when a tracked master run is already deployed."""
+        if not self._show_autoapprove_controls:
+            return
+
+        master_repos = [
+            repo for repo, info in self._run_infos.items()
+            if info.get("is_master_run")
+        ]
+        if master_repos:
+            acc_locked = all(
+                ((self._rows.get(repo) or {}).get("stages") or {}).get("acceptance")
+                == "done"
+                for repo in master_repos
+            )
+            prod_locked = all(
+                ((self._rows.get(repo) or {}).get("stages") or {}).get("production")
+                == "done"
+                for repo in master_repos
+            )
+        else:
+            acc_locked = False
+            prod_locked = False
+
+        flags_changed = False
+        if acc_locked and self._autoapprove_acceptance:
+            self._autoapprove_acceptance = False
+            flags_changed = True
+        if prod_locked and self._autoapprove_production:
+            self._autoapprove_production = False
+            flags_changed = True
+
+        lock_changed = (
+            acc_locked != self._acc_locked_by_master
+            or prod_locked != self._prod_locked_by_master
+        )
+        self._acc_locked_by_master = acc_locked
+        self._prod_locked_by_master = prod_locked
+
+        if flags_changed:
+            self._apply_autoapprove_flags()
+        if lock_changed or flags_changed:
+            self._sync_control_labels()
+
+    def _copy_all_links(self):
+        """Copy multiline '<service> - <link>' output for all rows with URLs."""
+        lines = []
+        for repo in sorted(self._rows):
+            url = self._rows[repo].get("link_url") or ""
+            if url:
+                lines.append(f"{repo} - {url}")
+        if not lines:
+            return
+        text = "\n".join(lines)
+        self.clipboard_clear()
+        self.clipboard_append(text)
+        self.title("Pipeline monitor - links copied")
+
+    def _generate_release_message(self):
+        """Copy the feature name, run links and linked test report links."""
+        lines = []
+        # Feature name is the part after '|' in the PBI title (fallback: title).
+        feature_name = (self._pbi_title.split("|")[-1]).strip()
+        if feature_name:
+            lines.append(feature_name)
+        for repo in sorted(self._rows):
+            url = self._rows[repo].get("link_url") or ""
+            if url:
+                lines.append(f"{repo}: {url}")
+        if self._test_reports:
+            for name, url in self._test_reports:
+                lines.append(f"{name}: {url}")
+        if not lines:
+            return
+        text = "\n".join(lines)
+        self.clipboard_clear()
+        self.clipboard_append(text)
+        self.title("Pipeline monitor - release message copied")
 
     def _on_canvas_layout_changed(self, _event=None):
         self._update_scrollregion_and_scrollbar()
@@ -297,7 +508,11 @@ class PipelineMonitorWindow(tk.Toplevel):
                 self._rows[repo]["stages"].update(payload.get("stages") or {})
                 latest_timestamp = payload.get("updated_at", latest_timestamp)
                 if payload.get("autoapproved"):
-                    autoapproved_repos.append(repo)
+                    target = payload.get("autoapproved_target")
+                    if target:
+                        autoapproved_repos.append(f"{repo}({target})")
+                    else:
+                        autoapproved_repos.append(repo)
                 if payload.get("autoapprove_error"):
                     autoapprove_errors.append(f"{repo}: {payload.get('autoapprove_error')}")
                 build_id = self._rows[repo].get("build_id")
@@ -319,6 +534,8 @@ class PipelineMonitorWindow(tk.Toplevel):
                     text="poll error", foreground=theme.ERROR, cursor=""
                 )
                 self._rows[repo]["link"].unbind("<Button-1>")
+
+            self._refresh_autoapprove_locks()
 
         if latest_timestamp:
             latest_time = _format_local_time(latest_timestamp)
