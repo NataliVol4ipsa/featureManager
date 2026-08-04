@@ -6,6 +6,7 @@ and a generic background runner that drives the per-repo status indicators.
 
 import threading
 import tkinter as tk
+import webbrowser
 from tkinter import ttk
 
 from widgets import Tooltip, ProgressPanel, ErrorList
@@ -13,10 +14,14 @@ from gitutils import (
     is_git_repo, git_current_branch, git_has_changes, commit_all, git_push,
     git_branch_url, create_ado_pr, ado_pr_title_from_branch,
     git_branch_is_empty, open_in_terminal_tabs, get_ado_pr_url,
+    remote_branch_exists,
 )
 from dialogs import (
     ask_change_decision, ask_commit_message, ask_branch_warning, ask_pr_details,
+    ask_missing_remote_branches,
 )
+from pipelines import run_pipeline_for_repo
+import packages
 
 
 class ActionTabBase(ttk.Frame):
@@ -376,6 +381,247 @@ class ActionTabBase(ttk.Frame):
         ok, message = open_in_terminal_tabs(repos)
         if not ok:
             self.errors.add(message)
+
+    # -- Bump NuGet packages ----------------------------------------------- #
+    def bump_packages(self, repos, include_public, include_private, label):
+        """Bump each repo's out-of-date package versions for the chosen feeds.
+
+        Repos without a Directory.Packages.props in their root are marked
+        skipped. When the private feed is involved an Azure CLI token is fetched
+        once up front (on a background thread) with a feed reachability check, so
+        a "not logged in" / unreachable failure is reported once, not per repo.
+        Each repo's props file is rewritten in place; a per-repo report of the
+        applied bumps is offered to copy on completion. *repos* is assumed
+        non-empty (callers validate their selection first).
+        """
+        self.show_repos_async(repos, with_status=True)
+
+        # The private feed needs an Azure CLI token; fetch it once (off the UI
+        # thread) so a "not logged in" failure is reported once, not per repo.
+        # A reachability healthcheck follows the token (the private feed may need
+        # the VPN), so an unreachable feed is reported before any bump is tried.
+        if include_private:
+            def _prepare():
+                token = packages.get_azure_devops_token()
+                feed_error = ""
+                if token:
+                    ok_hc, feed_error = packages.healthcheck_private_feeds(
+                        [path for _, path in repos], token
+                    )
+                    if ok_hc:
+                        feed_error = ""
+                self.after(0, self._start_bump, repos, include_public,
+                           include_private, label, token, feed_error)
+            threading.Thread(target=_prepare, daemon=True).start()
+        else:
+            self._start_bump(repos, include_public, include_private, label, None)
+
+    def _start_bump(self, repos, include_public, include_private, label, token,
+                    feed_error=""):
+        """Run the actual per-repo bump once any required token/healthcheck passes."""
+        if include_private and not token:
+            self.progress.show_repos([])
+            self.errors.add(
+                "could not get an Azure DevOps token - run 'az login' first"
+            )
+            return
+        if include_private and feed_error:
+            self.progress.show_repos([])
+            self.errors.add(feed_error)
+            return
+
+        reports = {}
+        self._bump_reports = reports
+
+        def _skip(name, path):
+            if not packages.find_props_file(path):
+                return "no Directory.Packages.props in repo root"
+            return ""
+
+        def _bump(name, path):
+            ok_bump, result = packages.bump_repo_packages(
+                path, include_public=include_public,
+                include_private=include_private, token=token,
+            )
+            if not ok_bump:
+                return False, result
+            reports[name] = result
+            return True, ""
+
+        def _report_text(ok_repos):
+            lines = []
+            for name, _ in ok_repos:
+                bumps = reports.get(name, [])
+                if bumps:
+                    lines.append(name)
+                    for package_id, old, new in bumps:
+                        lines.append(f"  {package_id}: {old} -> {new}")
+                else:
+                    lines.append(f"{name} (up to date)")
+            return "\n".join(lines)
+
+        self.run_repo_action(
+            repos,
+            _bump,
+            f"Package versions bumped ({label}).",
+            skip_fn=_skip,
+            completion_copy_fn=_report_text,
+            completion_copy_label="Copy report",
+        )
+
+    # -- Run pipelines ----------------------------------------------------- #
+    def run_pipelines(self, active, environment):
+        """Start each repo's pipeline on the given branch for *environment*.
+
+        *active* is a list of (name, path, branch). Each repo's remote branch
+        must exist; those that do not are reported in a modal that lets the user
+        abort or continue for the rest. The remote check hits the network so it
+        runs on a background thread. *active* is assumed non-empty.
+        """
+        self.show_repos_async([(n, p) for n, p, _ in active], with_status=True)
+
+        def _check():
+            existing, missing = [], []
+            for name, path, branch in active:
+                if is_git_repo(path) and remote_branch_exists(path, branch):
+                    existing.append((name, path, branch))
+                else:
+                    missing.append(name)
+            self.after(0, self._on_branches_checked, environment, existing, missing)
+
+        threading.Thread(target=_check, daemon=True).start()
+
+    def _on_branches_checked(self, environment, existing, missing):
+        """After the remote-branch scan: confirm missing repos, then run."""
+        env_label = "Development" if environment == "dev" else "Acceptance"
+        if missing:
+            if not ask_missing_remote_branches(self, missing, env_label):
+                self.progress.show_repos([])
+                return
+        if not existing:
+            self.errors.add(
+                "None of the selected repositories have a remote branch to run."
+            )
+            return
+
+        repos = [(name, path) for name, path, _ in existing]
+        branch_of = {name: branch for name, _, branch in existing}
+        urls = {}
+        self._pipeline_urls = urls
+
+        def _run(name, path):
+            ok, result = run_pipeline_for_repo(
+                name, path, branch_of[name], environment
+            )
+            if ok:
+                urls[name] = result
+                return True, ""
+            return False, result
+
+        self.run_repo_action(
+            repos,
+            _run,
+            f"Pipelines started for the {env_label} environment.",
+            link_fn=lambda n, p: urls.get(n, ""),
+            link_text="View run",
+            link_header="Pipeline run",
+            completion_open_fn=lambda ok_repos: [
+                urls[n] for n, _ in ok_repos if urls.get(n)
+            ],
+            completion_open_label="Open pipelines",
+            completion_copy_fn=lambda ok_repos: "\n".join(
+                f"{n} - {urls[n]}" for n, _ in ok_repos if urls.get(n)
+            ),
+            completion_copy_label="Copy links",
+        )
+
+    # -- Open on the remote host in the browser ---------------------------- #
+    def open_repos_master(self, repos):
+        """Open each repo's master branch on the remote host in the browser."""
+        self.errors.clear()
+        if not repos:
+            return
+        self._open_browser_async(
+            repos, self._master_url, "master link", "Resolving master links\u2026"
+        )
+
+    def open_branches(self, repos):
+        """Open each repo's current branch on the remote host in the browser."""
+        self.errors.clear()
+        if not repos:
+            return
+        self._open_browser_async(
+            repos, self._branch_url, "branch link", "Resolving branch links\u2026"
+        )
+
+    def open_prs(self, repos):
+        """Open each repo's open pull request on the remote host in the browser."""
+        self.errors.clear()
+        if not repos:
+            return
+        self._open_browser_async(
+            repos, self._pr_url, "pull request", "Looking up pull requests\u2026"
+        )
+
+    @staticmethod
+    def _master_url(name, path):
+        """Return (url, error) for *path*'s master branch on the remote host."""
+        if not is_git_repo(path):
+            return "", f"{name}: not a git repository"
+        url = git_branch_url(path, "master")
+        if not url:
+            return "", f"{name}: could not resolve the remote URL"
+        return url, ""
+
+    @staticmethod
+    def _branch_url(name, path):
+        """Return (url, error) for *path*'s current branch on the remote host."""
+        if not is_git_repo(path):
+            return "", f"{name}: not a git repository"
+        branch = git_current_branch(path)
+        url = git_branch_url(path, branch)
+        if not url:
+            return "", f"{name}: could not resolve the remote URL for '{branch}'"
+        return url, ""
+
+    @staticmethod
+    def _pr_url(name, path):
+        """Return (url, error) for *path*'s open pull request (network lookup)."""
+        ok, result = get_ado_pr_url(name, path)
+        return (result, "") if ok else ("", result)
+
+    def _open_browser_async(self, repos, url_fn, what, busy_msg):
+        """Resolve a URL per repo off the UI thread and open each in the browser.
+
+        *url_fn(name, path)* returns (url, error); a non-empty *url* is opened in
+        the default browser and a non-empty *error* is shown in the Errors panel.
+        The resolution runs on a background thread (git/network calls can be
+        slow) and the browser is opened back on the UI thread. *busy_msg* is
+        shown on the completion banner while the lookup runs.
+        """
+        self.show_repos_async(repos, with_status=False)
+        self.progress.show_completion(busy_msg)
+
+        def _work():
+            results = [(name, *url_fn(name, path)) for name, path in repos]
+            self.after(0, self._on_urls_resolved, results, what)
+
+        threading.Thread(target=_work, daemon=True).start()
+
+    def _on_urls_resolved(self, results, what):
+        """Open resolved URLs in the browser and report failures (UI thread)."""
+        self.progress.clear_completion()
+        opened = 0
+        for name, url, error in results:
+            if url:
+                webbrowser.open(url, new=2)
+                opened += 1
+            elif error:
+                self.errors.add(error)
+        if opened:
+            self.progress.show_completion(
+                f"Opened {opened} {what}{'s' if opened != 1 else ''} in the browser."
+            )
 
     # -- Generic background runner ----------------------------------------- #
     def repo_rows(self, repos):

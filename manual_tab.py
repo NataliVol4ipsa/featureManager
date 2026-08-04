@@ -23,7 +23,7 @@ class ManualTab(ActionTabBase):
     def __init__(self, master):
         super().__init__(master)
         self._build_left()
-        self.build_middle_actions(self._actions())
+        self.build_middle_sections(self._sections())
         self.build_right_details()
 
     # -- Layout ------------------------------------------------------------ #
@@ -55,22 +55,24 @@ class ManualTab(ActionTabBase):
         """
         self.show_repos_async(self._all_selected_repos(), with_status=False)
 
-    def _actions(self):
-        """Return the (label, command, hint) tuples for the middle column."""
+    def _sections(self):
+        """Stacked action groups mirroring the Workspaces tab (minus the
+        workspace-only actions), driven by the checked repositories."""
+        return [
+            ("Local", self._local_actions()),
+            ("Remote", self._remote_actions()),
+            ("Packages", self._package_actions()),
+            ("Pipelines", self._pipeline_actions()),
+            ("Open", self._open_actions()),
+        ]
+
+    def _local_actions(self):
         return [
             (
                 "Checkout & Pull master",
                 self._action_checkout_pull_master,
                 "For every selected repository: checks out the 'master' branch "
                 "and pulls the latest changes from the remote.",
-            ),
-            (
-                "Rebase current branch on master",
-                self._action_rebase_on_master,
-                "For every selected repository: updates master (checkout + pull), "
-                "returns to the feature branch and rebases it onto master. "
-                "Uncommitted changes are committed first (with confirmation) and "
-                "restored afterwards (staged/unstaged preserved) on a clean rebase.",
             ),
             (
                 "Create feature branch",
@@ -81,6 +83,14 @@ class ManualTab(ActionTabBase):
                 "branch) before the branch is created.",
             ),
             (
+                "Rebase current branch on master",
+                self._action_rebase_on_master,
+                "For every selected repository: updates master (checkout + pull), "
+                "returns to the feature branch and rebases it onto master. "
+                "Uncommitted changes are committed first (with confirmation) and "
+                "restored afterwards (staged/unstaged preserved) on a clean rebase.",
+            ),
+            (
                 "Commit all changes",
                 self._action_commit_all,
                 "For every selected repository: stages and commits all "
@@ -88,6 +98,19 @@ class ManualTab(ActionTabBase):
                 "selected repos with changes are on different branches, a "
                 "warning is shown before committing.",
             ),
+            (
+                "Create feature workspace and branches",
+                self._action_create_workspace_and_branches,
+                "For every selected repository: first creates a 'feature/<name>' "
+                "branch (updating master, then branching off it, with per-repo "
+                "handling of uncommitted changes - delete, commit, or move), "
+                "then writes a VS Code '.code-workspace' file named after the "
+                "same feature name.",
+            ),
+        ]
+
+    def _remote_actions(self):
+        return [
             (
                 "Git push",
                 self._action_push,
@@ -107,14 +130,83 @@ class ManualTab(ActionTabBase):
                 "\u2192 feature(123) My desc). A link to each new PR is shown.",
             ),
             (
-                "Create feature workspace and branches",
-                self._action_create_workspace_and_branches,
-                "For every selected repository: first creates a 'feature/<name>' "
-                "branch (updating master, then branching off it, with per-repo "
-                "handling of uncommitted changes - delete, commit, or move), "
-                "then writes a VS Code '.code-workspace' file named after the "
-                "same feature name.",
+                "Copy PR links",
+                self._action_copy_pr_links,
+                "For every selected repository: looks up each repo's open Azure "
+                "DevOps pull request (current branch \u2192 master) and copies "
+                "all 'repo name - pr link' lines to the clipboard. Repos without "
+                "an open PR are listed in the Errors panel.",
             ),
+        ]
+
+    def _package_actions(self):
+        return [
+            (
+                "Bump NuGet packages (public)",
+                self._action_bump_public,
+                "For every selected repository: reads each repo's root "
+                "Directory.Packages.props (Central Package Management), checks "
+                "every PackageVersion against the public NuGet feed (nuget.org) "
+                "and rewrites any that have a newer stable release. Prerelease "
+                "versions are ignored; packages not found on the public feed "
+                "(e.g. private-feed packages) are left untouched. The file is "
+                "edited in place - resulting build errors are ignored, so review "
+                "and commit the changes yourself. A per-repo report of the bumps "
+                "is offered to copy when the run finishes.",
+            ),
+            (
+                "Bump NuGet packages (private)",
+                self._action_bump_private,
+                "For every selected repository: bumps only packages hosted on "
+                "the private Azure DevOps Artifacts feed(s) declared in each "
+                "repo's nuget.config (sources starting with "
+                "https://pkgs.dev.azure.com). The feed is queried with an Azure "
+                "CLI token, so run 'az login' first. Packages only on the public "
+                "feed are left untouched. The props file is edited in place "
+                "(build errors ignored); a per-repo report of the bumps is "
+                "offered to copy when the run finishes.",
+            ),
+            (
+                "Bump all NuGet packages",
+                self._action_bump_all,
+                "For every selected repository: bumps every PackageVersion to "
+                "the highest stable release found across both the public NuGet "
+                "feed (nuget.org) and the private Azure DevOps Artifacts feed(s) "
+                "from each repo's nuget.config. Requires 'az login' for the "
+                "private feed. Prerelease versions are ignored; the props file "
+                "is edited in place (build errors ignored) and a per-repo report "
+                "of the bumps is offered to copy when the run finishes.",
+            ),
+        ]
+
+    def _pipeline_actions(self):
+        return [
+            (
+                "Run dev pipelines",
+                self._action_run_dev_pipeline,
+                "For every selected repository: starts each repository's Azure "
+                "DevOps pipeline on its current branch, deploying to the "
+                "Development environment only (infrastructure + Development on; "
+                "Acceptance and Production off). Repositories whose branch is not "
+                "on the remote are reported first, letting you abort or continue "
+                "for the rest. Needs an ADO_PAT with Build (Read & execute) "
+                "permission.",
+            ),
+            (
+                "Run acc pipelines",
+                self._action_run_acc_pipeline,
+                "For every selected repository: starts each repository's Azure "
+                "DevOps pipeline on its current branch, deploying to the "
+                "Acceptance environment only (infrastructure + Acceptance on; "
+                "Development and Production off). Repositories whose branch is "
+                "not on the remote are reported first, letting you abort or "
+                "continue for the rest. Needs an ADO_PAT with Build (Read & "
+                "execute) permission.",
+            ),
+        ]
+
+    def _open_actions(self):
+        return [
             (
                 "Open in Git Bash tabs",
                 self._action_open_terminals,
@@ -122,6 +214,29 @@ class ManualTab(ActionTabBase):
                 "Windows Terminal tab (one tab per repo, titled with the repo "
                 "name, started in that repo's folder). If Windows Terminal is "
                 "not available, a separate Git Bash window is opened per repo.",
+            ),
+            (
+                "Open repositories (master)",
+                self._action_open_repos_master,
+                "For every selected repository: opens each repository's master "
+                "branch on the remote host (Azure DevOps / GitHub / \u2026) in "
+                "your default web browser, one tab per repo.",
+            ),
+            (
+                "Open remote branches",
+                self._action_open_branches,
+                "For every selected repository: opens each repository's current "
+                "branch on the remote host in your default web browser, one tab "
+                "per repo. Branches that have not been pushed yet may show as not "
+                "found on the host.",
+            ),
+            (
+                "Open pull requests",
+                self._action_open_prs,
+                "For every selected repository: looks up the open Azure DevOps "
+                "pull request for each repo's current branch and opens it in your "
+                "default web browser. Repos with no open PR are reported in the "
+                "Errors panel.",
             ),
         ]
 
@@ -274,6 +389,57 @@ class ManualTab(ActionTabBase):
     # -- Open in Git Bash tabs --------------------------------------------- #
     def _action_open_terminals(self):
         self.open_terminals(self._all_selected_repos())
+
+    # -- Copy PR links ----------------------------------------------------- #
+    def _action_copy_pr_links(self):
+        self.copy_pr_links(self._all_selected_repos())
+
+    # -- Bump NuGet packages ----------------------------------------------- #
+    def _action_bump_public(self):
+        self._bump_packages(include_public=True, include_private=False,
+                            label="public feed")
+
+    def _action_bump_private(self):
+        self._bump_packages(include_public=False, include_private=True,
+                            label="private feed")
+
+    def _action_bump_all(self):
+        self._bump_packages(include_public=True, include_private=True,
+                            label="all feeds")
+
+    def _bump_packages(self, include_public, include_private, label):
+        """Bump the selected repos' out-of-date package versions for *label* feeds."""
+        self.errors.clear()
+        repos = self._all_selected_repos()
+        if not repos:
+            return
+        self.bump_packages(repos, include_public, include_private, label)
+
+    # -- Run pipelines ----------------------------------------------------- #
+    def _action_run_dev_pipeline(self):
+        self._run_pipelines("dev")
+
+    def _action_run_acc_pipeline(self):
+        self._run_pipelines("acc")
+
+    def _run_pipelines(self, environment):
+        """Start each selected repo's pipeline on its current branch."""
+        self.errors.clear()
+        repos = self._all_selected_repos()
+        if not repos:
+            return
+        active = [(name, path, git_current_branch(path)) for name, path in repos]
+        self.run_pipelines(active, environment)
+
+    # -- Open on the remote host ------------------------------------------- #
+    def _action_open_repos_master(self):
+        self.open_repos_master(self._all_selected_repos())
+
+    def _action_open_branches(self):
+        self.open_branches(self._all_selected_repos())
+
+    def _action_open_prs(self):
+        self.open_prs(self._all_selected_repos())
 
     # -- Create feature workspace ------------------------------------------ #
     def _action_create_workspace(self):
