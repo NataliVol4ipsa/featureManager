@@ -20,7 +20,7 @@ from dialogs import (
     ask_change_decision, ask_commit_message, ask_branch_warning, ask_pr_details,
     ask_missing_remote_branches,
 )
-from pipelines import run_pipeline_for_repo
+from pipelines import run_pipeline_for_repo, get_master_pipeline_run_for_merged_branch
 import packages
 
 
@@ -534,6 +534,44 @@ class ActionTabBase(ttk.Frame):
             ),
             completion_copy_label="Copy links",
         )
+
+    def open_master_pipeline_runs_for_merged_prs(self, active):
+        """Open each branch's master pipeline run tied to that branch's merged PR.
+
+        *active* is a list of (name, path, branch). For each repo, this looks up
+        the latest completed PR from that specific branch into master, then opens
+        the master pipeline run for that PR merge commit.
+        """
+        self.errors.clear()
+        if not active:
+            return
+
+        repos = [(name, path) for name, path, _ in active]
+        branch_of = {name: branch for name, _, branch in active}
+
+        self.show_repos_async(repos, with_status=False)
+        self.progress.show_completion(
+            "Resolving merged-PR master pipeline runs..."
+        )
+
+        def _work():
+            results = []
+            for name, path, _ in active:
+                ok, result = get_master_pipeline_run_for_merged_branch(
+                    name, path, branch_of[name]
+                )
+                if ok:
+                    results.append((name, result, ""))
+                else:
+                    results.append((name, "", result))
+            self.after(
+                0,
+                self._on_urls_resolved,
+                results,
+                "master pipeline run(s)",
+            )
+
+        threading.Thread(target=_work, daemon=True).start()
 
     # -- Open on the remote host in the browser ---------------------------- #
     def open_repos_master(self, repos):

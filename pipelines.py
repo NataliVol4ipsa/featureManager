@@ -254,6 +254,70 @@ def _queue_run(org, project, pipeline_id, branch, template_parameters, auth):
         return json.loads(resp.read().decode("utf-8"))
 
 
+def _completed_pr_for_branch(org, project, repo, branch, auth):
+    """Return the latest completed PR object for *branch* -> master, or None."""
+    query = urllib.parse.urlencode({
+        "searchCriteria.sourceRefName": f"refs/heads/{branch}",
+        "searchCriteria.targetRefName": "refs/heads/master",
+        "searchCriteria.status": "completed",
+        "$top": "50",
+        "api-version": "7.1",
+    })
+    url = (
+        f"https://dev.azure.com/{urllib.parse.quote(org)}/"
+        f"{urllib.parse.quote(project)}/_apis/git/repositories/"
+        f"{urllib.parse.quote(repo)}/pullrequests?{query}"
+    )
+    prs = (_api_get(url, auth).get("value") or [])
+    if not prs:
+        return None
+    prs.sort(key=lambda pr: pr.get("closedDate") or "", reverse=True)
+    return prs[0]
+
+
+def _pipeline_build_for_commit(org, project, repo_id, commit_id, auth):
+    """Return the newest master build for *commit_id* across all definitions."""
+    query = urllib.parse.urlencode({
+        "repositoryId": str(repo_id),
+        "repositoryType": "TfsGit",
+        "branchName": "refs/heads/master",
+        "queryOrder": "queueTimeDescending",
+        "$top": "200",
+        "api-version": "7.1",
+    })
+    url = (
+        f"https://dev.azure.com/{urllib.parse.quote(org)}/"
+        f"{urllib.parse.quote(project)}/_apis/build/builds?{query}"
+    )
+    builds = (_api_get(url, auth).get("value") or [])
+    commit_id = (commit_id or "").lower()
+    matched = [
+        build for build in builds
+        if (build.get("sourceVersion") or "").lower() == commit_id
+    ]
+    if not matched:
+        return None
+    matched.sort(
+        key=lambda build: build.get("queueTime") or "",
+        reverse=True,
+    )
+    return matched[0]
+
+
+def _build_web_url(org, project, build):
+    """Return a browser URL for a build result page."""
+    build_id = build.get("id")
+    if build_id:
+        return (
+            f"https://dev.azure.com/{urllib.parse.quote(org)}/"
+            f"{urllib.parse.quote(project)}/_build/results?buildId={build_id}&view=results"
+        )
+    web = ((build.get("_links") or {}).get("web") or {}).get("href") or ""
+    if web:
+        return web
+    return ""
+
+
 def run_pipeline_for_repo(name, path, branch, environment):
     """Queue a pipeline run for one repo's *branch*. Returns (ok, url_or_error).
 
@@ -288,4 +352,60 @@ def run_pipeline_for_repo(name, path, branch, environment):
         return False, f"{name}: pipeline run failed: {exc}"
 
     web = ((data.get("_links") or {}).get("web") or {}).get("href") or ""
+    return True, web
+
+
+def get_master_pipeline_run_for_merged_branch(name, path, branch):
+    """Return (ok, url_or_error) for the master run tied to *branch*'s merged PR.
+
+    Flow:
+      1. Find the latest completed PR from refs/heads/<branch> to master.
+      2. Read its merge commit id.
+      3. Find the repository pipeline build on refs/heads/master for that commit.
+    """
+    if not is_git_repo(path):
+        return False, f"{name}: not a git repository"
+    if not branch:
+        return False, f"{name}: branch is empty"
+
+    parsed = parse_ado_remote(git_remote_url(path))
+    if not parsed:
+        return False, f"{name}: remote is not an Azure DevOps repository"
+    org, project, repo, host = parsed
+
+    auth, err = _auth_for_host(host)
+    if err:
+        return False, f"{name}: {err}"
+
+    try:
+        repo_id = _resolve_repo_id(org, project, repo, auth)
+        if not repo_id:
+            return False, f"{name}: could not resolve the repository in Azure DevOps"
+
+        pr = _completed_pr_for_branch(org, project, repo, branch, auth)
+        if not pr:
+            return False, (
+                f"{name}: no completed pull request found for branch '{branch}' to master"
+            )
+        merge_commit = ((pr.get("lastMergeCommit") or {}).get("commitId") or "")
+        if not merge_commit:
+            return False, (
+                f"{name}: completed pull request has no merge commit for branch '{branch}'"
+            )
+
+        build = _pipeline_build_for_commit(org, project, repo_id, merge_commit, auth)
+        if not build:
+            return False, (
+                f"{name}: no master pipeline run found yet for merged commit "
+                f"{merge_commit[:8]} from branch '{branch}'"
+            )
+
+    except urllib.error.HTTPError as exc:
+        return False, f"{name}: pipeline run lookup failed ({exc.code}): {_http_error_detail(exc)}"
+    except (urllib.error.URLError, OSError, ValueError) as exc:
+        return False, f"{name}: pipeline run lookup failed: {exc}"
+
+    web = _build_web_url(org, project, build)
+    if not web:
+        return False, f"{name}: pipeline run found but could not build a web URL"
     return True, web

@@ -326,6 +326,17 @@ class WorkspacesTab(ActionTabBase):
                 "opens it in your default web browser. Repos with no open PR are "
                 "reported in the Errors panel.",
             ),
+            (
+                "Open master pipeline runs (merged PR)",
+                self._action_open_master_pipeline_runs,
+                "For the selected workspace's non-skipped repositories: finds "
+                "the latest completed Azure DevOps pull request from each "
+                "workspace feature branch to master, then opens the master "
+                "pipeline run for that specific PR merge commit. This does not "
+                "require the feature branch to still exist on the remote. "
+                "Repositories with no merged PR or no matching run are listed "
+                "in the Errors panel.",
+            ),
         ]
 
     # -- Helpers ----------------------------------------------------------- #
@@ -708,6 +719,26 @@ class WorkspacesTab(ActionTabBase):
                 self.errors.add(repos)
             return
         self.open_prs(repos)
+
+    # -- Open master pipeline runs tied to merged PRs --------------------- #
+    def _action_open_master_pipeline_runs(self):
+        self.errors.clear()
+        ok, workspace, entries = self._selected_entries()
+        if not ok:
+            if workspace is not None:
+                self.errors.add(entries)
+            return
+
+        active = [
+            (e["name"], e["path"], e["branch"])
+            for e in entries if not e["ignoreGit"]
+        ]
+        if not active:
+            self.errors.add(
+                "this workspace has no repositories to open master pipeline runs for"
+            )
+            return
+        self.open_master_pipeline_runs_for_merged_prs(active)
 
     # -- Create workspace from a PBI --------------------------------------- #
     def _action_create_from_pbi(self):
