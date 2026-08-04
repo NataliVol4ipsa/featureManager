@@ -1000,3 +1000,79 @@ def ask_missing_remote_branches(parent, names, environment_label):
     parent.wait_window(dialog)
     return result["value"]
 
+
+def ask_pipeline_poll_seconds(parent, current, minimum, maximum):
+    """Modal asking for pipeline monitor poll frequency in seconds.
+
+    Returns the chosen integer value, or None if cancelled.
+    """
+    dialog = tk.Toplevel(parent)
+    dialog.title("Pipeline monitor polling")
+    dialog.transient(parent.winfo_toplevel())
+    dialog.resizable(False, False)
+
+    tk.Label(
+        dialog,
+        text=(
+            "Set how often the floating pipeline monitor refreshes statuses."
+        ),
+        justify="left", wraplength=420,
+    ).pack(padx=16, pady=(16, 6), anchor="w")
+    tk.Label(
+        dialog,
+        text=(
+            f"Frequency in seconds (integer, min {minimum}, max {maximum})."
+        ),
+        foreground=theme.FG_MUTED,
+        justify="left",
+    ).pack(padx=16, pady=(0, 8), anchor="w")
+
+    row = ttk.Frame(dialog)
+    row.pack(padx=16, pady=(0, 4), anchor="w")
+    ttk.Label(row, text="Poll every").pack(side="left")
+    entry = ttk.Entry(row, width=10)
+    entry.pack(side="left", padx=(6, 6))
+    ttk.Label(row, text="seconds").pack(side="left")
+    entry.insert(0, str(current))
+    entry.focus_set()
+
+    error_label = tk.Label(dialog, text="", foreground=theme.ERROR)
+    error_label.pack(padx=16, anchor="w")
+
+    result = {"value": None}
+
+    def _ok():
+        raw = entry.get().strip()
+        if not raw:
+            error_label.config(text="Polling frequency is required.")
+            return
+        if not raw.isdigit():
+            error_label.config(text="Polling frequency must be an integer.")
+            return
+        value = int(raw)
+        if value < minimum or value > maximum:
+            error_label.config(
+                text=(
+                    f"Polling frequency must be between {minimum} and {maximum} seconds."
+                )
+            )
+            return
+        result["value"] = value
+        dialog.destroy()
+
+    def _cancel():
+        result["value"] = None
+        dialog.destroy()
+
+    bar = ttk.Frame(dialog)
+    bar.pack(padx=16, pady=12)
+    ttk.Button(bar, text="Save", command=_ok).pack(side="left", padx=4)
+    ttk.Button(bar, text="Cancel", command=_cancel).pack(side="left", padx=4)
+
+    entry.bind("<Return>", lambda _e: _ok())
+    dialog.protocol("WM_DELETE_WINDOW", _cancel)
+    _center_over_parent(dialog, parent)
+    dialog.grab_set()
+    parent.wait_window(dialog)
+    return result["value"]
+

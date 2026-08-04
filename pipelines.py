@@ -25,6 +25,7 @@ import os
 import re
 import json
 import base64
+import datetime
 import urllib.parse
 import urllib.request
 import urllib.error
@@ -48,6 +49,14 @@ _PIPELINE_YAML_NAMES = (
     "azure-pipelines.yml", "azure-pipeline.yml",
     "azure-pipelines.yaml", "azure-pipeline.yaml",
 )
+
+PIPELINE_STAGE_KEYS = ("build", "development", "acceptance", "production")
+PIPELINE_STAGE_DEFAULTS = {
+    "build": "waiting",
+    "development": "waiting",
+    "acceptance": "waiting",
+    "production": "waiting",
+}
 
 
 # --------------------------------------------------------------------------- #
@@ -254,6 +263,19 @@ def _queue_run(org, project, pipeline_id, branch, template_parameters, auth):
         return json.loads(resp.read().decode("utf-8"))
 
 
+def _parse_build_id_from_url(url):
+    """Return buildId integer parsed from a build results URL, else None."""
+    if not url:
+        return None
+    parsed = urllib.parse.urlparse(url)
+    values = urllib.parse.parse_qs(parsed.query)
+    raw = (values.get("buildId") or [None])[0]
+    try:
+        return int(raw) if raw is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
 def _completed_pr_for_branch(org, project, repo, branch, auth):
     """Return the latest completed PR object for *branch* -> master, or None."""
     query = urllib.parse.urlencode({
@@ -318,13 +340,104 @@ def _build_web_url(org, project, build):
     return ""
 
 
-def run_pipeline_for_repo(name, path, branch, environment):
-    """Queue a pipeline run for one repo's *branch*. Returns (ok, url_or_error).
+def _timeline_stage_key(name):
+    """Map a timeline stage name to one of the canonical stage keys, or None."""
+    text = (name or "").strip().lower()
+    if not text:
+        return None
+    if "build" in text:
+        return "build"
+    if "develop" in text or text == "dev":
+        return "development"
+    if "accept" in text or text == "acc":
+        return "acceptance"
+    if "prod" in text:
+        return "production"
+    return None
 
-    *environment* is "dev" or "acc". On success the second value is a browser
-    link to the started run; on failure it is an error message prefixed with the
-    repository name.
+
+def _timeline_state(record):
+    """Map Azure timeline record state/result to a UI stage state."""
+    state = (record.get("state") or "").lower()
+    result = (record.get("result") or "").lower()
+    if state in ("inprogress", "in_progress"):
+        return "running"
+    if state in ("pending", "notstarted", "queued"):
+        return "waiting"
+    if state == "completed":
+        if result == "skipped":
+            return "skipped"
+        if result in ("failed", "canceled", "cancelled"):
+            return "failed"
+        if result in ("succeeded", "partiallysucceeded"):
+            return "done"
+    return "waiting"
+
+
+def _api_build_timeline(org, project, build_id, auth):
+    """Return timeline JSON for a build id."""
+    url = (
+        f"https://dev.azure.com/{urllib.parse.quote(org)}/"
+        f"{urllib.parse.quote(project)}/_apis/build/builds/{build_id}/timeline"
+        f"?api-version=7.1"
+    )
+    return _api_get(url, auth)
+
+
+def get_pipeline_stage_statuses(run_info):
+    """Return (ok, data_or_error) for the run status of a started pipeline.
+
+    *run_info* must contain: org, project, host, build_id.
+    On success the payload contains:
+      {
+        "build_id": int,
+        "updated_at": "ISO-UTC",
+        "stages": {
+          "build": "waiting|running|failed|skipped|done",
+          "development": ...,
+          "acceptance": ...,
+          "production": ...,
+        }
+      }
     """
+    org = run_info.get("org")
+    project = run_info.get("project")
+    host = run_info.get("host")
+    build_id = run_info.get("build_id")
+    if not org or not project or not host or build_id is None:
+        return False, "run info is missing org/project/host/build_id"
+
+    auth, err = _auth_for_host(host)
+    if err:
+        return False, err
+
+    try:
+        timeline = _api_build_timeline(org, project, int(build_id), auth)
+    except urllib.error.HTTPError as exc:
+        return False, f"timeline lookup failed ({exc.code}): {_http_error_detail(exc)}"
+    except (urllib.error.URLError, OSError, ValueError) as exc:
+        return False, f"timeline lookup failed: {exc}"
+
+    stages = dict(PIPELINE_STAGE_DEFAULTS)
+    for record in timeline.get("records") or []:
+        if (record.get("type") or "").lower() != "stage":
+            continue
+        key = _timeline_stage_key(record.get("name") or record.get("identifier"))
+        if not key:
+            continue
+        stages[key] = _timeline_state(record)
+
+    return True, {
+        "build_id": int(build_id),
+        "updated_at": datetime.datetime.now(
+            datetime.timezone.utc
+        ).astimezone().isoformat(timespec="seconds"),
+        "stages": stages,
+    }
+
+
+def run_pipeline_for_repo_details(name, path, branch, environment):
+    """Queue a run and return structured metadata used by the monitor."""
     if not is_git_repo(path):
         return False, f"{name}: not a git repository"
 
@@ -351,8 +464,36 @@ def run_pipeline_for_repo(name, path, branch, environment):
     except (urllib.error.URLError, OSError, ValueError) as exc:
         return False, f"{name}: pipeline run failed: {exc}"
 
-    web = ((data.get("_links") or {}).get("web") or {}).get("href") or ""
-    return True, web
+    url = ((data.get("_links") or {}).get("web") or {}).get("href") or ""
+    build_id = _parse_build_id_from_url(url)
+    if build_id is None:
+        try:
+            build_id = int(data.get("id"))
+        except (TypeError, ValueError):
+            build_id = None
+    return True, {
+        "url": url,
+        "build_id": build_id,
+        "org": org,
+        "project": project,
+        "repo": repo,
+        "host": host,
+        "branch": branch,
+        "pipeline_id": pipeline_id,
+    }
+
+
+def run_pipeline_for_repo(name, path, branch, environment):
+    """Queue a pipeline run for one repo's *branch*. Returns (ok, url_or_error).
+
+    *environment* is "dev" or "acc". On success the second value is a browser
+    link to the started run; on failure it is an error message prefixed with the
+    repository name.
+    """
+    ok, result = run_pipeline_for_repo_details(name, path, branch, environment)
+    if not ok:
+        return False, result
+    return True, result.get("url") or ""
 
 
 def get_master_pipeline_run_for_merged_branch(name, path, branch):

@@ -71,23 +71,68 @@ globals().update(DARK)
 _PREFS_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                            "ui_prefs.json")
 
+# Pipeline monitor polling interval (seconds).
+PIPELINE_POLL_MIN_SECONDS = 10
+PIPELINE_POLL_MAX_SECONDS = 10000
+PIPELINE_POLL_DEFAULT_SECONDS = 30
+
+
+def _load_prefs():
+    """Return persisted UI preferences, or {} when the file is unavailable."""
+    try:
+        with open(_PREFS_PATH, "r", encoding="utf-8") as handle:
+            data = json.load(handle)
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _save_prefs(data):
+    """Persist UI preferences; write failures are ignored."""
+    try:
+        with open(_PREFS_PATH, "w", encoding="utf-8") as handle:
+            json.dump(data, handle, indent=4)
+    except OSError:
+        pass
+
 
 def load_dark_preference():
     """Return the persisted "use dark theme" preference (defaults to True)."""
-    try:
-        with open(_PREFS_PATH, "r", encoding="utf-8") as handle:
-            return bool(json.load(handle).get("dark_theme", True))
-    except (OSError, ValueError, AttributeError):
-        return True
+    return bool(_load_prefs().get("dark_theme", True))
 
 
 def save_dark_preference(dark):
     """Persist the "use dark theme" preference to the local prefs file."""
+    data = _load_prefs()
+    data["dark_theme"] = bool(dark)
+    _save_prefs(data)
+
+
+def load_pipeline_poll_seconds():
+    """Return pipeline monitor polling interval in seconds.
+
+    Invalid or missing values fall back to the default.
+    """
+    value = _load_prefs().get("pipeline_poll_seconds", PIPELINE_POLL_DEFAULT_SECONDS)
     try:
-        with open(_PREFS_PATH, "w", encoding="utf-8") as handle:
-            json.dump({"dark_theme": bool(dark)}, handle, indent=4)
-    except OSError:
-        pass
+        seconds = int(value)
+    except (TypeError, ValueError):
+        return PIPELINE_POLL_DEFAULT_SECONDS
+    if seconds < PIPELINE_POLL_MIN_SECONDS or seconds > PIPELINE_POLL_MAX_SECONDS:
+        return PIPELINE_POLL_DEFAULT_SECONDS
+    return seconds
+
+
+def save_pipeline_poll_seconds(seconds):
+    """Persist pipeline monitor polling interval (clamped to valid bounds)."""
+    try:
+        value = int(seconds)
+    except (TypeError, ValueError):
+        value = PIPELINE_POLL_DEFAULT_SECONDS
+    value = max(PIPELINE_POLL_MIN_SECONDS, min(PIPELINE_POLL_MAX_SECONDS, value))
+    data = _load_prefs()
+    data["pipeline_poll_seconds"] = value
+    _save_prefs(data)
 
 
 def apply_theme(root, dark=None):

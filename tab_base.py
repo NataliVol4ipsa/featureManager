@@ -20,8 +20,12 @@ from dialogs import (
     ask_change_decision, ask_commit_message, ask_branch_warning, ask_pr_details,
     ask_missing_remote_branches,
 )
-from pipelines import run_pipeline_for_repo, get_master_pipeline_run_for_merged_branch
+from pipelines import (
+    run_pipeline_for_repo_details,
+    get_master_pipeline_run_for_merged_branch,
+)
 import packages
+from pipeline_monitor import PipelineMonitorWindow
 
 
 class ActionTabBase(ttk.Frame):
@@ -47,6 +51,8 @@ class ActionTabBase(ttk.Frame):
         # Links of the most recently created pull requests ({name: url}), kept
         # so a standalone action can copy them after the create-PR run.
         self._last_pr_urls = {}
+        # Keep references to floating pipeline monitor windows.
+        self._pipeline_monitors = []
 
     # -- Shared panel builders --------------------------------------------- #
     def build_middle_actions(self, actions):
@@ -507,16 +513,34 @@ class ActionTabBase(ttk.Frame):
         repos = [(name, path) for name, path, _ in existing]
         branch_of = {name: branch for name, _, branch in existing}
         urls = {}
+        run_infos = {}
         self._pipeline_urls = urls
 
         def _run(name, path):
-            ok, result = run_pipeline_for_repo(
+            ok, result = run_pipeline_for_repo_details(
                 name, path, branch_of[name], environment
             )
             if ok:
-                urls[name] = result
+                urls[name] = result.get("url", "")
+                run_infos[name] = result
                 return True, ""
             return False, result
+
+        def _on_complete(_all_ok):
+            if environment != "dev":
+                return
+            monitor_runs = {
+                name: info for name, info in run_infos.items()
+                if info.get("build_id") is not None
+            }
+            for name, info in run_infos.items():
+                if info.get("build_id") is None:
+                    self.errors.add(
+                        f"{name}: pipeline started, but build id was unavailable "
+                        "for live monitoring"
+                    )
+            if monitor_runs:
+                self._open_pipeline_monitor(monitor_runs)
 
         self.run_repo_action(
             repos,
@@ -533,7 +557,18 @@ class ActionTabBase(ttk.Frame):
                 f"{n} - {urls[n]}" for n, _ in ok_repos if urls.get(n)
             ),
             completion_copy_label="Copy links",
+            on_complete=_on_complete,
         )
+
+    def _open_pipeline_monitor(self, run_infos):
+        """Create a floating always-on-top window tracking started pipeline runs."""
+        monitor = PipelineMonitorWindow(self, run_infos)
+        # Drop dead references before storing the new monitor.
+        self._pipeline_monitors = [
+            win for win in self._pipeline_monitors
+            if getattr(win, "winfo_exists", lambda: False)()
+        ]
+        self._pipeline_monitors.append(monitor)
 
     def open_master_pipeline_runs_for_merged_prs(self, active):
         """Open each branch's master pipeline run tied to that branch's merged PR.

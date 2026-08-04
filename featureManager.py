@@ -20,7 +20,7 @@ from tkinter import ttk
 
 from manual_tab import ManualTab
 from workspaces_tab import WorkspacesTab
-from dialogs import edit_synonyms
+from dialogs import edit_synonyms, ask_pipeline_poll_seconds
 import theme
 
 
@@ -70,9 +70,25 @@ def main():
         # Re-launch so every widget is rebuilt cleanly with the new palette.
         os.execv(sys.executable, [sys.executable, *sys.argv])
 
+    def _set_pipeline_poll_seconds():
+        current = theme.load_pipeline_poll_seconds()
+        value = ask_pipeline_poll_seconds(
+            root,
+            current,
+            theme.PIPELINE_POLL_MIN_SECONDS,
+            theme.PIPELINE_POLL_MAX_SECONDS,
+        )
+        if value is not None:
+            theme.save_pipeline_poll_seconds(value)
+
     def _settings_entries():
         return [
             ("Repository synonyms\u2026", lambda: edit_synonyms(root), False),
+            (
+                f"Pipeline monitor polling ({theme.load_pipeline_poll_seconds()}s)\u2026",
+                _set_pipeline_poll_seconds,
+                False,
+            ),
             ("Dark theme", _toggle_theme, theme.load_dark_preference()),
         ]
 
