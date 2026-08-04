@@ -14,6 +14,7 @@ is exposed as module-level colour names (``theme.BG``, ``theme.FG`` ...) so the
 rest of the app can reference them; :func:`apply_theme` swaps them in.
 """
 
+import tkinter as tk
 from tkinter import ttk
 
 import ctypes
@@ -329,3 +330,41 @@ def enable_dark_titlebar(window, dark=None):
     if dark is None:
         dark = load_dark_preference()
     _set_titlebar(window, dark)
+
+
+def apply_window_icon(window):
+    """Apply the app icon to a Tk window, including small title-bar variants."""
+    base = os.path.dirname(os.path.abspath(__file__))
+    ico_candidates = [
+        os.path.join(base, "icon2.ico"),
+        os.path.join(base, "icon.ico"),
+    ]
+    png_candidates = [
+        os.path.join(base, "icon2.png"),
+        os.path.join(base, "icon.png"),
+    ]
+
+    for ico in ico_candidates:
+        if os.path.isfile(ico):
+            try:
+                window.iconbitmap(ico)
+                break
+            except tk.TclError:
+                pass
+
+    for png in png_candidates:
+        if not os.path.isfile(png):
+            continue
+        try:
+            full = tk.PhotoImage(file=png)
+            # Generate predictable title-bar icon sizes from the existing asset.
+            factor_16 = max(1, int(round(max(full.width(), 1) / 16)))
+            factor_32 = max(1, int(round(max(full.width(), 1) / 32)))
+            icon16 = full.subsample(factor_16, factor_16)
+            icon32 = full.subsample(factor_32, factor_32)
+            window.iconphoto(True, icon32, icon16)
+            # Keep references alive to prevent Tk image garbage collection.
+            window._fm_window_icons = (full, icon32, icon16)
+            break
+        except tk.TclError:
+            continue

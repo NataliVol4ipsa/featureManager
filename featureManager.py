@@ -52,6 +52,7 @@ def main():
     root = tk.Tk()
     root.title("Feature Manager")
     root.geometry("1160x740")
+    theme.apply_window_icon(root)
 
     # Theme (dark or light). Persisted preference; must run before any widgets.
     theme.apply_theme(root)
@@ -151,6 +152,7 @@ def main():
 
     # Dark Windows title bar (matches Explorer's dark header). Applied after the
     # window is mapped so it has a real HWND to set the DWM attribute on.
+    root.after(0, lambda: theme.apply_window_icon(root))
     root.after(0, lambda: theme.enable_dark_titlebar(root))
 
     root.mainloop()

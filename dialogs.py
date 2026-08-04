@@ -1001,6 +1001,58 @@ def ask_missing_remote_branches(parent, names, environment_label):
     return result["value"]
 
 
+def ask_acc_autoapprove(parent):
+    """Modal asking whether ACC pipeline acceptance approvals should auto-approve.
+
+    Returns True for auto-approve, False for manual approval.
+    """
+    dialog = tk.Toplevel(parent)
+    dialog.title("Acceptance approval")
+    dialog.transient(parent.winfo_toplevel())
+    dialog.resizable(False, False)
+
+    tk.Label(
+        dialog,
+        text=(
+            "Do you want Feature Manager to auto-approve Acceptance when the "
+            "ACC pipeline reaches the approval gate?"
+        ),
+        justify="left", wraplength=440,
+    ).pack(padx=16, pady=(16, 8), anchor="w")
+    tk.Label(
+        dialog,
+        text=(
+            "If you choose No, approval remains manual in Azure DevOps."
+        ),
+        justify="left", wraplength=440, foreground=theme.FG_MUTED,
+    ).pack(padx=16, pady=(0, 8), anchor="w")
+
+    result = {"value": False}
+
+    def _yes():
+        result["value"] = True
+        dialog.destroy()
+
+    def _no():
+        result["value"] = False
+        dialog.destroy()
+
+    bar = ttk.Frame(dialog)
+    bar.pack(padx=16, pady=12)
+    ttk.Button(bar, text="Yes, auto-approve", command=_yes).pack(
+        side="left", padx=4
+    )
+    ttk.Button(bar, text="No, I will approve manually", command=_no).pack(
+        side="left", padx=4
+    )
+
+    dialog.protocol("WM_DELETE_WINDOW", _no)
+    _center_over_parent(dialog, parent)
+    dialog.grab_set()
+    parent.wait_window(dialog)
+    return result["value"]
+
+
 def ask_pipeline_poll_seconds(parent, current, minimum, maximum):
     """Modal asking for pipeline monitor poll frequency in seconds.
 

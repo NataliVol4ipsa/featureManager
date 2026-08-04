@@ -18,7 +18,7 @@ from gitutils import (
 )
 from dialogs import (
     ask_change_decision, ask_commit_message, ask_branch_warning, ask_pr_details,
-    ask_missing_remote_branches,
+    ask_missing_remote_branches, ask_acc_autoapprove,
 )
 from pipelines import (
     run_pipeline_for_repo_details,
@@ -484,6 +484,10 @@ class ActionTabBase(ttk.Frame):
         abort or continue for the rest. The remote check hits the network so it
         runs on a background thread. *active* is assumed non-empty.
         """
+        autoapprove_acc = False
+        if environment == "acc":
+            autoapprove_acc = ask_acc_autoapprove(self)
+
         self.show_repos_async([(n, p) for n, p, _ in active], with_status=True)
 
         def _check():
@@ -493,11 +497,18 @@ class ActionTabBase(ttk.Frame):
                     existing.append((name, path, branch))
                 else:
                     missing.append(name)
-            self.after(0, self._on_branches_checked, environment, existing, missing)
+            self.after(
+                0,
+                self._on_branches_checked,
+                environment,
+                autoapprove_acc,
+                existing,
+                missing,
+            )
 
         threading.Thread(target=_check, daemon=True).start()
 
-    def _on_branches_checked(self, environment, existing, missing):
+    def _on_branches_checked(self, environment, autoapprove_acc, existing, missing):
         """After the remote-branch scan: confirm missing repos, then run."""
         env_label = "Development" if environment == "dev" else "Acceptance"
         if missing:
@@ -522,13 +533,13 @@ class ActionTabBase(ttk.Frame):
             )
             if ok:
                 urls[name] = result.get("url", "")
+                result["environment"] = environment
+                result["autoapprove_acc"] = bool(autoapprove_acc)
                 run_infos[name] = result
                 return True, ""
             return False, result
 
         def _on_complete(_all_ok):
-            if environment != "dev":
-                return
             monitor_runs = {
                 name: info for name, info in run_infos.items()
                 if info.get("build_id") is not None

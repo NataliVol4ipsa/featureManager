@@ -58,6 +58,8 @@ PIPELINE_STAGE_DEFAULTS = {
     "production": "waiting",
 }
 
+_STAGE_DONE_STATES = {"done", "skipped"}
+
 
 # --------------------------------------------------------------------------- #
 # Environment -> template parameter values
@@ -162,6 +164,26 @@ def build_template_parameters(repo_path, environment):
     return params
 
 
+def _visible_stages_for_run(repo_path, template_parameters):
+    """Return ordered monitor stages enabled by the run's template parameters."""
+    role_to_name = _discover_role_params(repo_path) or DEFAULT_ROLE_PARAMS
+    visible = ["build"]
+
+    dev_name = role_to_name.get("dev")
+    if dev_name and bool(template_parameters.get(dev_name)):
+        visible.append("development")
+
+    acc_name = role_to_name.get("acc")
+    if acc_name and bool(template_parameters.get(acc_name)):
+        visible.append("acceptance")
+
+    prod_name = role_to_name.get("prod")
+    if prod_name and bool(template_parameters.get(prod_name)):
+        visible.append("production")
+
+    return visible
+
+
 # --------------------------------------------------------------------------- #
 # Azure DevOps REST helpers
 # --------------------------------------------------------------------------- #
@@ -203,6 +225,18 @@ def _api_get(url, auth):
     req.add_header("Accept", "application/json")
     with urllib.request.urlopen(req, timeout=30) as resp:
         return json.loads(resp.read().decode("utf-8"))
+
+
+def _api_patch(url, body, auth):
+    """PATCH *url* with *body* and return parsed JSON (or {} for empty body)."""
+    payload = json.dumps(body).encode("utf-8")
+    req = urllib.request.Request(url, data=payload, method="PATCH")
+    req.add_header("Authorization", auth)
+    req.add_header("Accept", "application/json")
+    req.add_header("Content-Type", "application/json")
+    with urllib.request.urlopen(req, timeout=30) as resp:
+        raw = resp.read().decode("utf-8").strip()
+    return json.loads(raw) if raw else {}
 
 
 def _resolve_repo_id(org, project, repo, auth):
@@ -384,6 +418,53 @@ def _api_build_timeline(org, project, build_id, auth):
     return _api_get(url, auth)
 
 
+def _pending_approval_ids_for_build(org, project, build_id, auth):
+    """Return pending approval ids associated with *build_id*."""
+    query = urllib.parse.urlencode({
+        "state": "pending",
+        "api-version": "7.1-preview.1",
+    })
+    url = (
+        f"https://dev.azure.com/{urllib.parse.quote(org)}/"
+        f"{urllib.parse.quote(project)}/_apis/pipelines/approvals?{query}"
+    )
+    pending = (_api_get(url, auth).get("value") or [])
+    ids = []
+    for approval in pending:
+        owner = ((approval.get("pipeline") or {}).get("owner") or {})
+        if str(owner.get("id") or "") == str(build_id):
+            approval_id = approval.get("id")
+            if approval_id:
+                ids.append(str(approval_id))
+    return ids
+
+
+def _approve_pending_approvals(org, project, approval_ids, auth):
+    """Approve all *approval_ids*. Returns (ok, error_message)."""
+    if not approval_ids:
+        return True, ""
+    url = (
+        f"https://dev.azure.com/{urllib.parse.quote(org)}/"
+        f"{urllib.parse.quote(project)}/_apis/pipelines/approvals?"
+        f"api-version=7.1-preview.1"
+    )
+    body = [
+        {
+            "approvalId": approval_id,
+            "status": "approved",
+            "comment": "Auto-approved by Feature Manager",
+        }
+        for approval_id in approval_ids
+    ]
+    try:
+        _api_patch(url, body, auth)
+        return True, ""
+    except urllib.error.HTTPError as exc:
+        return False, f"auto-approval failed ({exc.code}): {_http_error_detail(exc)}"
+    except (urllib.error.URLError, OSError, ValueError) as exc:
+        return False, f"auto-approval failed: {exc}"
+
+
 def get_pipeline_stage_statuses(run_info):
     """Return (ok, data_or_error) for the run status of a started pipeline.
 
@@ -427,12 +508,71 @@ def get_pipeline_stage_statuses(run_info):
             continue
         stages[key] = _timeline_state(record)
 
+    pending_approval_ids = []
+    try:
+        pending_approval_ids = _pending_approval_ids_for_build(
+            org, project, int(build_id), auth
+        )
+    except urllib.error.HTTPError as exc:
+        # Non-fatal for status rendering: keep stage view even if approvals fail.
+        pending_approval_ids = []
+    except (urllib.error.URLError, OSError, ValueError):
+        pending_approval_ids = []
+
+    visible_stages = list(run_info.get("visible_stages") or [])
+
+    def _stage_complete_or_not_applicable(stage_key):
+        if visible_stages and stage_key not in visible_stages:
+            return True
+        return stages.get(stage_key) in _STAGE_DONE_STATES
+
+    # Infer which gate is pending approval from stage progression.
+    approval_target = ""
+    if pending_approval_ids:
+        if (
+            stages.get("acceptance") == "waiting"
+            and _stage_complete_or_not_applicable("build")
+            and _stage_complete_or_not_applicable("development")
+        ):
+            stages["acceptance"] = "approval"
+            approval_target = "acceptance"
+        elif (
+            stages.get("production") == "waiting"
+            and _stage_complete_or_not_applicable("build")
+            and _stage_complete_or_not_applicable("development")
+            and _stage_complete_or_not_applicable("acceptance")
+        ):
+            stages["production"] = "approval"
+            approval_target = "production"
+
+    autoapproved = False
+    autoapprove_error = ""
+    if (
+        run_info.get("environment") == "acc"
+        and bool(run_info.get("autoapprove_acc"))
+        and approval_target == "acceptance"
+        and pending_approval_ids
+        and not run_info.get("_autoapprove_done")
+    ):
+        ok_approve, approve_error = _approve_pending_approvals(
+            org, project, pending_approval_ids, auth
+        )
+        if ok_approve:
+            run_info["_autoapprove_done"] = True
+            autoapproved = True
+            stages["acceptance"] = "running"
+        else:
+            autoapprove_error = approve_error
+
     return True, {
         "build_id": int(build_id),
         "updated_at": datetime.datetime.now(
             datetime.timezone.utc
         ).astimezone().isoformat(timespec="seconds"),
         "stages": stages,
+        "approval_target": approval_target,
+        "autoapproved": autoapproved,
+        "autoapprove_error": autoapprove_error,
     }
 
 
@@ -458,6 +598,7 @@ def run_pipeline_for_repo_details(name, path, branch, environment):
         if not pipeline_id:
             return False, f"{name}: no pipeline is configured for this repository"
         params = build_template_parameters(path, environment)
+        visible_stages = _visible_stages_for_run(path, params)
         data = _queue_run(org, project, pipeline_id, branch, params, auth)
     except urllib.error.HTTPError as exc:
         return False, f"{name}: pipeline run failed ({exc.code}): {_http_error_detail(exc)}"
@@ -480,6 +621,7 @@ def run_pipeline_for_repo_details(name, path, branch, environment):
         "host": host,
         "branch": branch,
         "pipeline_id": pipeline_id,
+        "visible_stages": visible_stages,
     }
 
 
