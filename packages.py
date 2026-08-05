@@ -35,6 +35,11 @@ import urllib.request
 import urllib.error
 
 
+# Suppress the console window Windows would otherwise pop up (and steal focus
+# with) for each child process; a no-op on other platforms.
+_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+
+
 # The public NuGet v3 flat-container package index (lists every version of a
 # package id). ``{id}`` must be the lower-cased, url-encoded package id.
 _FLAT_CONTAINER = "https://api.nuget.org/v3-flatcontainer/{id}/index.json"
@@ -76,6 +81,21 @@ def find_props_file(repo_path):
     try:
         for entry in os.listdir(repo_path):
             if entry.lower() == target:
+                return os.path.join(repo_path, entry)
+    except OSError:
+        pass
+    return None
+
+
+def find_solution_file(repo_path):
+    """Return the path to a ``.sln`` file in the repo root, or None.
+
+    ``dotnet restore`` with no arguments restores the solution/project in the
+    working directory; IBS repos keep a single ``.sln`` at their root.
+    """
+    try:
+        for entry in os.listdir(repo_path):
+            if entry.lower().endswith(".sln"):
                 return os.path.join(repo_path, entry)
     except OSError:
         pass
@@ -218,6 +238,25 @@ def find_private_feeds(repo_path):
     ]
 
 
+def _private_feed_prefixes(repo_path):
+    """Return a ``;``-joined list of Azure DevOps org URI prefixes for the repo.
+
+    The Azure Artifacts credential provider only uses ``VSS_NUGET_ACCESSTOKEN``
+    for feeds whose URI starts with one of these prefixes. Each private feed is
+    reduced to its ``https://pkgs.dev.azure.com/<org>/`` root. Falls back to the
+    bare host prefix when a feed has no org segment.
+    """
+    prefixes = []
+    for feed in find_private_feeds(repo_path):
+        parts = urllib.parse.urlsplit(feed)
+        org = parts.path.strip("/").split("/", 1)[0]
+        prefix = f"{parts.scheme}://{parts.netloc}/{org}/" if org else \
+            f"{parts.scheme}://{parts.netloc}/"
+        if prefix not in prefixes:
+            prefixes.append(prefix)
+    return ";".join(prefixes)
+
+
 # --------------------------------------------------------------------------- #
 # Private feed lookup (Azure DevOps Artifacts, AAD bearer token)
 # --------------------------------------------------------------------------- #
@@ -245,6 +284,7 @@ def get_azure_devops_token():
             [az, "account", "get-access-token", "--resource",
              _AZURE_DEVOPS_RESOURCE, "--query", "accessToken", "-o", "tsv"],
             capture_output=True, text=True, timeout=60,
+            creationflags=_NO_WINDOW,
         )
     except (OSError, subprocess.SubprocessError):
         return None
@@ -478,3 +518,66 @@ def bump_repo_packages(repo_path, include_public=True, include_private=False,
         return False, f"could not write Directory.Packages.props: {error}"
 
     return True, bumps
+
+
+def dotnet_restore(repo_path, token=None):
+    """Run ``dotnet restore`` in *repo_path* to refresh restored packages.
+
+    When *token* (an Azure DevOps AAD access token) is given it is exposed to the
+    restore via ``VSS_NUGET_ACCESSTOKEN`` so the Azure Artifacts credential
+    provider can authenticate against private feeds without a browser prompt.
+
+    Returns ``(ok, error_message)``. When the .NET SDK is not installed *ok* is
+    False with a "dotnet not found" message; a non-zero exit returns the actual
+    NuGet error line(s) so the cause is visible in the error list.
+    """
+    dotnet = shutil.which("dotnet")
+    if not dotnet:
+        return False, "dotnet not found - is the .NET SDK installed?"
+    env = None
+    if token:
+        env = os.environ.copy()
+        env["VSS_NUGET_ACCESSTOKEN"] = token
+        # The credential provider only applies the token to feeds whose URI
+        # matches one of these prefixes; without it the token is ignored.
+        prefixes = _private_feed_prefixes(repo_path)
+        if prefixes:
+            env["VSS_NUGET_URI_PREFIXES"] = prefixes
+    try:
+        result = subprocess.run(
+            [dotnet, "restore"],
+            cwd=repo_path, capture_output=True, text=True, timeout=600, env=env,
+            creationflags=_NO_WINDOW,
+        )
+    except (OSError, subprocess.SubprocessError) as error:
+        return False, f"dotnet restore failed: {error}"
+    if result.returncode != 0:
+        detail = _extract_restore_error(result.stdout, result.stderr)
+        return False, f"dotnet restore failed: {detail}"
+    return True, ""
+
+
+def _extract_restore_error(stdout, stderr):
+    """Pull the meaningful NuGet error line(s) out of a failed restore's output.
+
+    ``dotnet restore`` ends with a generic "Failed to restore ...csproj" summary;
+    the real cause is an earlier ``error NUxxxx``/``error :`` line. Prefer those
+    (deduped, project paths trimmed); fall back to the last non-empty line.
+    """
+    text = f"{stdout or ''}\n{stderr or ''}"
+    errors = []
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line:
+            continue
+        lowered = line.lower()
+        if "error" in lowered and "failed to restore" not in lowered:
+            # Drop a leading "<project path> : " prefix for readability.
+            if " : " in line:
+                line = line.split(" : ", 1)[1].strip()
+            if line not in errors:
+                errors.append(line)
+    if errors:
+        return "; ".join(errors[:3])
+    tail = [l.strip() for l in text.splitlines() if l.strip()]
+    return tail[-1] if tail else "unknown error"

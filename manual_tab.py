@@ -150,9 +150,9 @@ class ManualTab(ActionTabBase):
                 "and rewrites any that have a newer stable release. Prerelease "
                 "versions are ignored; packages not found on the public feed "
                 "(e.g. private-feed packages) are left untouched. The file is "
-                "edited in place - resulting build errors are ignored, so review "
-                "and commit the changes yourself. A per-repo report of the bumps "
-                "is offered to copy when the run finishes.",
+                "edited in place - review, restore and commit the changes "
+                "yourself. A per-repo report of the bumps is offered to copy "
+                "when the run finishes.",
             ),
             (
                 "Bump NuGet packages (private)",
@@ -162,9 +162,9 @@ class ManualTab(ActionTabBase):
                 "repo's nuget.config (sources starting with "
                 "https://pkgs.dev.azure.com). The feed is queried with an Azure "
                 "CLI token, so run 'az login' first. Packages only on the public "
-                "feed are left untouched. The props file is edited in place "
-                "(build errors ignored); a per-repo report of the bumps is "
-                "offered to copy when the run finishes.",
+                "feed are left untouched. The props file is edited in place; a "
+                "per-repo report of the bumps is offered to copy when the run "
+                "finishes.",
             ),
             (
                 "Bump all NuGet packages",
@@ -174,8 +174,20 @@ class ManualTab(ActionTabBase):
                 "feed (nuget.org) and the private Azure DevOps Artifacts feed(s) "
                 "from each repo's nuget.config. Requires 'az login' for the "
                 "private feed. Prerelease versions are ignored; the props file "
-                "is edited in place (build errors ignored) and a per-repo report "
-                "of the bumps is offered to copy when the run finishes.",
+                "is edited in place and a per-repo report of the bumps is "
+                "offered to copy when the run finishes.",
+            ),
+            (
+                "Restore NuGet packages",
+                self._action_restore,
+                "For every selected repository: runs 'dotnet restore' on the "
+                "repo's solution to refresh the restored packages (e.g. after a "
+                "bump). An Azure CLI token is fetched once so the Azure Artifacts "
+                "credential provider can authenticate against the private "
+                "feed(s) - run 'az login' first, and the credential provider "
+                "must be installed. Repos without a .sln in their root are "
+                "skipped; any restore error (e.g. a 401 or a missing package "
+                "version) is shown in the Errors list.",
             ),
         ]
 
@@ -424,6 +436,14 @@ class ManualTab(ActionTabBase):
         if not repos:
             return
         self.bump_packages(repos, include_public, include_private, label)
+
+    # -- Restore NuGet packages -------------------------------------------- #
+    def _action_restore(self):
+        self.errors.clear()
+        repos = self._all_selected_repos()
+        if not repos:
+            return
+        self.restore_packages(repos)
 
     # -- Run pipelines ----------------------------------------------------- #
     def _action_run_dev_pipeline(self):

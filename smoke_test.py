@@ -49,6 +49,7 @@ REQUIRED_REPO_LABELS = {
     "Bump NuGet packages (public)",
     "Bump NuGet packages (private)",
     "Bump all NuGet packages",
+    "Restore NuGet packages",
     "Run dev pipelines",
     "Run acc pipelines",
     "View merged master pipelines",
@@ -113,7 +114,8 @@ def _check_repo_delegation(repo_tab):
         return lambda *args, **kwargs: calls.append((name, args, kwargs))
 
     # Stub every heavy base method on the instance so nothing external runs.
-    for name in ("bump_packages", "run_pipelines", "copy_pr_links",
+    for name in ("bump_packages", "restore_packages", "run_pipelines",
+                 "copy_pr_links",
                  "open_repos_master", "open_branches", "open_prs",
                  "show_master_pipeline_monitor_for_merged_prs",
                  "open_terminals", "push_all", "create_prs",
@@ -153,6 +155,11 @@ def _check_repo_delegation(repo_tab):
         check(name == "bump_packages"
               and args == (FAKE_REPOS, True, True, "all feeds"),
               f"Bump all did not delegate correctly: {last()!r}")
+
+        repo_tab._action_restore()
+        name, args, _ = last()
+        check(name == "restore_packages" and args == (FAKE_REPOS,),
+              f"Restore did not delegate correctly: {last()!r}")
 
         repo_tab._action_run_dev_pipeline()
         name, args, _ = last()

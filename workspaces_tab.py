@@ -134,9 +134,8 @@ class WorkspacesTab(ActionTabBase):
                 "have a newer stable release. Prerelease versions are ignored; "
                 "packages not found on the public feed (e.g. private-feed "
                 "packages) are left untouched. The file is edited in place - "
-                "resulting build errors are ignored, so review and commit the "
-                "changes yourself. A per-repo report of the bumps is offered to "
-                "copy when the run finishes.",
+                "review, restore and commit the changes yourself. A per-repo "
+                "report of the bumps is offered to copy when the run finishes.",
             ),
             (
                 "Bump NuGet packages (private)",
@@ -147,8 +146,8 @@ class WorkspacesTab(ActionTabBase):
                 "(sources starting with https://pkgs.dev.azure.com). The feed is "
                 "queried with an Azure CLI token, so run 'az login' first. "
                 "Packages only on the public feed are left untouched. The props "
-                "file is edited in place (build errors ignored); a per-repo "
-                "report of the bumps is offered to copy when the run finishes.",
+                "file is edited in place; a per-repo report of the bumps is "
+                "offered to copy when the run finishes.",
             ),
             (
                 "Bump all NuGet packages",
@@ -159,8 +158,21 @@ class WorkspacesTab(ActionTabBase):
                 "the private Azure DevOps Artifacts feed(s) from each repo's "
                 "nuget.config. Requires 'az login' for the private feed. "
                 "Prerelease versions are ignored; the props file is edited in "
-                "place (build errors ignored) and a per-repo report of the bumps "
-                "is offered to copy when the run finishes.",
+                "place and a per-repo report of the bumps is offered to copy "
+                "when the run finishes.",
+            ),
+            (
+                "Restore NuGet packages",
+                self._action_restore,
+                "For the selected workspace's repositories (excluding skipped "
+                "repos): runs 'dotnet restore' on each repo's solution to "
+                "refresh the restored packages (e.g. after a bump). An Azure CLI "
+                "token is fetched once so the Azure Artifacts credential "
+                "provider can authenticate against the private feed(s) - run "
+                "'az login' first, and the credential provider must be "
+                "installed. Repos without a .sln in their root are skipped; any "
+                "restore error (e.g. a 401 or a missing package version) is "
+                "shown in the Errors list.",
             ),
         ]
 
@@ -684,6 +696,21 @@ class WorkspacesTab(ActionTabBase):
             )
             return
         self.bump_packages(repos, include_public, include_private, label)
+
+    # -- Restore NuGet packages -------------------------------------------- #
+    def _action_restore(self):
+        self.errors.clear()
+        ok, workspace, repos = self._selected_active_repos()
+        if not ok:
+            if workspace is not None:
+                self.errors.add(repos)
+            return
+        if not repos:
+            self.errors.add(
+                "this workspace has no repositories to restore packages for"
+            )
+            return
+        self.restore_packages(repos)
 
     # -- Open in Git Bash tabs --------------------------------------------- #
     def _action_open_terminals(self):

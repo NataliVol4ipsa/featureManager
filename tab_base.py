@@ -476,6 +476,39 @@ class ActionTabBase(ttk.Frame):
             completion_copy_label="Copy report",
         )
 
+    # -- Restore packages -------------------------------------------------- #
+    def restore_packages(self, repos):
+        """Run 'dotnet restore' in each selected repo to refresh restored packages.
+
+        An Azure CLI token is fetched once up front (off the UI thread) and
+        passed to each restore so the Azure Artifacts credential provider can
+        authenticate against the private feed(s). Repos without a solution file
+        in their root are marked skipped. *repos* is assumed non-empty.
+        """
+        self.show_repos_async(repos, with_status=True)
+
+        def _prepare():
+            token = packages.get_azure_devops_token()
+            self.after(0, self._start_restore, repos, token)
+        threading.Thread(target=_prepare, daemon=True).start()
+
+    def _start_restore(self, repos, token):
+        """Run the actual per-repo restore once the token has been fetched."""
+        def _skip(name, path):
+            if not packages.find_solution_file(path):
+                return "no .sln in repo root"
+            return ""
+
+        def _restore(name, path):
+            return packages.dotnet_restore(path, token)
+
+        self.run_repo_action(
+            repos,
+            _restore,
+            "Packages restored.",
+            skip_fn=_skip,
+        )
+
     # -- Run pipelines ----------------------------------------------------- #
     def run_pipelines(self, active, environment):
         """Start each repo's pipeline on the given branch for *environment*.
