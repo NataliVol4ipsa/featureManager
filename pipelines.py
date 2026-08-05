@@ -69,6 +69,11 @@ def _is_deploy_definition_name(name):
     )
 
 
+def _is_veracode_definition_name(name):
+    """Return True when *name* is a Veracode (security scan) pipeline definition."""
+    return bool(re.search(r"\bveracode\b", (name or "").lower()))
+
+
 PIPELINE_STAGE_KEYS = ("build", "development", "acceptance", "production")
 PIPELINE_STAGE_DEFAULTS = {
     "build": "waiting",
@@ -365,9 +370,16 @@ def _pipeline_build_for_commit(org, project, repo_id, commit_id, auth):
     )
     builds = (_api_get(url, auth).get("value") or [])
     commit_id = (commit_id or "").lower()
+    # Veracode security scans also build master for the merge commit; never show
+    # them as "the" master pipeline, even when the deployment build hasn't run yet.
+    # These run either as a separately named definition, or as the nightly
+    # *scheduled* run of the deployment pipeline itself (same definition name),
+    # so filter on both the definition name and the build's trigger reason.
     matched = [
         build for build in builds
         if (build.get("sourceVersion") or "").lower() == commit_id
+        and not _is_veracode_definition_name((build.get("definition") or {}).get("name"))
+        and (build.get("reason") or "").lower() != "schedule"
     ]
     if not matched:
         return None

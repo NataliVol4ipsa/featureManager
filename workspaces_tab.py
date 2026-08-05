@@ -548,7 +548,8 @@ class WorkspacesTab(ActionTabBase):
         if not repos:
             return
 
-        self.run_repo_action(repos, self._restore_one, "State restored.")
+        self.run_repo_action(repos, self._restore_one, "State restored.",
+                             parallel=True)
 
     def _restore_one(self, name, path):
         """Restore the pre-switch working state if the app made a savepos commit."""
@@ -597,6 +598,7 @@ class WorkspacesTab(ActionTabBase):
             repos,
             lambda n, p: rebase_on_master(n, p, REBASE_SAVE_MSG, decisions.get(n)),
             "All repositories rebased successfully.",
+            parallel=True,
         )
 
     # -- Commit all changes (custom message) ------------------------------- #

@@ -345,6 +345,7 @@ class ManualTab(ActionTabBase):
             repos,
             lambda n, p: rebase_on_master(n, p, REBASE_SAVE_MSG, decisions.get(n)),
             "All repositories rebased successfully.",
+            parallel=True,
         )
 
     # -- Create feature branch --------------------------------------------- #

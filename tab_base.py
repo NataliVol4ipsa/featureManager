@@ -26,6 +26,7 @@ from pipelines import (
     get_work_item_report_details_for_repo,
 )
 import packages
+from parallel import run_in_parallel
 from pipeline_monitor import PipelineMonitorWindow
 
 
@@ -218,6 +219,7 @@ class ActionTabBase(ttk.Frame):
             repos,
             lambda n, p: commit_all(n, p, message),
             "All changes committed successfully.",
+            parallel=True,
         )
 
     def push_all(self, repos):
@@ -256,6 +258,7 @@ class ActionTabBase(ttk.Frame):
             "All branches pushed successfully.",
             link_fn=lambda n, p: git_branch_url(p, git_current_branch(p)),
             skip_fn=git_branch_is_empty if skip_empty else None,
+            parallel=True,
         )
 
     def create_prs(self, repos):
@@ -316,6 +319,7 @@ class ActionTabBase(ttk.Frame):
             show_branch=False,
             completion_copy_fn=_copy_text,
             skip_fn=git_branch_is_empty if options["skip_empty"] else None,
+            parallel=True,
         )
 
 
@@ -507,6 +511,7 @@ class ActionTabBase(ttk.Frame):
             _restore,
             "Packages restored.",
             skip_fn=_skip,
+            parallel=True,
         )
 
     # -- Run pipelines ----------------------------------------------------- #
@@ -603,6 +608,7 @@ class ActionTabBase(ttk.Frame):
             ),
             completion_copy_label="Copy links",
             on_complete=_on_complete,
+            parallel=True,
         )
 
     def _open_pipeline_monitor(self, run_infos, show_autoapprove_controls=False,
@@ -847,11 +853,14 @@ class ActionTabBase(ttk.Frame):
         self._branch_scan_token = token
 
         def _scan():
-            for name, path in repos:
+            def _read_one(repo):
+                name, path = repo
                 if self._branch_scan_token != token:
                     return  # a newer selection started; stop this stale scan
                 branch = git_current_branch(path) if is_git_repo(path) else ""
                 self.after(0, self._apply_branch, token, name, branch)
+
+            run_in_parallel(repos, _read_one)
 
         threading.Thread(target=_scan, daemon=True).start()
 
@@ -865,7 +874,7 @@ class ActionTabBase(ttk.Frame):
                         link_header="Link", show_branch=True,
                         completion_copy_fn=None, skip_fn=None,
                         completion_open_fn=None, completion_open_label="Open all",
-                        completion_copy_label="Copy all"):
+                        completion_copy_label="Copy all", parallel=False):
         """Run *per_repo_fn(name, path)* for each repo off the UI thread.
 
         *per_repo_fn* must return (ok, error_message). The table shows each
@@ -885,6 +894,10 @@ class ActionTabBase(ttk.Frame):
         "skipped" and its action is not run (skipped repos do not affect the
         success banner). When *skip_fn* returns a non-empty string the string
         is attached as a hover tooltip on the skipped status indicator.
+        Set *parallel* to True to run *per_repo_fn* across all repos
+        concurrently (via a thread pool); status circles still update live as
+        each repo finishes. Only enable it for actions that are safe to run in
+        parallel (each repo works on its own files, no shared state).
         """
         self.errors.clear()
         self.progress.show_repos(
@@ -897,7 +910,7 @@ class ActionTabBase(ttk.Frame):
             args=(repos, per_repo_fn, success_msg, on_complete, link_fn,
                   link_text, show_branch, completion_copy_fn, skip_fn,
                   completion_open_fn, completion_open_label,
-                  completion_copy_label),
+                  completion_copy_label, parallel),
             daemon=True,
         ).start()
 
@@ -905,9 +918,8 @@ class ActionTabBase(ttk.Frame):
                 link_fn=None, link_text="View branch", show_branch=True,
                 completion_copy_fn=None, skip_fn=None,
                 completion_open_fn=None, completion_open_label="Open all",
-                completion_copy_label="Copy all"):
-        all_ok = True
-        for name, path in repos:
+                completion_copy_label="Copy all", parallel=False):
+        def _process_one(name, path):
             skip_result = skip_fn(name, path) if skip_fn is not None else False
             if skip_result:
                 tooltip = skip_result if isinstance(skip_result, str) else None
@@ -915,13 +927,12 @@ class ActionTabBase(ttk.Frame):
                 if show_branch:
                     branch = git_current_branch(path) if is_git_repo(path) else ""
                     self.after(0, self.progress.set_branch, name, branch)
-                continue
+                return True  # Skipped repos do not affect the success banner.
             self.after(0, self.progress.status, name, "in-progress")
             ok, message = per_repo_fn(name, path)
             if ok:
                 self.after(0, self.progress.status, name, "done")
             else:
-                all_ok = False
                 self.after(0, self.progress.status, name, "error")
                 self.after(0, self.errors.add, message)
             # The action may have changed the branch (e.g. checkout); refresh it
@@ -934,6 +945,16 @@ class ActionTabBase(ttk.Frame):
                 url = link_fn(name, path)
                 if url:
                     self.after(0, self.progress.set_link, name, url, link_text)
+            return ok
+
+        if parallel:
+            results = run_in_parallel(repos, lambda rp: _process_one(*rp))
+            all_ok = all(results)
+        else:
+            all_ok = True
+            for name, path in repos:
+                if not _process_one(name, path):
+                    all_ok = False
 
         if all_ok and success_msg:
             copy_text = completion_copy_fn(repos) if completion_copy_fn else None
