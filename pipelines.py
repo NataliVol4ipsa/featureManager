@@ -233,13 +233,73 @@ def _auth_for_host(host):
 
 
 def _http_error_detail(exc):
-    """Extract a human-readable message from an HTTPError response body."""
-    detail = exc.read().decode("utf-8", "replace").strip()
+    """Extract a human-readable message from an HTTPError response body.
+
+    The body is cached on the exception because an HTTPError can only be read
+    once; callers may inspect the detail more than once (e.g. to classify the
+    error and then to report it).
+    """
+    cached = getattr(exc, "_cached_detail", None)
+    if cached is not None:
+        return cached
+    raw = exc.read().decode("utf-8", "replace").strip()
+    detail = raw
     try:
-        detail = json.loads(detail).get("message", detail)
+        payload = json.loads(raw)
+        detail = payload.get("message", raw)
+        # The classic Build Queue API reports "validation errors or warnings"
+        # generically; the real reasons live in validationResults (sometimes
+        # nested under customProperties), so gather every message we can find.
+        extra = _collect_validation_messages(payload)
+        if extra:
+            detail = "; ".join([detail] + extra) if detail else "; ".join(extra)
+        elif detail == payload.get("message") and _looks_generic(detail):
+            # No structured detail from ADO: fall back to the raw body so the
+            # real cause is at least visible rather than the generic sentence.
+            detail = f"{detail} [body: {raw[:600]}]"
     except ValueError:
         pass
-    return detail or f"HTTP {exc.code}"
+    result = detail or f"HTTP {exc.code}"
+    try:
+        exc._cached_detail = result
+    except (AttributeError, TypeError):
+        pass
+    return result
+
+
+def _looks_generic(message):
+    """Return True for ADO's uninformative 'validation errors or warnings' text."""
+    return "validation errors or warnings" in (message or "").lower()
+
+
+def _collect_validation_messages(payload):
+    """Return distinct validation messages found anywhere in an ADO error body.
+
+    Handles validationResults at the top level and nested under
+    customProperties, plus any dict with a 'result' + 'message' shape.
+    """
+    messages = []
+
+    def visit(node):
+        if isinstance(node, dict):
+            msg = node.get("message")
+            if node.get("result") and isinstance(msg, str) and msg.strip():
+                messages.append(msg.strip())
+            for value in node.values():
+                visit(value)
+        elif isinstance(node, list):
+            for item in node:
+                visit(item)
+
+    for key in ("validationResults", "customProperties"):
+        visit(payload.get(key))
+    seen = set()
+    unique = []
+    for msg in messages:
+        if msg not in seen:
+            seen.add(msg)
+            unique.append(msg)
+    return unique
 
 
 def _api_get(url, auth):
@@ -273,12 +333,49 @@ def _resolve_repo_id(org, project, repo, auth):
     return _api_get(url, auth).get("id")
 
 
+def _full_definition(org, project, definition_id, auth):
+    """Return the full build definition (triggers, process/YAML), or {} on error."""
+    url = (
+        f"https://dev.azure.com/{urllib.parse.quote(org)}/"
+        f"{urllib.parse.quote(project)}/_apis/build/definitions/"
+        f"{urllib.parse.quote(str(definition_id))}?api-version=7.1"
+    )
+    try:
+        return _api_get(url, auth)
+    except (urllib.error.HTTPError, urllib.error.URLError, OSError, ValueError):
+        return {}
+
+
+def _definition_is_live(full_def):
+    """Return True for a runnable modern deploy pipeline, by structure not name.
+
+    A live pipeline is enabled, YAML-based, and CI-triggered - exactly what Azure
+    DevOps auto-runs when a branch merges. A retired definition (e.g. one renamed
+    "To be removed", whose agent pool is often deleted) has no CI trigger and no
+    YAML, so it fails this test without any name matching.
+    """
+    if (full_def.get("queueStatus") or "enabled") != "enabled":
+        return False
+    if not ((full_def.get("process") or {}).get("yamlFilename")):
+        return False
+    triggers = full_def.get("triggers") or []
+    return any((t.get("triggerType") or "") == "continuousIntegration" for t in triggers)
+
+
+def _definition_yaml_basename(full_def):
+    """Return the lower-cased basename of a definition's YAML file, or ''."""
+    yaml = (full_def.get("process") or {}).get("yamlFilename") or ""
+    return os.path.basename(yaml).lower()
+
+
 def _resolve_pipeline_id(org, project, repo_id, auth):
     """Return the build/pipeline definition id that builds *repo_id*, or None.
 
-    When several definitions target the repository the deployment pipeline is
-    preferred: the one whose name looks like a PR/CI/Veracode validation build
-    is skipped, otherwise the first is used.
+    When several definitions target the repository the live deployment pipeline
+    is chosen by structural signals (CI trigger + YAML) rather than by name:
+    retired definitions are dropped, PR/Veracode/library builds are skipped, and
+    the one whose YAML is the standard deploy file (azure-pipelines.yml) wins,
+    with the "EVC-<repo>" naming as a final tie-break.
     """
     url = (
         f"https://dev.azure.com/{urllib.parse.quote(org)}/"
@@ -292,11 +389,18 @@ def _resolve_pipeline_id(org, project, repo_id, auth):
     if len(definitions) == 1:
         return definitions[0].get("id")
 
-    preferred = [
-        d for d in definitions
-        if _is_deploy_definition_name(d.get("name"))
+    # Fetch each in full so triggers/YAML are available (the list omits them).
+    detailed = [
+        _full_definition(org, project, d.get("id"), auth) or d
+        for d in definitions
     ]
-    chosen = preferred[0] if preferred else definitions[0]
+
+    live = [d for d in detailed if _definition_is_live(d)] or detailed
+    deploy = [d for d in live if _is_deploy_definition_name(d.get("name"))] or live
+    standard = [d for d in deploy if _definition_yaml_basename(d) in _PIPELINE_YAML_NAMES]
+    pool = standard or deploy
+    evc = [d for d in pool if (d.get("name") or "").lower().startswith("evc-")]
+    chosen = (evc or pool)[0]
     return chosen.get("id")
 
 
