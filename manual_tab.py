@@ -368,6 +368,7 @@ class ManualTab(ActionTabBase):
             repos,
             lambda n, p: create_feature_branch(n, p, branch_name, decisions.get(n)),
             "All feature branches created successfully.",
+            parallel=True,
         )
 
     # -- Commit all changes as savepos ------------------------------------- #
@@ -541,4 +542,5 @@ class ManualTab(ActionTabBase):
             lambda n, p: create_feature_branch(n, p, feature_name, decisions.get(n)),
             None,  # completion handled by _then so we get a combined message
             on_complete=_then,
+            parallel=True,
         )

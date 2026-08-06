@@ -918,6 +918,7 @@ class WorkspacesTab(ActionTabBase):
                 "Skipped: ignore git (keeps its own branch)"
                 if n in ignore_folders else False
             ),
+            parallel=True,
         )
 
     # -- Create feature branch --------------------------------------------- #
@@ -954,4 +955,5 @@ class WorkspacesTab(ActionTabBase):
             repos,
             lambda n, p: create_feature_branch(n, p, branch_name, decisions.get(n)),
             "All feature branches created successfully.",
+            parallel=True,
         )

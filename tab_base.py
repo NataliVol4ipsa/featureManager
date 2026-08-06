@@ -150,10 +150,13 @@ class ActionTabBase(ttk.Frame):
         later applied, the change set is committed preserving its staged/unstaged
         split so it can be restored.
         """
-        decisions = {}
-        for name, path in repos:
+        # Read every repo's git status concurrently (the slow part); a repo that
+        # needs a prompt yields its current branch, all others yield None. The
+        # modals themselves stay on the UI thread, asked sequentially below.
+        def _scan(repo):
+            name, path = repo
             if not is_git_repo(path):
-                continue
+                return None
             branch = git_current_branch(path)
             # *skip_branch* may be a fixed branch name or a callable returning
             # the per-repo target branch (workspaces can switch each repo to a
@@ -161,8 +164,16 @@ class ActionTabBase(ttk.Frame):
             # are skipped (no prompt).
             target = skip_branch(name) if callable(skip_branch) else skip_branch
             if target is not None and branch == target:
-                continue
+                return None
             if not git_has_changes(path):
+                return None
+            return branch
+
+        branches = run_in_parallel(repos, _scan)
+
+        decisions = {}
+        for (name, _path), branch in zip(repos, branches):
+            if branch is None:
                 continue
 
             options = []
