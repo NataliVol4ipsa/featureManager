@@ -689,10 +689,11 @@ def get_pipeline_stage_statuses(run_info):
     # Infer which gate is pending approval from stage progression.
     approval_target = ""
     if pending_approval_ids:
+        # Acceptance may depend only on build (not development), so ADO can open
+        # its approval while dev is still running; auto-approve once build is done.
         if (
             stages.get("acceptance") == "waiting"
             and _stage_complete_or_not_applicable("build")
-            and _stage_complete_or_not_applicable("development")
         ):
             stages["acceptance"] = "approval"
             approval_target = "acceptance"
