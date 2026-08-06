@@ -51,9 +51,16 @@ _PIPELINE_YAML_NAMES = (
 )
 
 # Words in a build/pipeline definition name that mark it as a non-deployment
-# build (PR validation, Veracode, NuGet library, etc.). When a repository has
-# several definitions, these are skipped in favour of the deployment pipeline.
-_NON_DEPLOY_DEFINITION_WORDS = ("pr", "veracode", "validation", "nuget", "library")
+# build (PR validation, NuGet library, etc.). When a repository has several
+# definitions, these are skipped in favour of the deployment pipeline.
+_NON_DEPLOY_DEFINITION_WORDS = ("pr", "validation", "nuget", "library")
+
+# Build reasons produced when a run is started by completing a pull request /
+# pushing the merge commit to master - exactly what Azure DevOps auto-triggers
+# on a manual PR merge. Runs started by any other trigger (notably a scheduled
+# security scan, reason "schedule") are excluded, so the master deployment run
+# is identified structurally by its trigger reason rather than by name.
+_MERGE_BUILD_REASONS = ("individualci", "batchedci", "manual")
 
 
 def _is_deploy_definition_name(name):
@@ -67,11 +74,6 @@ def _is_deploy_definition_name(name):
         re.search(rf"\b{re.escape(word)}\b", lowered)
         for word in _NON_DEPLOY_DEFINITION_WORDS
     )
-
-
-def _is_veracode_definition_name(name):
-    """Return True when *name* is a Veracode (security scan) pipeline definition."""
-    return bool(re.search(r"\bveracode\b", (name or "").lower()))
 
 
 PIPELINE_STAGE_KEYS = ("build", "development", "acceptance", "production")
@@ -379,7 +381,7 @@ def _resolve_pipeline_id(org, project, repo_id, auth):
 
     When several definitions target the repository the live deployment pipeline
     is chosen by structural signals (CI trigger + YAML) rather than by name:
-    retired definitions are dropped, PR/Veracode/library builds are skipped, and
+    retired definitions are dropped, PR/library builds are skipped, and
     the one whose YAML is the standard deploy file (azure-pipelines.yml) wins,
     with the "EVC-<repo>" naming as a final tie-break.
     """
@@ -480,16 +482,14 @@ def _pipeline_build_for_commit(org, project, repo_id, commit_id, auth):
     )
     builds = (_api_get(url, auth).get("value") or [])
     commit_id = (commit_id or "").lower()
-    # Veracode security scans also build master for the merge commit; never show
-    # them as "the" master pipeline, even when the deployment build hasn't run yet.
-    # These run either as a separately named definition, or as the nightly
-    # *scheduled* run of the deployment pipeline itself (same definition name),
-    # so filter on both the definition name and the build's trigger reason.
+    # Only consider runs started by the merge itself. Completing a pull request
+    # pushes the merge commit to master, which Azure DevOps builds with a CI
+    # merge reason; a scheduled scan of the same pipeline uses a different reason
+    # and must never be shown as the master deployment run.
     matched = [
         build for build in builds
         if (build.get("sourceVersion") or "").lower() == commit_id
-        and not _is_veracode_definition_name((build.get("definition") or {}).get("name"))
-        and (build.get("reason") or "").lower() != "schedule"
+        and (build.get("reason") or "").lower() in _MERGE_BUILD_REASONS
     ]
     if not matched:
         return None
