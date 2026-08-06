@@ -212,14 +212,20 @@ def _visible_stages_for_run(repo_path, template_parameters):
 # Azure DevOps REST helpers
 # --------------------------------------------------------------------------- #
 
-def _auth_for_host(host):
-    """Return (authorization_header, error). Prefers ADO_PAT, then Git creds."""
+def _auth_for_host(host, org=None):
+    """Return (authorization_header, error). Prefers ADO_PAT, then Git creds.
+
+    When *org* is given an org-scoped URL is built for the Git credential
+    lookup: Azure DevOps stores dev.azure.com credentials per-organization
+    (useHttpPath), so a bare host finds nothing.
+    """
     pat = os.environ.get("ADO_PAT", "").strip()
     if pat:
         token = base64.b64encode(f":{pat}".encode("utf-8")).decode("ascii")
         return f"Basic {token}", ""
 
-    username, password = get_git_credential(host)
+    url = f"https://{host}/{urllib.parse.quote(org)}" if org else None
+    username, password = get_git_credential(host, url)
     if password:
         token = base64.b64encode(
             f"{username or ''}:{password}".encode("utf-8")
@@ -645,7 +651,7 @@ def get_pipeline_stage_statuses(run_info):
     if not org or not project or not host or build_id is None:
         return False, "run info is missing org/project/host/build_id"
 
-    auth, err = _auth_for_host(host)
+    auth, err = _auth_for_host(host, org)
     if err:
         return False, err
 
@@ -778,7 +784,7 @@ def run_pipeline_for_repo_details(name, path, branch, environment):
         return False, f"{name}: remote is not an Azure DevOps repository"
     org, project, repo, host = parsed
 
-    auth, err = _auth_for_host(host)
+    auth, err = _auth_for_host(host, org)
     if err:
         return False, f"{name}: {err}"
 
@@ -845,7 +851,7 @@ def get_master_pipeline_run_for_merged_branch_details(name, path, branch):
         return False, f"{name}: remote is not an Azure DevOps repository"
     org, project, repo, host = parsed
 
-    auth, err = _auth_for_host(host)
+    auth, err = _auth_for_host(host, org)
     if err:
         return False, f"{name}: {err}"
 
@@ -928,7 +934,7 @@ def get_work_item_report_details(org, project, work_item_id, host):
     where each test report is a work item linked to *work_item_id* via the
     "Tested By" relation (name is its title, url is its edit page).
     """
-    auth, err = _auth_for_host(host)
+    auth, err = _auth_for_host(host, org)
     if err:
         return False, err
 

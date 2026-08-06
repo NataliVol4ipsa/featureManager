@@ -15,7 +15,7 @@ _DEFAULTS = {
     "nugets_root": r"D:/Repositories/Shared",
     "workspaces_root": r"D:/Workspaces/features",
     "exclusions": {
-        "repos": ["ibs", "shared", "wiki"],
+        "repos": ["shared", "wiki"],
         "nugets": [],
         "workspaces": [],
     },

@@ -176,7 +176,7 @@ def _ado_auth_header():
 
     # Fall back to the Git-stored credential for the org host.
     host = (urllib.parse.urlparse(org_url).hostname or "").lower()
-    username, password = get_git_credential(host)
+    username, password = get_git_credential(host, org_url)
     if password:
         token = base64.b64encode(
             f"{username or ''}:{password}".encode("utf-8")

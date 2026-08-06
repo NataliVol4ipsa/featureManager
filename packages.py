@@ -128,7 +128,7 @@ def find_solution_file(repo_path):
     """Return the path to a ``.sln`` file in the repo root, or None.
 
     ``dotnet restore`` with no arguments restores the solution/project in the
-    working directory; IBS repos keep a single ``.sln`` at their root.
+    working directory.
     """
     try:
         for entry in os.listdir(repo_path):

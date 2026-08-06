@@ -20,7 +20,7 @@ is absent, built-in defaults are used.
     "nugets_root": "D:/Repositories/Shared",
     "workspaces_root": "D:/Workspaces/features",
     "exclusions": {
-        "repos": ["ibs", "shared", "wiki"],
+        "repos": ["shared", "wiki"],
         "nugets": [],
         "workspaces": []
     }

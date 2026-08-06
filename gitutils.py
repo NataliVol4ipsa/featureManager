@@ -796,16 +796,23 @@ def parse_ado_remote(remote_url):
     return None
 
 
-def get_git_credential(host):
+def get_git_credential(host, url=None):
     """Return (username, password) Git has stored for *host*, or (None, None).
 
     Uses ``git credential fill`` so the existing credential (e.g. a PAT managed
-    by Git Credential Manager) is reused without prompting the user.
+    by Git Credential Manager) is reused without prompting the user. When the
+    full remote *url* is given it is passed instead of a bare host: Azure DevOps
+    stores ``dev.azure.com`` credentials per-organization (``useHttpPath``), so
+    the org path must be included or the lookup returns nothing.
     """
+    if url:
+        query = f"url={url}\n\n"
+    else:
+        query = f"protocol=https\nhost={host}\n\n"
     try:
         proc = subprocess.run(
             ["git", "credential", "fill"],
-            input=f"protocol=https\nhost={host}\n\n",
+            input=query,
             capture_output=True, text=True, timeout=20,
             creationflags=NO_WINDOW,
         )
@@ -840,12 +847,13 @@ def create_ado_pr(name, path, title, description="", target="master", draft=Fals
     if branch == target:
         return False, f"{name}: on {target}; nothing to create a pull request for", ""
 
-    parsed = parse_ado_remote(git_remote_url(path))
+    remote_url = git_remote_url(path)
+    parsed = parse_ado_remote(remote_url)
     if not parsed:
         return False, f"{name}: remote is not an Azure DevOps repository", ""
     org, project, repo, host = parsed
 
-    username, password = get_git_credential(host)
+    username, password = get_git_credential(host, remote_url)
     if not password:
         return False, f"{name}: no stored Git credential for {host}", ""
 
@@ -938,12 +946,13 @@ def get_ado_pr_url(name, path, target="master"):
     if not branch:
         return False, f"{name}: not on a branch (detached HEAD)"
 
-    parsed = parse_ado_remote(git_remote_url(path))
+    remote_url = git_remote_url(path)
+    parsed = parse_ado_remote(remote_url)
     if not parsed:
         return False, f"{name}: remote is not an Azure DevOps repository"
     org, project, repo, host = parsed
 
-    username, password = get_git_credential(host)
+    username, password = get_git_credential(host, remote_url)
     if not password:
         return False, f"{name}: no stored Git credential for {host}"
 

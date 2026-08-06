@@ -375,6 +375,7 @@ class ActionTabBase(ttk.Frame):
             show_branch=False,
             completion_copy_fn=_copy_text,
             on_complete=_on_complete,
+            parallel=True,
         )
 
 
