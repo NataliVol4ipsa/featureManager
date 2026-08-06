@@ -397,8 +397,8 @@ class ActionTabBase(ttk.Frame):
     def bump_packages(self, repos, include_public, include_private, label):
         """Bump each repo's out-of-date package versions for the chosen feeds.
 
-        Repos without a Directory.Packages.props in their root are marked
-        skipped. When the private feed is involved an Azure CLI token is fetched
+        Repos without any Directory.Packages.props (root, or per sub-solution
+        for a multi-repository repo) are marked skipped. When the private feed is
         once up front (on a background thread) with a feed reachability check, so
         a "not logged in" / unreachable failure is reported once, not per repo.
         Each repo's props file is rewritten in place; a per-repo report of the
@@ -441,12 +441,16 @@ class ActionTabBase(ttk.Frame):
             self.errors.add(feed_error)
             return
 
+        # Fresh per-batch memo so a package shared across props files / repos is
+        # fetched from the feed only once (but a later batch still re-checks).
+        packages.reset_version_cache()
+
         reports = {}
         self._bump_reports = reports
 
         def _skip(name, path):
-            if not packages.find_props_file(path):
-                return "no Directory.Packages.props in repo root"
+            if not packages.find_all_props_files(path):
+                return "no Directory.Packages.props found"
             return ""
 
         def _bump(name, path):
@@ -478,6 +482,7 @@ class ActionTabBase(ttk.Frame):
             skip_fn=_skip,
             completion_copy_fn=_report_text,
             completion_copy_label="Copy report",
+            parallel=True,
         )
 
     # -- Restore packages -------------------------------------------------- #
@@ -486,8 +491,9 @@ class ActionTabBase(ttk.Frame):
 
         An Azure CLI token is fetched once up front (off the UI thread) and
         passed to each restore so the Azure Artifacts credential provider can
-        authenticate against the private feed(s). Repos without a solution file
-        in their root are marked skipped. *repos* is assumed non-empty.
+        authenticate against the private feed(s). Repos without any solution file
+        (root, or per sub-solution for a multi-repository repo) are marked
+        skipped. *repos* is assumed non-empty.
         """
         self.show_repos_async(repos, with_status=True)
 
@@ -499,8 +505,8 @@ class ActionTabBase(ttk.Frame):
     def _start_restore(self, repos, token):
         """Run the actual per-repo restore once the token has been fetched."""
         def _skip(name, path):
-            if not packages.find_solution_file(path):
-                return "no .sln in repo root"
+            if not packages.find_all_solution_files(path):
+                return "no .sln found"
             return ""
 
         def _restore(name, path):
