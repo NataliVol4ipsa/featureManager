@@ -18,12 +18,14 @@ from gitutils import (
 )
 from dialogs import (
     ask_change_decision, ask_commit_message, ask_branch_warning, ask_pr_details,
-    ask_missing_remote_branches, ask_acc_autoapprove,
+    ask_missing_remote_branches, ask_acc_autoapprove, ask_deploy_selection,
 )
 from pipelines import (
     run_pipeline_for_repo_details,
     get_master_pipeline_run_for_merged_branch_details,
     get_work_item_report_details_for_repo,
+    find_env_deployment_for_branch,
+    build_template_parameters,
 )
 import packages
 from parallel import run_in_parallel
@@ -548,12 +550,31 @@ class ActionTabBase(ttk.Frame):
         self.show_repos_async([(n, p) for n, p, _ in active], with_status=True)
 
         def _check():
+            # Both the remote-branch scan and the deployment probe hit the
+            # network per repo, so fan each out across a thread pool.
+            def _scan(entry):
+                name, path, branch = entry
+                return is_git_repo(path) and remote_branch_exists(path, branch)
+
+            present = run_in_parallel(active, _scan) if active else []
             existing, missing = [], []
-            for name, path, branch in active:
-                if is_git_repo(path) and remote_branch_exists(path, branch):
-                    existing.append((name, path, branch))
-                else:
-                    missing.append(name)
+            for entry, ok in zip(active, present):
+                (existing if ok else missing).append(
+                    entry if ok else entry[0]
+                )
+
+            # Ask Azure DevOps whether each branch tip already deployed to the
+            # target environment.
+            def _probe(entry):
+                name, path, branch = entry
+                ok, info = find_env_deployment_for_branch(
+                    name, path, branch, environment
+                )
+                return name, (info if ok else None)
+
+            probes = run_in_parallel(existing, _probe) if existing else []
+            deploy_info = {name: info for name, info in probes}
+
             self.after(
                 0,
                 self._on_branches_checked,
@@ -561,12 +582,14 @@ class ActionTabBase(ttk.Frame):
                 autoapprove_acc,
                 existing,
                 missing,
+                deploy_info,
             )
 
         threading.Thread(target=_check, daemon=True).start()
 
-    def _on_branches_checked(self, environment, autoapprove_acc, existing, missing):
-        """After the remote-branch scan: confirm missing repos, then run."""
+    def _on_branches_checked(self, environment, autoapprove_acc, existing,
+                             missing, deploy_info):
+        """After the remote-branch scan: confirm missing repos, pick deploy set."""
         env_label = "Development" if environment == "dev" else "Acceptance"
         if missing:
             if not ask_missing_remote_branches(self, missing, env_label):
@@ -578,11 +601,64 @@ class ActionTabBase(ttk.Frame):
             )
             return
 
-        repos = [(name, path) for name, path, _ in existing]
-        branch_of = {name: branch for name, _, branch in existing}
+        entries = [
+            (name, bool((deploy_info.get(name) or {}).get("already_deployed")))
+            for name, _, _ in existing
+        ]
+        decisions = ask_deploy_selection(self, entries, env_label)
+        if decisions is None:
+            self.progress.show_repos([])
+            return
+
+        to_run = [(n, p, b) for n, p, b in existing if decisions.get(n)]
+        to_skip = [(n, p, b) for n, p, b in existing if not decisions.get(n)]
+
         urls = {}
         run_infos = {}
         self._pipeline_urls = urls
+
+        # Unticked repos are not rebuilt: show their existing deployment run
+        # (with a "previous run" marker) or a skipped placeholder.
+        for name, path, branch in to_skip:
+            info = deploy_info.get(name) or {}
+            if info.get("already_deployed") and info.get("build_id") is not None:
+                run_infos[name] = {
+                    "url": info.get("url", ""),
+                    "build_id": info.get("build_id"),
+                    "org": info.get("org"),
+                    "project": info.get("project"),
+                    "host": info.get("host"),
+                    "repo": info.get("repo"),
+                    "branch": branch,
+                    "pipeline_id": info.get("pipeline_id"),
+                    "visible_stages": info.get("visible_stages") or [],
+                    "template_parameters": build_template_parameters(
+                        path, environment
+                    ),
+                    "environment": environment,
+                    "autoapprove_acc": bool(autoapprove_acc),
+                    "is_previous_run": True,
+                }
+                urls[name] = info.get("url", "")
+            else:
+                run_infos[name] = {
+                    "skipped": True,
+                    "environment": environment,
+                    "repo": name,
+                }
+
+        if not to_run:
+            monitor_runs = dict(run_infos)
+            if monitor_runs:
+                self._open_pipeline_monitor(monitor_runs)
+            self.progress.show_completion(
+                f"No new {env_label} deployments were started "
+                "(all selected repositories were skipped)."
+            )
+            return
+
+        repos = [(name, path) for name, path, _ in to_run]
+        branch_of = {name: branch for name, _, branch in to_run}
 
         def _run(name, path):
             ok, result = run_pipeline_for_repo_details(
@@ -599,10 +675,10 @@ class ActionTabBase(ttk.Frame):
         def _on_complete(_all_ok):
             monitor_runs = {
                 name: info for name, info in run_infos.items()
-                if info.get("build_id") is not None
+                if info.get("skipped") or info.get("build_id") is not None
             }
             for name, info in run_infos.items():
-                if info.get("build_id") is None:
+                if not info.get("skipped") and info.get("build_id") is None:
                     self.errors.add(
                         f"{name}: pipeline started, but build id was unavailable "
                         "for live monitoring"

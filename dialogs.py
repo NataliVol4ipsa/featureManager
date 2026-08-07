@@ -1001,6 +1001,94 @@ def ask_missing_remote_branches(parent, names, environment_label):
     return result["value"]
 
 
+def ask_deploy_selection(parent, entries, environment_label):
+    """Modal to choose which repositories to deploy to an environment.
+
+    *entries* is a list of ``(repo_name, already_deployed)``. A repo whose
+    latest branch commit already deployed successfully to the environment is
+    unticked by default; ticking it shows an inline note that it will be
+    redeployed with no changes. Returns a ``{repo_name: deploy_bool}`` dict on
+    confirm, or ``None`` if cancelled.
+    """
+    dialog = tk.Toplevel(parent)
+    dialog.title(f"Run {environment_label} deployments")
+    dialog.transient(parent.winfo_toplevel())
+    dialog.resizable(False, False)
+
+    tk.Label(
+        dialog,
+        text=f"Select the repositories to deploy to {environment_label}.",
+        justify="left", wraplength=480,
+    ).pack(padx=16, pady=(16, 4), anchor="w")
+    tk.Label(
+        dialog,
+        text="Repositories whose latest branch commit was already deployed "
+             "successfully are unticked. Tick one to redeploy it anyway.",
+        foreground=theme.FG_MUTED, justify="left", wraplength=480,
+    ).pack(padx=16, pady=(0, 8), anchor="w")
+
+    table = ttk.Frame(dialog)
+    table.pack(padx=16, fill="x")
+    ttk.Label(table, text="Deploy", font=("", 9, "bold")).grid(
+        row=0, column=0, sticky="w", padx=4, pady=(0, 4)
+    )
+    ttk.Label(table, text="Repository", font=("", 9, "bold")).grid(
+        row=0, column=1, sticky="w", padx=4, pady=(0, 4)
+    )
+
+    rows = []  # (name, already_deployed, var, note_label)
+    for index, (name, already) in enumerate(entries, start=1):
+        var = tk.BooleanVar(value=not already)
+        ttk.Checkbutton(table, variable=var).grid(
+            row=index, column=0, sticky="w", padx=4, pady=2
+        )
+        tk.Label(table, text=name, font=("", 9, "bold")).grid(
+            row=index, column=1, sticky="w", padx=4, pady=2
+        )
+        note = tk.Label(table, text="", justify="left", wraplength=260)
+        note.grid(row=index, column=2, sticky="w", padx=6, pady=2)
+        rows.append((name, already, var, note))
+
+    def _refresh(*_args):
+        for _name, already, var, note in rows:
+            if already and var.get():
+                note.config(
+                    text="earlier successful deployment already exists - repo "
+                         "will be redeployed with no changes",
+                    foreground=theme.WARNING,
+                )
+            elif already:
+                note.config(text="already deployed - will be skipped",
+                            foreground=theme.FG_MUTED)
+            else:
+                note.config(text="", foreground=theme.FG_MUTED)
+
+    for _name, _already, var, _note in rows:
+        var.trace_add("write", _refresh)
+
+    result = {"value": None}
+
+    def _ok():
+        result["value"] = {name: var.get() for name, _a, var, _n in rows}
+        dialog.destroy()
+
+    def _cancel():
+        result["value"] = None
+        dialog.destroy()
+
+    bar = ttk.Frame(dialog)
+    bar.pack(padx=16, pady=12)
+    ttk.Button(bar, text="Run deployments", command=_ok).pack(side="left", padx=4)
+    ttk.Button(bar, text="Cancel", command=_cancel).pack(side="left", padx=4)
+
+    _refresh()
+    dialog.protocol("WM_DELETE_WINDOW", _cancel)
+    _center_over_parent(dialog, parent)
+    dialog.grab_set()
+    parent.wait_window(dialog)
+    return result["value"]
+
+
 def ask_acc_autoapprove(parent):
     """Modal asking whether ACC pipeline acceptance approvals should auto-approve.
 

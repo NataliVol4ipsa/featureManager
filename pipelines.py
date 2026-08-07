@@ -32,6 +32,7 @@ import urllib.error
 
 from gitutils import (
     is_git_repo, git_remote_url, parse_ado_remote, get_git_credential,
+    remote_branch_head,
 )
 
 
@@ -520,6 +521,131 @@ def _build_web_url(org, project, build):
     if web:
         return web
     return ""
+
+
+def _branch_builds_for_commit(org, project, repo_id, branch, commit_id, auth):
+    """Return deploy builds run on *branch* for *commit_id*, newest first."""
+    query = urllib.parse.urlencode({
+        "repositoryId": str(repo_id),
+        "repositoryType": "TfsGit",
+        "branchName": f"refs/heads/{branch}",
+        "queryOrder": "queueTimeDescending",
+        "$top": "100",
+        "api-version": "7.1",
+    })
+    url = (
+        f"https://dev.azure.com/{urllib.parse.quote(org)}/"
+        f"{urllib.parse.quote(project)}/_apis/build/builds?{query}"
+    )
+    builds = (_api_get(url, auth).get("value") or [])
+    commit_id = (commit_id or "").lower()
+    matched = [
+        build for build in builds
+        if (build.get("sourceVersion") or "").lower() == commit_id
+    ]
+    deploy = [
+        build for build in matched
+        if _is_deploy_definition_name((build.get("definition") or {}).get("name"))
+    ]
+    return deploy or matched
+
+
+def _build_stage_states(org, project, build_id, auth):
+    """Return {stage_key: state} for a build's timeline stages."""
+    timeline = _api_build_timeline(org, project, int(build_id), auth)
+    stages = {}
+    for record in timeline.get("records") or []:
+        if (record.get("type") or "").lower() != "stage":
+            continue
+        key = _timeline_stage_key(record.get("name") or record.get("identifier"))
+        if not key:
+            continue
+        stages[key] = _timeline_state(record)
+    return stages
+
+
+def find_env_deployment_for_branch(name, path, branch, environment):
+    """Check whether origin/*branch*'s tip already deployed to *environment*.
+
+    Returns (ok, info). *info* always carries the Azure DevOps context needed to
+    later queue or display a run:
+      {
+        "already_deployed": bool,   # tip commit deployed to env successfully
+        "commit": str,              # branch tip commit sha ('' if unknown)
+        "org","project","host","repo","branch","pipeline_id",
+        "build_id": int|None,       # the successful deploy build, if any
+        "url": str,                 # that build's web URL
+        "visible_stages": [...],    # stages that build ran
+      }
+    A "successful deployment" means the environment's stage (Development for dev,
+    Acceptance for acc) of a build for the tip commit completed successfully. On
+    any lookup failure returns (False, error_message); callers treat that as
+    "unknown" and keep the repo selected for deployment.
+    """
+    if not is_git_repo(path):
+        return False, f"{name}: not a git repository"
+
+    parsed = parse_ado_remote(git_remote_url(path))
+    if not parsed:
+        return False, f"{name}: remote is not an Azure DevOps repository"
+    org, project, repo, host = parsed
+
+    auth, err = _auth_for_host(host, org)
+    if err:
+        return False, f"{name}: {err}"
+
+    commit = remote_branch_head(path, branch)
+    info = {
+        "already_deployed": False,
+        "commit": commit,
+        "org": org, "project": project, "host": host, "repo": repo,
+        "branch": branch, "pipeline_id": None,
+        "build_id": None, "url": "", "visible_stages": [],
+    }
+    if not commit:
+        return False, f"{name}: could not read the remote branch tip"
+
+    target = "development" if environment == "dev" else "acceptance"
+    try:
+        repo_id = _resolve_repo_id(org, project, repo, auth)
+        if not repo_id:
+            return False, f"{name}: could not resolve the repository in Azure DevOps"
+        info["pipeline_id"] = _resolve_pipeline_id(org, project, repo_id, auth)
+        for build in _branch_builds_for_commit(
+            org, project, repo_id, branch, commit, auth
+        ):
+            build_id = build.get("id")
+            if build_id is None:
+                continue
+            status = (build.get("status") or "").lower()
+            stages = _build_stage_states(org, project, build_id, auth)
+            target_state = stages.get(target)
+            build_running = status in ("inprogress", "notstarted", "postponed")
+            # Accept when the env is already deployed (done) or deploying
+            # (running), or when the pipeline is still running and its env stage
+            # is queued/running - i.e. it will deploy once the build finishes.
+            # Reject failed/canceled/skipped stages and different commits (the
+            # latter are filtered out earlier).
+            accepted = target_state in ("done", "running") or (
+                build_running and target_state in ("waiting", "running")
+            )
+            if accepted:
+                info["already_deployed"] = True
+                info["build_id"] = int(build_id)
+                info["url"] = _build_web_url(org, project, build)
+                info["visible_stages"] = [
+                    key for key in PIPELINE_STAGE_KEYS if key in stages
+                ]
+                break
+    except urllib.error.HTTPError as exc:
+        return False, (
+            f"{name}: deployment check failed ({exc.code}): "
+            f"{_http_error_detail(exc)}"
+        )
+    except (urllib.error.URLError, OSError, ValueError) as exc:
+        return False, f"{name}: deployment check failed: {exc}"
+
+    return True, info
 
 
 def _timeline_stage_key(name):

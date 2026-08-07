@@ -101,9 +101,10 @@ class PipelineMonitorWindow(tk.Toplevel):
                  pbi_title="", test_reports=None):
         super().__init__(parent.winfo_toplevel())
         self.title("Pipeline monitor")
-        # Dev/acc monitors carry an extra "Run latest" action column.
-        self.geometry("760x250" if show_autoapprove_controls else "880x250")
-        self.minsize(310, 90)
+        # Actual size is fitted to the content once the UI is built; this is only
+        # a placeholder to avoid a visible flash before that runs.
+        self.geometry("760x250")
+        self.minsize(200, 80)
         self.attributes("-topmost", True)
         self.configure(background=theme.BG)
         theme.apply_window_icon(self)
@@ -136,7 +137,27 @@ class PipelineMonitorWindow(tk.Toplevel):
         self._build_ui()
         self._apply_autoapprove_flags()
         self.protocol("WM_DELETE_WINDOW", self._on_close)
+        self.after_idle(self._fit_to_content)
         self.after(150, self._poll_once)
+
+    def _fit_to_content(self):
+        """Resize the window to exactly fit its content (capped to the screen)."""
+        if self._closed:
+            return
+        self.update_idletasks()
+        # Give the scrolling canvas the size of its content so the window's
+        # requested size accounts for every row.
+        self._canvas.configure(
+            width=self._inner.winfo_reqwidth(),
+            height=self._inner.winfo_reqheight(),
+        )
+        self.update_idletasks()
+        self._update_scrollregion_and_scrollbar()
+        self.update_idletasks()
+        # Never open larger than the screen; overflow falls back to scroll/pan.
+        width = min(self.winfo_reqwidth(), self.winfo_screenwidth() - 80)
+        height = min(self.winfo_reqheight(), self.winfo_screenheight() - 120)
+        self.geometry(f"{width}x{height}")
 
     def _build_ui(self):
         # Master monitors show the PBI title centered above the controls row.
@@ -226,9 +247,37 @@ class PipelineMonitorWindow(tk.Toplevel):
 
         for index, (repo, info) in enumerate(sorted(self._run_infos.items())):
             self._inner.grid_rowconfigure(index, minsize=58)
+
+            # Column 0 (left of the name): yellow rewind glyph marking a row that
+            # shows an existing "previous run" instead of a freshly started one.
+            rewind_icon = None
+            if info.get("is_previous_run"):
+                # Segoe MDL2 Assets "Undo" glyph renders as a crisp monochrome
+                # icon; the plain Unicode arrow (U+21BA) falls back to a bulky
+                # colour-emoji glyph on Windows.
+                rewind_icon = tk.Label(
+                    self._inner, text="\uE7A7", foreground=theme.WARNING,
+                    background=theme.BG, font=("Segoe MDL2 Assets", 12),
+                )
+                rewind_icon.grid(row=index, column=0, sticky="w",
+                                 padx=(4, 0), pady=0)
+                Tooltip(rewind_icon, "previous run")
+                self._bind_pan_widget(rewind_icon)
+
             repo_label = ttk.Label(self._inner, text=repo)
-            repo_label.grid(row=index, column=0, sticky="w", padx=(4, 6), pady=0)
+            repo_label.grid(row=index, column=1, sticky="w", padx=(4, 6), pady=0)
             self._bind_pan_widget(repo_label)
+
+            # Skipped repositories have no run to track: show a placeholder and
+            # keep the row out of polling/drawing.
+            if info.get("skipped") and info.get("build_id") is None:
+                skipped = ttk.Label(
+                    self._inner, text="-- skipped --", foreground=theme.FG_MUTED
+                )
+                skipped.grid(row=index, column=2, sticky="w", padx=6, pady=0)
+                self._bind_pan_widget(skipped)
+                self._rows[repo] = {"skipped": True}
+                continue
 
             configured_stages = list(info.get("visible_stages") or [
                 "build", "development", "acceptance", "production"
@@ -238,7 +287,7 @@ class PipelineMonitorWindow(tk.Toplevel):
 
             graph = tk.Canvas(self._inner, width=graph_width, height=62,
                               background=theme.BG, highlightthickness=0)
-            graph.grid(row=index, column=1, sticky="w", padx=6, pady=0)
+            graph.grid(row=index, column=2, sticky="w", padx=6, pady=0)
             self._bind_pan_widget(graph)
             # Hover/click on a failed stage circle to rerun its failed jobs.
             graph.bind("<Motion>", lambda e, r=repo: self._on_stage_motion(e, r),
@@ -256,7 +305,7 @@ class PipelineMonitorWindow(tk.Toplevel):
                 cursor="hand2",
                 font=("", 9, "underline"),
             )
-            link.grid(row=index, column=2, sticky="w", padx=6, pady=0)
+            link.grid(row=index, column=3, sticky="w", padx=6, pady=0)
             url = info.get("url")
             if url:
                 link.bind("<Button-1>", lambda _e, u=url: webbrowser.open(u, new=2))
@@ -274,7 +323,7 @@ class PipelineMonitorWindow(tk.Toplevel):
                     width=11,
                     command=lambda r=repo: self._rerun_from_latest(r),
                 )
-                rerun_button.grid(row=index, column=3, sticky="w",
+                rerun_button.grid(row=index, column=4, sticky="w",
                                   padx=(6, 4), pady=0)
                 Tooltip(
                     rerun_button,
@@ -301,6 +350,7 @@ class PipelineMonitorWindow(tk.Toplevel):
                 "retry_in_progress": False,
                 "rerun_button": rerun_button,
                 "rerun_launch_in_progress": False,
+                "rewind_icon": rewind_icon,
             }
             self._draw_row(repo)
 
@@ -659,11 +709,17 @@ class PipelineMonitorWindow(tk.Toplevel):
             info["pipeline_id"] = result.get("pipeline_id")
             info["visible_stages"] = result.get("visible_stages") or []
             info["template_parameters"] = result.get("template_parameters") or {}
+            info["is_previous_run"] = False
             for stale in ("_autoapprove_acceptance_done",
                           "_autoapprove_production_done"):
                 info.pop(stale, None)
 
         if row:
+            # A fresh run is no longer a "previous" one - drop the rewind marker.
+            rewind_icon = row.get("rewind_icon")
+            if rewind_icon is not None:
+                rewind_icon.grid_forget()
+                row["rewind_icon"] = None
             new_url = result.get("url", "")
             new_build = result.get("build_id")
             row["link_url"] = new_url
@@ -703,6 +759,9 @@ class PipelineMonitorWindow(tk.Toplevel):
         def _work():
             results = {}
             for repo, info in self._run_infos.items():
+                # Skipped placeholder rows have nothing to poll.
+                if info.get("skipped") or info.get("build_id") is None:
+                    continue
                 ok, payload = get_pipeline_stage_statuses(info)
                 results[repo] = (ok, payload)
             self.after(0, self._apply_poll_results, results)

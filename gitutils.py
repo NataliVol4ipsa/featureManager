@@ -469,6 +469,17 @@ def remote_branch_exists(repo_path, branch):
     return ok and bool(out.strip())
 
 
+def remote_branch_head(repo_path, branch):
+    """Return the commit sha at the tip of origin/*branch*, or '' on failure.
+
+    Hits the network (ls-remote), so call it off the UI thread.
+    """
+    ok, out = run_git(repo_path, ["ls-remote", "--heads", "origin", branch])
+    if not ok or not out.strip():
+        return ""
+    return out.split()[0].strip()
+
+
 def git_commit_message(repo_path, ref):
     """Return the subject line of the commit at *ref*, or '' on failure."""
     ok, out = run_git(repo_path, ["log", "-1", "--format=%s", ref])

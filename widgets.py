@@ -27,6 +27,9 @@ class Tooltip:
         y = self.widget.winfo_rooty() + self.widget.winfo_height() + 4
         self._tip = tk.Toplevel(self.widget)
         self._tip.wm_overrideredirect(True)  # no window border/title bar
+        # Float above even always-on-top windows (e.g. the pipeline monitor),
+        # otherwise the tooltip is hidden behind them and never seen.
+        self._tip.wm_attributes("-topmost", True)
         self._tip.wm_geometry(f"+{x}+{y}")
         tk.Label(
             self._tip, text=self.text, justify="left",
