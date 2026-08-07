@@ -12,7 +12,11 @@ from tkinter import ttk
 
 import theme
 from widgets import Tooltip
-from pipelines import get_pipeline_stage_statuses
+from pipelines import (
+    get_pipeline_stage_statuses,
+    rerun_failed_stage,
+    rerun_pipeline_from_latest_commit,
+)
 
 
 _STAGE_ORDER = [
@@ -97,7 +101,8 @@ class PipelineMonitorWindow(tk.Toplevel):
                  pbi_title="", test_reports=None):
         super().__init__(parent.winfo_toplevel())
         self.title("Pipeline monitor")
-        self.geometry("760x250")
+        # Dev/acc monitors carry an extra "Run latest" action column.
+        self.geometry("760x250" if show_autoapprove_controls else "880x250")
         self.minsize(310, 90)
         self.attributes("-topmost", True)
         self.configure(background=theme.BG)
@@ -235,6 +240,13 @@ class PipelineMonitorWindow(tk.Toplevel):
                               background=theme.BG, highlightthickness=0)
             graph.grid(row=index, column=1, sticky="w", padx=6, pady=0)
             self._bind_pan_widget(graph)
+            # Hover/click on a failed stage circle to rerun its failed jobs.
+            graph.bind("<Motion>", lambda e, r=repo: self._on_stage_motion(e, r),
+                       add="+")
+            graph.bind("<Leave>", lambda e, r=repo: self._on_stage_leave(e, r),
+                       add="+")
+            graph.bind("<ButtonPress-1>",
+                       lambda e, r=repo: self._on_stage_press(e, r), add="+")
 
             # Keep a direct clickable link to the run details page.
             link = tk.Label(
@@ -251,6 +263,26 @@ class PipelineMonitorWindow(tk.Toplevel):
             else:
                 link.configure(foreground=theme.FG_MUTED, cursor="", font=("", 9))
 
+            # Dev/acc monitors get a per-row action to queue a fresh run from the
+            # latest commit of the branch (master monitors don't - master runs
+            # are tied to a specific merge commit).
+            rerun_button = None
+            if not self._show_autoapprove_controls:
+                rerun_button = ttk.Button(
+                    self._inner,
+                    text="Run latest",
+                    width=11,
+                    command=lambda r=repo: self._rerun_from_latest(r),
+                )
+                rerun_button.grid(row=index, column=3, sticky="w",
+                                  padx=(6, 4), pady=0)
+                Tooltip(
+                    rerun_button,
+                    "Queue a brand-new pipeline run from the latest commit of "
+                    "the branch, using exactly the same parameters as this run. "
+                    "This row then follows the new run.",
+                )
+
             self._rows[repo] = {
                 "graph": graph,
                 "link": link,
@@ -263,6 +295,12 @@ class PipelineMonitorWindow(tk.Toplevel):
                     "acceptance": "waiting",
                     "production": "waiting",
                 },
+                "stage_identifiers": {},
+                "retry_hitboxes": [],
+                "hover_stage": None,
+                "retry_in_progress": False,
+                "rerun_button": rerun_button,
+                "rerun_launch_in_progress": False,
             }
             self._draw_row(repo)
 
@@ -460,6 +498,7 @@ class PipelineMonitorWindow(tk.Toplevel):
         canvas = row["graph"]
         stages = row["stages"]
         canvas.delete("all")
+        retry_hitboxes = []
 
         stage_order = [
             (key, title)
@@ -495,6 +534,161 @@ class PipelineMonitorWindow(tk.Toplevel):
             canvas.create_text(
                 x, y - 18, text=style["label"], fill=label_color, font=("", 8)
             )
+            # A failed stage is retryable: remember its circle and, while it is
+            # hovered, draw a white rerun icon on top of the red circle.
+            if state == "failed":
+                retry_hitboxes.append((key, x, y))
+                if row.get("hover_stage") == key:
+                    canvas.create_text(
+                        x, y, text="\u21bb", fill="white", font=("", 13, "bold"),
+                    )
+        row["retry_hitboxes"] = retry_hitboxes
+
+    def _stage_at(self, row, px, py):
+        """Return the failed-stage key whose circle contains (px, py), or None."""
+        for key, cx, cy in row.get("retry_hitboxes") or []:
+            if (px - cx) ** 2 + (py - cy) ** 2 <= 12 ** 2:
+                return key
+        return None
+
+    def _on_stage_motion(self, event, repo):
+        """Show the rerun icon while hovering a failed stage circle."""
+        row = self._rows.get(repo)
+        if not row:
+            return
+        hit = self._stage_at(row, event.x, event.y)
+        if hit == row.get("hover_stage"):
+            return
+        row["hover_stage"] = hit
+        row["graph"].configure(cursor="hand2" if hit else "")
+        if hit:
+            stage_label = dict(_STAGE_ORDER).get(hit, hit)
+            self.title(
+                f"Pipeline monitor - click to rerun failed {stage_label} jobs"
+            )
+        else:
+            self.title("Pipeline monitor")
+        self._draw_row(repo)
+
+    def _on_stage_leave(self, _event, repo):
+        row = self._rows.get(repo)
+        if not row or row.get("hover_stage") is None:
+            return
+        row["hover_stage"] = None
+        row["graph"].configure(cursor="")
+        self._draw_row(repo)
+
+    def _on_stage_press(self, event, repo):
+        row = self._rows.get(repo)
+        if not row:
+            return
+        key = self._stage_at(row, event.x, event.y)
+        if key:
+            self._retry_stage(repo, key)
+
+    def _retry_stage(self, repo, key):
+        """Rerun the failed jobs of *key* stage for *repo* on a worker thread."""
+        row = self._rows.get(repo)
+        info = self._run_infos.get(repo)
+        if not row or not info or row.get("retry_in_progress"):
+            return
+        stage_id = (row.get("stage_identifiers") or {}).get(key)
+        stage_label = dict(_STAGE_ORDER).get(key, key)
+        row["retry_in_progress"] = True
+        self.title(f"Pipeline monitor - retrying {repo} {stage_label}...")
+
+        def _work():
+            ok, err = rerun_failed_stage(info, stage_id)
+            self.after(0, self._on_retry_done, repo, key, ok, err)
+
+        threading.Thread(target=_work, daemon=True).start()
+
+    def _on_retry_done(self, repo, key, ok, err):
+        if self._closed:
+            return
+        row = self._rows.get(repo)
+        if row:
+            row["retry_in_progress"] = False
+        stage_label = dict(_STAGE_ORDER).get(key, key)
+        if ok:
+            if row:
+                row["stages"][key] = "running"
+                row["hover_stage"] = None
+                row["graph"].configure(cursor="")
+                self._draw_row(repo)
+            self.title(f"Pipeline monitor - {repo} {stage_label} rerun queued")
+        else:
+            self.title(f"Pipeline monitor - rerun failed: {err}")
+
+    def _rerun_from_latest(self, repo):
+        """Queue a fresh run from the branch tip and follow it in this row."""
+        row = self._rows.get(repo)
+        info = self._run_infos.get(repo)
+        if not row or not info or row.get("rerun_launch_in_progress"):
+            return
+        row["rerun_launch_in_progress"] = True
+        button = row.get("rerun_button")
+        if button is not None:
+            button.configure(state="disabled")
+        self.title(f"Pipeline monitor - starting new {repo} run...")
+
+        def _work():
+            ok, result = rerun_pipeline_from_latest_commit(info)
+            self.after(0, self._on_rerun_launched, repo, ok, result)
+
+        threading.Thread(target=_work, daemon=True).start()
+
+    def _on_rerun_launched(self, repo, ok, result):
+        if self._closed:
+            return
+        row = self._rows.get(repo)
+        if row:
+            row["rerun_launch_in_progress"] = False
+            button = row.get("rerun_button")
+            if button is not None:
+                button.configure(state="normal")
+        if not ok:
+            self.title(f"Pipeline monitor - new run failed: {result}")
+            return
+
+        info = self._run_infos.get(repo)
+        if info is not None:
+            # Follow the new run: refresh identity, drop stale approval flags.
+            info["url"] = result.get("url", "")
+            info["build_id"] = result.get("build_id")
+            info["pipeline_id"] = result.get("pipeline_id")
+            info["visible_stages"] = result.get("visible_stages") or []
+            info["template_parameters"] = result.get("template_parameters") or {}
+            for stale in ("_autoapprove_acceptance_done",
+                          "_autoapprove_production_done"):
+                info.pop(stale, None)
+
+        if row:
+            new_url = result.get("url", "")
+            new_build = result.get("build_id")
+            row["link_url"] = new_url
+            row["build_id"] = new_build
+            row["stage_identifiers"] = {}
+            row["hover_stage"] = None
+            row["stages"] = {
+                "build": "waiting",
+                "development": "waiting",
+                "acceptance": "waiting",
+                "production": "waiting",
+            }
+            link = row["link"]
+            link.unbind("<Button-1>")
+            link.configure(
+                text=f"Build {new_build if new_build is not None else '?'}",
+                foreground=theme.LINK if new_url else theme.FG_MUTED,
+                cursor="hand2" if new_url else "",
+                font=("", 9, "underline") if new_url else ("", 9),
+            )
+            if new_url:
+                link.bind("<Button-1>",
+                          lambda _e, u=new_url: webbrowser.open(u, new=2))
+            self._draw_row(repo)
+        self.title(f"Pipeline monitor - new {repo} run queued")
 
     def _poll_once(self):
         if self._closed:
@@ -530,6 +724,9 @@ class PipelineMonitorWindow(tk.Toplevel):
                 continue
             if ok:
                 self._rows[repo]["stages"].update(payload.get("stages") or {})
+                self._rows[repo]["stage_identifiers"] = (
+                    payload.get("stage_identifiers") or {}
+                )
                 latest_timestamp = payload.get("updated_at", latest_timestamp)
                 if payload.get("autoapproved"):
                     target = payload.get("autoapproved_target")

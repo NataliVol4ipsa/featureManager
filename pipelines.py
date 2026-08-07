@@ -663,6 +663,7 @@ def get_pipeline_stage_statuses(run_info):
         return False, f"timeline lookup failed: {exc}"
 
     stages = dict(PIPELINE_STAGE_DEFAULTS)
+    stage_identifiers = {}
     for record in timeline.get("records") or []:
         if (record.get("type") or "").lower() != "stage":
             continue
@@ -670,6 +671,8 @@ def get_pipeline_stage_statuses(run_info):
         if not key:
             continue
         stages[key] = _timeline_state(record)
+        # The stage refName is needed to retry the stage's failed jobs.
+        stage_identifiers[key] = record.get("identifier") or record.get("name")
 
     pending_approval_ids = []
     any_partially_approved = False
@@ -767,11 +770,50 @@ def get_pipeline_stage_statuses(run_info):
             datetime.timezone.utc
         ).astimezone().isoformat(timespec="seconds"),
         "stages": stages,
+        "stage_identifiers": stage_identifiers,
         "approval_target": approval_target,
         "autoapproved": autoapproved,
         "autoapproved_target": autoapproved_target,
         "autoapprove_error": autoapprove_error,
     }
+
+
+def rerun_failed_stage(run_info, stage_ref_name):
+    """Retry the failed jobs of one pipeline stage. Returns (ok, error).
+
+    Uses the Azure DevOps "Stages - Update" API with state "retry" and
+    ``forceRetryAllJobs=false`` so only the failed/canceled jobs of the stage
+    are re-run (matching the ADO web "Rerun failed jobs" action). *run_info*
+    must contain org, project, host and build_id; *stage_ref_name* is the
+    stage identifier reported by ``get_pipeline_stage_statuses``.
+    """
+    org = run_info.get("org")
+    project = run_info.get("project")
+    host = run_info.get("host")
+    build_id = run_info.get("build_id")
+    if not org or not project or not host or build_id is None:
+        return False, "run info is missing org/project/host/build_id"
+    if not stage_ref_name:
+        return False, "this stage cannot be retried yet (no stage id available)"
+
+    auth, err = _auth_for_host(host, org)
+    if err:
+        return False, err
+
+    url = (
+        f"https://dev.azure.com/{urllib.parse.quote(org)}/"
+        f"{urllib.parse.quote(project)}/_apis/build/builds/{int(build_id)}/"
+        f"stages/{urllib.parse.quote(str(stage_ref_name))}"
+        f"?api-version=7.1-preview.1"
+    )
+    body = {"state": "retry", "forceRetryAllJobs": False}
+    try:
+        _api_patch(url, body, auth)
+        return True, ""
+    except urllib.error.HTTPError as exc:
+        return False, f"rerun failed ({exc.code}): {_http_error_detail(exc)}"
+    except (urllib.error.URLError, OSError, ValueError) as exc:
+        return False, f"rerun failed: {exc}"
 
 
 def run_pipeline_for_repo_details(name, path, branch, environment):
@@ -820,6 +862,56 @@ def run_pipeline_for_repo_details(name, path, branch, environment):
         "branch": branch,
         "pipeline_id": pipeline_id,
         "visible_stages": visible_stages,
+        "template_parameters": params,
+    }
+
+
+def rerun_pipeline_from_latest_commit(run_info):
+    """Queue the pipeline again on the branch tip with the same parameters.
+
+    Returns (ok, details_or_error). Reuses the org/project/host/pipeline_id/
+    branch/template_parameters captured when the run was first started, so the
+    new run uses exactly the same parameters but from the latest commit of the
+    branch (Azure DevOps always queues from the tip of the branch ref).
+    """
+    org = run_info.get("org")
+    project = run_info.get("project")
+    host = run_info.get("host")
+    pipeline_id = run_info.get("pipeline_id")
+    branch = run_info.get("branch")
+    params = run_info.get("template_parameters") or {}
+    if not (org and project and host and pipeline_id and branch):
+        return False, "run info is missing org/project/host/pipeline_id/branch"
+
+    auth, err = _auth_for_host(host, org)
+    if err:
+        return False, err
+
+    try:
+        data = _queue_run(org, project, pipeline_id, branch, params, auth)
+    except urllib.error.HTTPError as exc:
+        return False, f"pipeline run failed ({exc.code}): {_http_error_detail(exc)}"
+    except (urllib.error.URLError, OSError, ValueError) as exc:
+        return False, f"pipeline run failed: {exc}"
+
+    url = ((data.get("_links") or {}).get("web") or {}).get("href") or ""
+    build_id = _parse_build_id_from_url(url)
+    if build_id is None:
+        try:
+            build_id = int(data.get("id"))
+        except (TypeError, ValueError):
+            build_id = None
+    return True, {
+        "url": url,
+        "build_id": build_id,
+        "org": org,
+        "project": project,
+        "repo": run_info.get("repo"),
+        "host": host,
+        "branch": branch,
+        "pipeline_id": pipeline_id,
+        "visible_stages": list(run_info.get("visible_stages") or []),
+        "template_parameters": dict(params),
     }
 
 
