@@ -63,6 +63,12 @@ _STAGE_STYLE = {
         "text": theme.FG,
         "label": "failed",
     },
+    "canceled": {
+        "fill": theme.FG_MUTED,
+        "outline": theme.FG_MUTED,
+        "text": theme.FG,
+        "label": "canceled",
+    },
     "done": {
         "fill": theme.SUCCESS,
         "outline": theme.SUCCESS,
@@ -120,6 +126,8 @@ class PipelineMonitorWindow(tk.Toplevel):
         self._rows = {}
         self._scrollbar_visible = True
         self._pan_anchor = None
+        self._progress_tip = None
+        self._progress_tip_target = None
         self._acc_locked_by_master = False
         self._prod_locked_by_master = False
         self._autoapprove_acceptance = any(
@@ -351,6 +359,8 @@ class PipelineMonitorWindow(tk.Toplevel):
                 "rerun_button": rerun_button,
                 "rerun_launch_in_progress": False,
                 "rewind_icon": rewind_icon,
+                "stage_progress": {},
+                "running_hitboxes": [],
             }
             self._draw_row(repo)
 
@@ -549,6 +559,7 @@ class PipelineMonitorWindow(tk.Toplevel):
         stages = row["stages"]
         canvas.delete("all")
         retry_hitboxes = []
+        running_hitboxes = []
 
         stage_order = [
             (key, title)
@@ -592,7 +603,11 @@ class PipelineMonitorWindow(tk.Toplevel):
                     canvas.create_text(
                         x, y, text="\u21bb", fill="white", font=("", 13, "bold"),
                     )
+            # A running stage shows its current step + completion % on hover.
+            if state == "running":
+                running_hitboxes.append((key, x, y))
         row["retry_hitboxes"] = retry_hitboxes
+        row["running_hitboxes"] = running_hitboxes
 
     def _stage_at(self, row, px, py):
         """Return the failed-stage key whose circle contains (px, py), or None."""
@@ -606,6 +621,7 @@ class PipelineMonitorWindow(tk.Toplevel):
         row = self._rows.get(repo)
         if not row:
             return
+        self._update_progress_tip(repo, row, event.x, event.y)
         hit = self._stage_at(row, event.x, event.y)
         if hit == row.get("hover_stage"):
             return
@@ -621,12 +637,68 @@ class PipelineMonitorWindow(tk.Toplevel):
         self._draw_row(repo)
 
     def _on_stage_leave(self, _event, repo):
+        self._hide_progress_tip()
         row = self._rows.get(repo)
         if not row or row.get("hover_stage") is None:
             return
         row["hover_stage"] = None
         row["graph"].configure(cursor="")
         self._draw_row(repo)
+
+    def _running_stage_at(self, row, px, py):
+        """Return the running-stage key whose circle contains (px, py), or None."""
+        for key, cx, cy in row.get("running_hitboxes") or []:
+            if (px - cx) ** 2 + (py - cy) ** 2 <= 12 ** 2:
+                return key
+        return None
+
+    def _update_progress_tip(self, repo, row, px, py):
+        """Show/hide the step-progress tooltip for a hovered running stage."""
+        key = self._running_stage_at(row, px, py)
+        target = (repo, key) if key else None
+        if target == self._progress_tip_target:
+            return
+        self._progress_tip_target = target
+        self._hide_progress_tip()
+        if not key:
+            return
+        progress = (row.get("stage_progress") or {}).get(key)
+        if not progress:
+            return
+        current = progress.get("current") or ""
+        percent = progress.get("percent")
+        text = f"{percent}% {current}".strip() if percent is not None else current
+        if not text:
+            return
+        canvas = row["graph"]
+        center = next(
+            ((cx, cy) for k, cx, cy in row.get("running_hitboxes") or []
+             if k == key),
+            None,
+        )
+        if center is None:
+            return
+        x = canvas.winfo_rootx() + center[0] + 14
+        y = canvas.winfo_rooty() + center[1] + 14
+        self._show_progress_tip(text, x, y)
+
+    def _show_progress_tip(self, text, x, y):
+        self._hide_progress_tip()
+        tip = tk.Toplevel(self)
+        tip.wm_overrideredirect(True)
+        tip.wm_attributes("-topmost", True)
+        tip.wm_geometry(f"+{x}+{y}")
+        tk.Label(
+            tip, text=text, justify="left", background=theme.TOOLTIP_BG,
+            foreground=theme.TOOLTIP_FG, relief="solid", borderwidth=1,
+            padx=6, pady=3, wraplength=320,
+        ).pack()
+        self._progress_tip = tip
+
+    def _hide_progress_tip(self):
+        if self._progress_tip is not None:
+            self._progress_tip.destroy()
+            self._progress_tip = None
 
     def _on_stage_press(self, event, repo):
         row = self._rows.get(repo)
@@ -786,6 +858,9 @@ class PipelineMonitorWindow(tk.Toplevel):
                 self._rows[repo]["stage_identifiers"] = (
                     payload.get("stage_identifiers") or {}
                 )
+                self._rows[repo]["stage_progress"] = (
+                    payload.get("stage_progress") or {}
+                )
                 latest_timestamp = payload.get("updated_at", latest_timestamp)
                 if payload.get("autoapproved"):
                     target = payload.get("autoapproved_target")
@@ -847,6 +922,7 @@ class PipelineMonitorWindow(tk.Toplevel):
 
     def _on_close(self):
         self._closed = True
+        self._hide_progress_tip()
         if self._next_poll_token is not None:
             try:
                 self.after_cancel(self._next_poll_token)

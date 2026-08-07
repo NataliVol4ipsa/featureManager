@@ -675,11 +675,146 @@ def _timeline_state(record):
     if state == "completed":
         if result == "skipped":
             return "skipped"
-        if result in ("failed", "canceled", "cancelled"):
+        if result in ("canceled", "cancelled"):
+            return "canceled"
+        if result == "failed":
             return "failed"
         if result in ("succeeded", "partiallysucceeded"):
             return "done"
     return "waiting"
+
+
+def _stage_progress(records, stage_id, auth):
+    """Return {'current': step_name, 'percent': int} for a running stage.
+
+    Steps are weighted by count, not time. Each phase (the "big chunks" under a
+    stage - e.g. deploy infra / push docker / deploy software) is an equal slice
+    of the stage, and each of the running phase's tasks is an equal slice of that
+    phase. Phases (not jobs) are the unit because a not-yet-started job has only
+    a phase record - its job/task records appear when it runs - so counting jobs
+    would ignore queued chunks and overstate the percentage. When the next phase
+    is queued waiting for an agent, the current step reports the queue position.
+    Returns None when the stage has no phases.
+    """
+    by_id = {r.get("id"): r for r in records if r.get("id")}
+
+    def rtype(record):
+        return (record.get("type") or "").lower()
+
+    def stage_ancestor(record):
+        seen = set()
+        current = record
+        while current is not None:
+            parent_id = current.get("parentId")
+            if not parent_id or parent_id in seen:
+                return None
+            seen.add(parent_id)
+            parent = by_id.get(parent_id)
+            if parent is None:
+                return None
+            if rtype(parent) == "stage":
+                return parent.get("id")
+            current = parent
+        return None
+
+    # Chunks are phases; fall back to jobs for pipelines without phase records.
+    chunks = [r for r in records
+              if rtype(r) == "phase" and stage_ancestor(r) == stage_id]
+    if not chunks:
+        chunks = [r for r in records
+                  if rtype(r) == "job" and stage_ancestor(r) == stage_id]
+    if not chunks:
+        return None
+    chunks.sort(key=lambda r: r.get("order") or 0)
+
+    def chunk_task_fraction(chunk):
+        """Return (fraction_done, running_task_name) for one chunk's tasks."""
+        job_ids = {
+            r.get("id") for r in records
+            if rtype(r) == "job" and r.get("parentId") == chunk.get("id")
+        }
+        if rtype(chunk) == "job":
+            job_ids.add(chunk.get("id"))
+        tasks = [
+            r for r in records
+            if rtype(r) == "task" and r.get("parentId") in job_ids
+        ]
+        if not tasks:
+            return 0.0, ""
+        done_tasks = sum(
+            1 for t in tasks if (t.get("state") or "").lower() == "completed"
+        )
+        running_task = next(
+            (t for t in tasks
+             if (t.get("state") or "").lower() in ("inprogress", "in_progress")),
+            None,
+        )
+        return done_tasks / len(tasks), (running_task or {}).get("name") or ""
+
+    total = len(chunks)
+    # Jobs can run in parallel / out of order, so count every completed phase -
+    # not just those preceding the running one.
+    done = sum(
+        1 for c in chunks if (c.get("state") or "").lower() == "completed"
+    )
+    running = [
+        c for c in chunks
+        if (c.get("state") or "").lower() in ("inprogress", "in_progress")
+    ]
+    if running:
+        fraction_sum = 0.0
+        current_name = ""
+        for chunk in running:
+            fraction, task_name = chunk_task_fraction(chunk)
+            fraction_sum += fraction
+            if not current_name:
+                current_name = task_name or chunk.get("name") or ""
+        percent = int(round((done + fraction_sum) / total * 100))
+        # Never show a full bar while a phase is still running.
+        percent = min(percent, 99)
+        return {"current": current_name, "percent": percent}
+
+    # No phase is running: the earliest queued one is waiting for an agent.
+    pending = next(
+        (c for c in chunks
+         if (c.get("state") or "").lower() in ("pending", "notstarted", "queued")),
+        None,
+    )
+    if pending is not None:
+        percent = int(round(done / total * 100))
+        job = next(
+            (r for r in records
+             if rtype(r) == "job" and r.get("parentId") == pending.get("id")),
+            None,
+        )
+        log_url = ((job or pending).get("log") or {}).get("url")
+        position = _job_queue_position(log_url, auth)
+        current = (
+            f"(waiting in queue: {position})" if position is not None
+            else "(waiting for agent)"
+        )
+        return {"current": current, "percent": percent}
+
+    return {"current": "", "percent": 100}
+
+
+def _job_queue_position(log_url, auth):
+    """Return the agent-queue position parsed from a queued job's log, or None.
+
+    Only called while a job is waiting for an agent, when its log is tiny.
+    """
+    if not log_url:
+        return None
+    try:
+        req = urllib.request.Request(log_url, method="GET")
+        req.add_header("Authorization", auth)
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            text = resp.read().decode("utf-8", "replace")
+    except (urllib.error.HTTPError, urllib.error.URLError, OSError, ValueError):
+        return None
+    # Several positions may be logged as the queue advances; the last is current.
+    matches = re.findall(r"position in queue:\s*(\d+)", text, re.IGNORECASE)
+    return int(matches[-1]) if matches else None
 
 
 def _api_build_timeline(org, project, build_id, auth):
@@ -790,7 +925,9 @@ def get_pipeline_stage_statuses(run_info):
 
     stages = dict(PIPELINE_STAGE_DEFAULTS)
     stage_identifiers = {}
-    for record in timeline.get("records") or []:
+    stage_records = {}
+    records = timeline.get("records") or []
+    for record in records:
         if (record.get("type") or "").lower() != "stage":
             continue
         key = _timeline_stage_key(record.get("name") or record.get("identifier"))
@@ -799,6 +936,16 @@ def get_pipeline_stage_statuses(run_info):
         stages[key] = _timeline_state(record)
         # The stage refName is needed to retry the stage's failed jobs.
         stage_identifiers[key] = record.get("identifier") or record.get("name")
+        stage_records[key] = record
+
+    # For running stages, derive the current step + step-count completion %
+    # from the same timeline (no extra API calls).
+    stage_progress = {}
+    for key, record in stage_records.items():
+        if stages.get(key) == "running":
+            progress = _stage_progress(records, record.get("id"), auth)
+            if progress:
+                stage_progress[key] = progress
 
     pending_approval_ids = []
     any_partially_approved = False
@@ -897,6 +1044,7 @@ def get_pipeline_stage_statuses(run_info):
         ).astimezone().isoformat(timespec="seconds"),
         "stages": stages,
         "stage_identifiers": stage_identifiers,
+        "stage_progress": stage_progress,
         "approval_target": approval_target,
         "autoapproved": autoapproved,
         "autoapproved_target": autoapproved_target,
