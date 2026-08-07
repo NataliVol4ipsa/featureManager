@@ -7,6 +7,7 @@ own. ``run_git`` never raises; it returns ``(ok, combined_output)``.
 import os
 import re
 import json
+import time
 import base64
 import shutil
 import subprocess
@@ -1039,23 +1040,48 @@ def _link_work_item_to_pr(org, work_item_id, project_id, repo_id, pr_id,
     ).decode("ascii")
     attempts = [f"Basic {basic}", f"Bearer {password}"]
 
-    last_code, last_detail = None, ""
-    for authorization in attempts:
-        req = urllib.request.Request(api_url, data=patch, method="PATCH")
-        req.add_header("Content-Type", "application/json-patch+json")
-        req.add_header("Authorization", authorization)
-        try:
-            with urllib.request.urlopen(req, timeout=30):
-                return True, ""
-        except urllib.error.HTTPError as exc:
-            last_code = exc.code
-            last_detail = exc.read().decode("utf-8", "replace").strip()
-            # Only an auth failure is worth retrying with the other scheme.
-            if exc.code not in (401, 403):
-                break
-        except (urllib.error.URLError, OSError) as exc:
-            return False, f"work item {work_item_id} link failed: {exc}"
+    # Retry the whole link on transient failures (network blips, throttling,
+    # server errors) - the work-item API is occasionally flaky right after a
+    # PR is created and the linked artifact has not fully propagated yet.
+    max_tries = 3
+    retry_delay = 2  # seconds, grows linearly per retry
 
+    last_code, last_detail = None, ""
+    for try_num in range(1, max_tries + 1):
+        transient = False
+        for authorization in attempts:
+            req = urllib.request.Request(api_url, data=patch, method="PATCH")
+            req.add_header("Content-Type", "application/json-patch+json")
+            req.add_header("Authorization", authorization)
+            try:
+                with urllib.request.urlopen(req, timeout=30):
+                    return True, ""
+            except urllib.error.HTTPError as exc:
+                last_code = exc.code
+                last_detail = exc.read().decode("utf-8", "replace").strip()
+                # 429/5xx are transient - retry the whole attempt after a wait.
+                if exc.code == 429 or exc.code >= 500:
+                    transient = True
+                    break
+                # Only an auth failure is worth retrying with the other scheme.
+                if exc.code not in (401, 403):
+                    return _link_failure(work_item_id, last_code, last_detail)
+            except (urllib.error.URLError, OSError) as exc:
+                last_code, last_detail = None, str(exc)
+                transient = True
+                break
+
+        if not transient:
+            # Exhausted both auth schemes without a transient error - give up.
+            break
+        if try_num < max_tries:
+            time.sleep(retry_delay * try_num)
+
+    return _link_failure(work_item_id, last_code, last_detail)
+
+
+def _link_failure(work_item_id, last_code, last_detail):
+    """Build the (False, message) tuple for a failed work-item PR link."""
     hint = ""
     if last_code in (401, 403):
         hint = (
