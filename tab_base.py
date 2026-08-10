@@ -5,11 +5,10 @@ and a generic background runner that drives the per-repo status indicators.
 """
 
 import threading
-import tkinter as tk
 import webbrowser
 from tkinter import ttk
 
-from widgets import Tooltip, ProgressPanel, ErrorList
+from widgets import ProgressPanel, ErrorList
 from gitutils import (
     is_git_repo, git_current_branch, git_has_changes, commit_all, git_push,
     git_branch_url, create_ado_pr, ado_pr_title_from_branch,
@@ -33,9 +32,10 @@ from pipeline_monitor import PipelineMonitorWindow
 
 
 class ActionTabBase(ttk.Frame):
-    """Base tab with a top row (for left/middle/right panels) and a bottom error list.
+    """Base tab with a top row (left panel + Details) and a bottom error list.
 
-    Subclasses build their own left panel, then call build_middle_actions() and
+    Subclasses build their own left panel, then call build_middle_sections()
+    (which only records the actions for the top toolbar) and
     build_right_details(). Long-running work goes through run_repo_action().
     """
 
@@ -59,63 +59,16 @@ class ActionTabBase(ttk.Frame):
         self._pipeline_monitors = []
 
     # -- Shared panel builders --------------------------------------------- #
-    def build_middle_actions(self, actions):
-        """Build the middle 'Actions' column from (label, command, hint) tuples."""
-        middle = ttk.LabelFrame(self._top, text="Actions")
-        middle.pack(side="left", fill="y", padx=6)
-        for label, command, hint in actions:
-            button = ttk.Button(middle, text=label, command=command)
-            button.pack(fill="x", padx=6, pady=3)
-            Tooltip(button, hint)
-
     def build_middle_sections(self, sections):
-        """Build the middle 'Actions' column as several stacked labelled groups.
+        """Record the action groups so the top toolbar can mirror them.
 
         *sections* is a list of (title, actions) pairs, where *actions* is the
-        usual list of (label, command, hint) tuples. Each section becomes its
-        own labelled frame, stacked top-to-bottom in a single column so related
-        actions are visually grouped. The whole column lives inside a vertically
-        scrollable canvas so it stays usable when there are more actions than
-        vertical space.
+        usual list of (label, command, hint) tuples. These are surfaced as icons
+        in the top toolbar (toolbar.build_action_toolbar); the tab no longer
+        renders a middle button column - the freed space goes to Details.
         """
         # Exposed so the top action toolbar can mirror these actions.
         self.action_sections = sections
-        container = ttk.Frame(self._top)
-        container.pack(side="left", fill="y", padx=6)
-
-        canvas = tk.Canvas(container, highlightthickness=0, width=1)
-        scrollbar = ttk.Scrollbar(container, orient="vertical",
-                                  command=canvas.yview)
-        middle = ttk.Frame(canvas)
-
-        # Keep the scrollregion in sync with the inner frame's size, and match
-        # the canvas width to the buttons so nothing is clipped horizontally.
-        def _on_configure(_event):
-            canvas.configure(scrollregion=canvas.bbox("all"))
-            canvas.configure(width=middle.winfo_reqwidth())
-
-        middle.bind("<Configure>", _on_configure)
-        canvas.create_window((0, 0), window=middle, anchor="nw")
-        canvas.configure(yscrollcommand=scrollbar.set)
-
-        canvas.pack(side="left", fill="both", expand=True)
-        scrollbar.pack(side="right", fill="y")
-
-        # Mouse-wheel scrolling while hovering the actions column.
-        canvas.bind("<Enter>",
-                    lambda _e: canvas.bind_all("<MouseWheel>", _on_mousewheel))
-        canvas.bind("<Leave>", lambda _e: canvas.unbind_all("<MouseWheel>"))
-
-        def _on_mousewheel(event):
-            canvas.yview_scroll(int(-event.delta / 120), "units")
-
-        for title, actions in sections:
-            frame = ttk.LabelFrame(middle, text=title)
-            frame.pack(side="top", fill="x", pady=(0, 6))
-            for label, command, hint in actions:
-                button = ttk.Button(frame, text=label, command=command)
-                button.pack(fill="x", padx=6, pady=3)
-                Tooltip(button, hint)
 
     def build_right_details(self, expand=True, width=None):
         """Build the right 'Details' column holding the live progress panel.

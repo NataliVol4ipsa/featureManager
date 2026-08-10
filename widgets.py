@@ -535,8 +535,8 @@ class WorkspaceList(ttk.Frame):
     # Column ids and their header text / display width (pixels).
     _COLUMNS = (
         ("name", "Name", 220),
-        ("created", "Created", 130),
-        ("modified", "Modified", 130),
+        ("created", "Created", 112),
+        ("modified", "Modified", 112),
     )
 
     def __init__(self, master, items, on_select=None, **kwargs):
@@ -552,9 +552,10 @@ class WorkspaceList(ttk.Frame):
         )
         for col_id, heading, width in self._COLUMNS:
             self.tree.heading(col_id, text=heading)
-            # 'name' stretches to fill spare width; the date columns stay fixed.
+            # 'name' stretches to fill spare width; the date columns stay fixed
+            # at just enough to show a "YYYY-MM-DD HH:MM" timestamp.
             self.tree.column(
-                col_id, width=width, anchor="w",
+                col_id, width=width, minwidth=width, anchor="w",
                 stretch=(col_id == "name"),
             )
 
