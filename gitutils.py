@@ -10,6 +10,7 @@ import json
 import time
 import base64
 import shutil
+import threading
 import subprocess
 import urllib.parse
 import urllib.request
@@ -1015,12 +1016,20 @@ def get_ado_pr_url(name, path, target="master"):
     return True, web_url
 
 
+# Serialize every work-item link across threads. When PRs are created in
+# parallel and several share the same PBI, concurrent PATCHes to that one work
+# item collide (ADO optimistic concurrency -> 409/412), so the links must run
+# one at a time even though PR creation itself stays parallel.
+_WORK_ITEM_LINK_LOCK = threading.Lock()
+
+
 def _link_work_item_to_pr(org, work_item_id, project_id, repo_id, pr_id,
                           username, password):
     """Attach a PR ArtifactLink to a work item. Returns (ok, error) (best effort).
 
     Failures are returned but callers treat them as non-fatal since the PR has
-    already been created.
+    already been created. All links are serialized through a process-wide lock
+    so parallel PR creation never issues concurrent PATCHes to the same PBI.
     """
     # PR artifact id is projectId/repoId/prId with the slashes URL-encoded.
     artifact_id = urllib.parse.quote(
@@ -1052,41 +1061,49 @@ def _link_work_item_to_pr(org, work_item_id, project_id, repo_id, pr_id,
     attempts = [f"Basic {basic}", f"Bearer {password}"]
 
     # Retry the whole link on transient failures (network blips, throttling,
-    # server errors) - the work-item API is occasionally flaky right after a
-    # PR is created and the linked artifact has not fully propagated yet.
-    max_tries = 3
+    # server errors) and on concurrency conflicts (409/412) - the work-item API
+    # is occasionally flaky right after a PR is created, and two PRs sharing a
+    # PBI can collide when their relations are patched close together.
+    max_tries = 5
     retry_delay = 2  # seconds, grows linearly per retry
 
+    def _is_transient(code):
+        return code == 429 or code in (409, 412) or code >= 500
+
     last_code, last_detail = None, ""
-    for try_num in range(1, max_tries + 1):
-        transient = False
-        for authorization in attempts:
-            req = urllib.request.Request(api_url, data=patch, method="PATCH")
-            req.add_header("Content-Type", "application/json-patch+json")
-            req.add_header("Authorization", authorization)
-            try:
-                with urllib.request.urlopen(req, timeout=30):
-                    return True, ""
-            except urllib.error.HTTPError as exc:
-                last_code = exc.code
-                last_detail = exc.read().decode("utf-8", "replace").strip()
-                # 429/5xx are transient - retry the whole attempt after a wait.
-                if exc.code == 429 or exc.code >= 500:
+    # Serialize the actual HTTP retry loop so concurrent callers do not fight
+    # over the same work item; PR creation already happened outside the lock.
+    with _WORK_ITEM_LINK_LOCK:
+        for try_num in range(1, max_tries + 1):
+            transient = False
+            for authorization in attempts:
+                req = urllib.request.Request(api_url, data=patch, method="PATCH")
+                req.add_header("Content-Type", "application/json-patch+json")
+                req.add_header("Authorization", authorization)
+                try:
+                    with urllib.request.urlopen(req, timeout=30):
+                        return True, ""
+                except urllib.error.HTTPError as exc:
+                    last_code = exc.code
+                    last_detail = exc.read().decode("utf-8", "replace").strip()
+                    # Throttling, server errors and concurrency conflicts are
+                    # transient - retry the whole attempt after a wait.
+                    if _is_transient(exc.code):
+                        transient = True
+                        break
+                    # Only an auth failure is worth retrying with the other scheme.
+                    if exc.code not in (401, 403):
+                        return _link_failure(work_item_id, last_code, last_detail)
+                except (urllib.error.URLError, OSError) as exc:
+                    last_code, last_detail = None, str(exc)
                     transient = True
                     break
-                # Only an auth failure is worth retrying with the other scheme.
-                if exc.code not in (401, 403):
-                    return _link_failure(work_item_id, last_code, last_detail)
-            except (urllib.error.URLError, OSError) as exc:
-                last_code, last_detail = None, str(exc)
-                transient = True
-                break
 
-        if not transient:
-            # Exhausted both auth schemes without a transient error - give up.
-            break
-        if try_num < max_tries:
-            time.sleep(retry_delay * try_num)
+            if not transient:
+                # Exhausted both auth schemes without a transient error - give up.
+                break
+            if try_num < max_tries:
+                time.sleep(retry_delay * try_num)
 
     return _link_failure(work_item_id, last_code, last_detail)
 
