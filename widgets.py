@@ -44,6 +44,72 @@ class Tooltip:
             self._tip = None
 
 
+class ActionTooltip:
+    """Two-stage hover tooltip: the action name first, then (after a short dwell)
+    the name plus its long description. Used by the top action toolbar so a quick
+    hover just names the icon, while lingering reveals the full button help text.
+    """
+
+    NAME_DELAY = 350    # ms hover before the name appears
+    DETAIL_DELAY = 2000  # ms hover before the description is added
+
+    def __init__(self, widget, name, description=""):
+        self.widget = widget
+        self.name = name
+        self.description = description
+        self._tip = None
+        self._desc_label = None
+        self._after_name = None
+        self._after_detail = None
+        widget.bind("<Enter>", self._on_enter, add="+")
+        widget.bind("<Leave>", self._on_leave, add="+")
+
+    def _on_enter(self, _event=None):
+        self._after_name = self.widget.after(self.NAME_DELAY, self._show_name)
+        if self.description:
+            self._after_detail = self.widget.after(
+                self.DETAIL_DELAY, self._show_detail
+            )
+
+    def _show_name(self):
+        if self._tip:
+            return
+        x = self.widget.winfo_rootx() + 20
+        y = self.widget.winfo_rooty() + self.widget.winfo_height() + 4
+        self._tip = tk.Toplevel(self.widget)
+        self._tip.wm_overrideredirect(True)
+        self._tip.wm_attributes("-topmost", True)
+        self._tip.wm_geometry(f"+{x}+{y}")
+        self._tip.configure(background=theme.TOOLTIP_BG)
+        tk.Label(
+            self._tip, text=self.name, justify="left",
+            background=theme.TOOLTIP_BG, foreground=theme.TOOLTIP_FG,
+            font=("Segoe UI", 9, "bold"), padx=6,
+        ).pack(anchor="w", pady=(3, 0))
+
+    def _show_detail(self):
+        if not self._tip:
+            self._show_name()
+        if self._desc_label is not None:
+            return
+        self._desc_label = tk.Label(
+            self._tip, text=self.description, justify="left",
+            background=theme.TOOLTIP_BG, foreground=theme.TOOLTIP_FG,
+            font=("Segoe UI", 9), padx=6, wraplength=300,
+        )
+        self._desc_label.pack(anchor="w", pady=(1, 4))
+
+    def _on_leave(self, _event=None):
+        for after_id in (self._after_name, self._after_detail):
+            if after_id is not None:
+                self.widget.after_cancel(after_id)
+        self._after_name = self._after_detail = None
+        if self._tip:
+            self._tip.destroy()
+            self._tip = None
+        self._desc_label = None
+
+
 class SelectableLabel(tk.Entry):
     """A label whose text the user can select and copy.
 

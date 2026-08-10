@@ -9,6 +9,7 @@ import tkinter as tk
 from tkinter import ttk
 
 from gitutils import is_valid_branch_name
+from widgets import Tooltip
 import pbi
 import theme
 
@@ -790,20 +791,27 @@ def edit_branch_overrides(parent, workspace_name, entries):
     dialog.transient(parent.winfo_toplevel())
     dialog.resizable(False, False)
 
+    header = ttk.Frame(dialog)
+    header.pack(padx=16, pady=(16, 8), fill="x")
     tk.Label(
-        dialog,
+        header,
         text=f"Configure the feature branch for each repository in "
              f"\"{workspace_name}\".",
-        justify="left", wraplength=460,
-    ).pack(padx=16, pady=(16, 4), anchor="w")
-    tk.Label(
-        dialog,
-        text=f"The default branch is \"{default}\". Change it for any repo whose "
-             "feature branch has a different name. Tick \"Ignore git\" for a repo "
-             "that keeps its own branch and should be left out of the git "
-             "commands. Only differences are saved.",
-        foreground=theme.FG_MUTED, justify="left", wraplength=460,
-    ).pack(padx=16, pady=(0, 8), anchor="w")
+        justify="left", wraplength=430,
+    ).pack(side="left", anchor="w")
+    # Details moved into a hover tooltip on the info icon to keep the dialog compact.
+    info_icon = tk.Label(
+        header, text="\u24d8", font=("Segoe UI", 12),
+        foreground=theme.FG_MUTED, cursor="question_arrow",
+    )
+    info_icon.pack(side="left", anchor="n", padx=(6, 0))
+    Tooltip(
+        info_icon,
+        f"The default branch is \"{default}\". Change it for any repo whose "
+        "feature branch has a different name. Tick \"Ignore git\" for a repo "
+        "that keeps its own branch and should be left out of the git "
+        "commands. Only differences are saved.",
+    )
 
     table = ttk.Frame(dialog)
     table.pack(padx=16, fill="x")

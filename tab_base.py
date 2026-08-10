@@ -78,6 +78,8 @@ class ActionTabBase(ttk.Frame):
         scrollable canvas so it stays usable when there are more actions than
         vertical space.
         """
+        # Exposed so the top action toolbar can mirror these actions.
+        self.action_sections = sections
         container = ttk.Frame(self._top)
         container.pack(side="left", fill="y", padx=6)
 

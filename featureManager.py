@@ -21,6 +21,7 @@ from tkinter import ttk
 from manual_tab import ManualTab
 from workspaces_tab import WorkspacesTab
 from dialogs import edit_synonyms, ask_pipeline_poll_seconds
+from toolbar import build_action_toolbar
 import theme
 
 
@@ -145,7 +146,21 @@ def main():
         "<Leave>", lambda _e: settings_item.config(background=theme.BG_PANEL)
     )
 
+    # Top action toolbar: mirrors the active tab's action buttons as icons.
+    # Packed before the notebook so it sits under the menu bar; populated once
+    # the tabs exist and rebuilt whenever the active tab changes.
+    toolbar_host = tk.Frame(root, background=theme.BG_PANEL)
+    toolbar_host.pack(side="top", fill="x")
+    tk.Frame(root, height=1, background=theme.BORDER).pack(side="top", fill="x")
+
     app = FeatureManagerApp(root)
+
+    def _rebuild_toolbar(_event=None):
+        active = app.nametowidget(app.select())
+        build_action_toolbar(toolbar_host, getattr(active, "action_sections", []))
+
+    _rebuild_toolbar()
+    app.bind("<<NotebookTabChanged>>", _rebuild_toolbar, add="+")
 
     # Author credit footer - always visible at the bottom of the window.
     footer = ttk.Label(

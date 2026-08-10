@@ -1,0 +1,10 @@
+{
+  "name": "fm-icon-gen",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Reusable Lucide SVG -> PNG rasterizer for the Feature Manager toolbar. Run: npm install; node gen_icons.js; python build_icons.py",
+  "dependencies": {
+    "lucide-static": "*",
+    "@resvg/resvg-js": "*"
+  }
+}

@@ -77,3 +77,9 @@ monitor_session.json
 
 # Local-only Copilot working notes (not shared with the team).
 .github/copilot-instructions.md
+
+# Icon generator (tools/icongen) - keep the scripts, ignore installed deps/output.
+tools/icongen/node_modules/
+tools/icongen/package-lock.json
+tools/icongen/_icons.json
+tools/icongen/_preview.png
