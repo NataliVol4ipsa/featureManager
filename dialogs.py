@@ -1149,6 +1149,48 @@ def ask_acc_autoapprove(parent):
     return result["value"]
 
 
+def confirm_force_close(parent, monitor_count):
+    """Modal shown on app close while pipeline monitors are still open.
+
+    Returns True to force-close the app, False to abort and keep it running.
+    """
+    plural = "s" if monitor_count != 1 else ""
+    dialog = tk.Toplevel(parent)
+    dialog.title("Pipeline monitors still open")
+    dialog.transient(parent.winfo_toplevel())
+    dialog.resizable(False, False)
+
+    tk.Label(
+        dialog,
+        text=(
+            f"{monitor_count} pipeline monitor window{plural} still open. "
+            "Closing the app now stops monitoring those pipelines."
+        ),
+        justify="left", wraplength=440,
+    ).pack(padx=16, pady=(16, 8), anchor="w")
+
+    result = {"value": False}
+
+    def _force():
+        result["value"] = True
+        dialog.destroy()
+
+    def _abort():
+        result["value"] = False
+        dialog.destroy()
+
+    bar = ttk.Frame(dialog)
+    bar.pack(padx=16, pady=12)
+    ttk.Button(bar, text="Force close", command=_force).pack(side="left", padx=4)
+    ttk.Button(bar, text="Abort", command=_abort).pack(side="left", padx=4)
+
+    dialog.protocol("WM_DELETE_WINDOW", _abort)
+    _center_over_parent(dialog, parent)
+    dialog.grab_set()
+    parent.wait_window(dialog)
+    return result["value"]
+
+
 def ask_pipeline_poll_seconds(parent, current, minimum, maximum):
     """Modal asking for pipeline monitor poll frequency in seconds.
 

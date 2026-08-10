@@ -20,7 +20,7 @@ from tkinter import ttk
 
 from manual_tab import ManualTab
 from workspaces_tab import WorkspacesTab
-from dialogs import edit_synonyms, ask_pipeline_poll_seconds
+from dialogs import edit_synonyms, ask_pipeline_poll_seconds, confirm_force_close
 from toolbar import build_action_toolbar
 import theme
 
@@ -67,17 +67,26 @@ def main():
                              background=theme.BG_PANEL, foreground=theme.FG)
     settings_item.pack(side="left")
 
-    def _toggle_theme():
-        theme.save_dark_preference(not theme.load_dark_preference())
-        # Preserve any open pipeline monitors across the relaunch.
+    # Text button on the far right that re-execs the process (picks up code
+    # changes). Packed into the existing menu bar so nothing else shifts.
+    restart_item = tk.Label(menubar, text="Restart", padx=10, pady=3,
+                            background=theme.BG_PANEL, foreground=theme.FG)
+    restart_item.pack(side="right")
+
+    def _relaunch():
+        """Re-exec the Python process, preserving any open pipeline monitors."""
         sessions = []
         for tab in (app.workspaces_tab, app.manual_tab):
             for win in getattr(tab, "_pipeline_monitors", []):
                 if win.winfo_exists():
                     sessions.append(win.session_state())
         theme.save_monitor_session(sessions)
-        # Re-launch so every widget is rebuilt cleanly with the new palette.
         os.execv(sys.executable, [sys.executable, *sys.argv])
+
+    def _toggle_theme():
+        theme.save_dark_preference(not theme.load_dark_preference())
+        # Re-launch so every widget is rebuilt cleanly with the new palette.
+        _relaunch()
 
     def _set_pipeline_poll_seconds():
         current = theme.load_pipeline_poll_seconds()
@@ -146,6 +155,14 @@ def main():
         "<Leave>", lambda _e: settings_item.config(background=theme.BG_PANEL)
     )
 
+    restart_item.bind("<Button-1>", lambda _e: _relaunch())
+    restart_item.bind(
+        "<Enter>", lambda _e: restart_item.config(background=theme.BG_RAISED)
+    )
+    restart_item.bind(
+        "<Leave>", lambda _e: restart_item.config(background=theme.BG_PANEL)
+    )
+
     # Top action toolbar: mirrors the active tab's action buttons as icons.
     # Packed before the notebook so it sits under the menu bar; populated once
     # the tabs exist and rebuilt whenever the active tab changes.
@@ -162,6 +179,19 @@ def main():
     _rebuild_toolbar()
     app.bind("<<NotebookTabChanged>>", _rebuild_toolbar, add="+")
 
+    def _on_close():
+        open_monitors = [
+            win
+            for tab in (app.workspaces_tab, app.manual_tab)
+            for win in getattr(tab, "_pipeline_monitors", [])
+            if win.winfo_exists()
+        ]
+        if open_monitors and not confirm_force_close(root, len(open_monitors)):
+            return
+        root.destroy()
+
+    root.protocol("WM_DELETE_WINDOW", _on_close)
+
     # Author credit footer - always visible at the bottom of the window.
     footer = ttk.Label(
         root,
@@ -176,6 +206,16 @@ def main():
     # window is mapped so it has a real HWND to set the DWM attribute on.
     root.after(0, lambda: theme.apply_window_icon(root))
     root.after(0, lambda: theme.enable_dark_titlebar(root))
+
+    # Pull the window to the front and give it focus - a re-exec'd process
+    # (Restart / theme toggle) otherwise starts behind the terminal.
+    def _grab_focus():
+        root.lift()
+        root.attributes("-topmost", True)
+        root.after(200, lambda: root.attributes("-topmost", False))
+        root.focus_force()
+
+    root.after(0, _grab_focus)
 
     # Reopen any pipeline monitors that were open before a theme-change relaunch.
     root.after(0, lambda: [

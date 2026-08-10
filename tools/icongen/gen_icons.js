@@ -57,11 +57,13 @@ const grp = (g, labels) => labels.forEach((l) => (GROUP[l] = g));
 grp("blue", [
   "Create workspace from PBI", "Switch to selected workspace",
   "Manage workspace branches", "Restore state before switch",
-  "Rebase current branch on master", "Commit all changes",
   "Checkout & Pull master", "Create feature branch",
   "Create feature workspace and branches",
 ]);
-grp("red", ["Git push", "Create pull request", "Copy PR links"]);
+grp("red", [
+  "Rebase current branch on master", "Commit all changes",
+  "Git push", "Create pull request", "Copy PR links",
+]);
 grp("brown", [
   "Bump NuGet packages (public)", "Bump NuGet packages (private)",
   "Bump all NuGet packages", "Restore NuGet packages",

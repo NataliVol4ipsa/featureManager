@@ -220,6 +220,10 @@ class WorkspacesTab(ActionTabBase):
                 "state. User commits are never touched. Skipped repos are offered "
                 "as opt-in checkboxes (off by default).",
             ),
+        ]
+
+    def _remote_actions(self):
+        return [
             (
                 "Rebase current branch on master",
                 self._action_rebase_on_master,
@@ -237,10 +241,6 @@ class WorkspacesTab(ActionTabBase):
                 "commit message you enter. If the repos with changes are on "
                 "different branches, a warning is shown before committing.",
             ),
-        ]
-
-    def _remote_actions(self):
-        return [
             (
                 "Git push",
                 self._action_push,
