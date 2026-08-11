@@ -83,6 +83,19 @@ class ManualTab(ActionTabBase):
                 "branch) before the branch is created.",
             ),
             (
+                "Create feature workspace and branches",
+                self._action_create_workspace_and_branches,
+                "For every selected repository: first creates a 'feature/<name>' "
+                "branch (updating master, then branching off it, with per-repo "
+                "handling of uncommitted changes - delete, commit, or move), "
+                "then writes a VS Code '.code-workspace' file named after the "
+                "same feature name.",
+            ),
+        ]
+
+    def _remote_actions(self):
+        return [
+            (
                 "Rebase current branch on master",
                 self._action_rebase_on_master,
                 "For every selected repository: updates master (checkout + pull), "
@@ -98,19 +111,6 @@ class ManualTab(ActionTabBase):
                 "selected repos with changes are on different branches, a "
                 "warning is shown before committing.",
             ),
-            (
-                "Create feature workspace and branches",
-                self._action_create_workspace_and_branches,
-                "For every selected repository: first creates a 'feature/<name>' "
-                "branch (updating master, then branching off it, with per-repo "
-                "handling of uncommitted changes - delete, commit, or move), "
-                "then writes a VS Code '.code-workspace' file named after the "
-                "same feature name.",
-            ),
-        ]
-
-    def _remote_actions(self):
-        return [
             (
                 "Git push",
                 self._action_push,
