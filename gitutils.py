@@ -488,6 +488,15 @@ def git_commit_message(repo_path, ref):
     return out if ok else ""
 
 
+def git_last_commit(repo_path, ref):
+    """Return (short_hash, subject) of the commit at *ref*, or ('', '') on failure."""
+    ok, out = run_git(repo_path, ["log", "-1", "--format=%h%x1f%s", ref])
+    if not ok or "\x1f" not in out:
+        return "", ""
+    short, subject = out.split("\x1f", 1)
+    return short.strip(), subject.strip()
+
+
 def git_branch_is_empty(repo_path, target="master"):
     """Return True if the current branch has no changes versus *target*.
 

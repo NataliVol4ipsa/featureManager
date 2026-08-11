@@ -1165,11 +1165,12 @@ def ask_missing_remote_branches(parent, names, environment_label):
 def ask_deploy_selection(parent, entries, environment_label):
     """Modal to choose which repositories to deploy to an environment.
 
-    *entries* is a list of ``(repo_name, already_deployed)``. A repo whose
-    latest branch commit already deployed successfully to the environment is
-    unticked by default; ticking it shows an inline note that it will be
-    redeployed with no changes. Returns a ``{repo_name: deploy_bool}`` dict on
-    confirm, or ``None`` if cancelled.
+    *entries* is a list of ``(repo_name, already_deployed, last_commit)`` where
+    ``last_commit`` is a ``(short_hash, subject)`` tuple. A repo whose latest
+    branch commit already deployed successfully to the environment is unticked
+    by default; ticking it shows an inline note that it will be redeployed with
+    no changes. The last commit is always shown. Returns a
+    ``{repo_name: deploy_bool}`` dict on confirm, or ``None`` if cancelled.
     """
     dialog = tk.Toplevel(parent)
     dialog.title(f"Run {environment_label} deployments")
@@ -1198,7 +1199,8 @@ def ask_deploy_selection(parent, entries, environment_label):
     )
 
     rows = []  # (name, already_deployed, var, note_label)
-    for index, (name, already) in enumerate(entries, start=1):
+    for index, (name, already, *rest) in enumerate(entries, start=1):
+        short, subject = (rest[0] if rest else ("", "")) or ("", "")
         var = tk.BooleanVar(value=not already)
         ttk.Checkbutton(table, variable=var).grid(
             row=index, column=0, sticky="w", padx=4, pady=2
@@ -1208,29 +1210,39 @@ def ask_deploy_selection(parent, entries, environment_label):
         )
         note = tk.Label(table, text="", justify="left", wraplength=260)
         note.grid(row=index, column=2, sticky="w", padx=6, pady=2)
-        rows.append((name, already, var, note))
+        rows.append((name, already, var, note, short, subject))
+
+    def _commit_text(short, subject):
+        if not short and not subject:
+            return ""
+        return f"{short}  {subject}".strip()
 
     def _refresh(*_args):
-        for _name, already, var, note in rows:
+        for _name, already, var, note, short, subject in rows:
+            commit = _commit_text(short, subject)
             if already and var.get():
+                extra = ("earlier successful deployment already exists - repo "
+                         "will be redeployed with no changes")
                 note.config(
-                    text="earlier successful deployment already exists - repo "
-                         "will be redeployed with no changes",
+                    text=f"{commit}\n{extra}" if commit else extra,
                     foreground=theme.WARNING,
                 )
             elif already:
-                note.config(text="already deployed - will be skipped",
-                            foreground=theme.FG_MUTED)
+                extra = "already deployed - will be skipped"
+                note.config(
+                    text=f"{commit}\n{extra}" if commit else extra,
+                    foreground=theme.FG_MUTED,
+                )
             else:
-                note.config(text="", foreground=theme.FG_MUTED)
+                note.config(text=commit, foreground=theme.FG_MUTED)
 
-    for _name, _already, var, _note in rows:
+    for _name, _already, var, _note, _short, _subject in rows:
         var.trace_add("write", _refresh)
 
     result = {"value": None}
 
     def _ok():
-        result["value"] = {name: var.get() for name, _a, var, _n in rows}
+        result["value"] = {name: var.get() for name, _a, var, _n, _s, _su in rows}
         dialog.destroy()
 
     def _cancel():

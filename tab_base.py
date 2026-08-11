@@ -14,7 +14,7 @@ from gitutils import (
     git_branch_url, create_ado_pr, ado_pr_title_from_branch,
     git_branch_is_empty, open_in_terminal_tabs, get_ado_pr_url,
     remote_branch_exists, ado_work_item_id_from_branch, complete_ado_pr,
-    ado_host_for_path, check_ado_connectivity,
+    ado_host_for_path, check_ado_connectivity, git_last_commit,
 )
 from dialogs import (
     ask_change_decision, ask_commit_message, ask_branch_warning, ask_pr_details,
@@ -601,10 +601,12 @@ class ActionTabBase(ttk.Frame):
                 ok, info = find_env_deployment_for_branch(
                     name, path, branch, environment
                 )
-                return name, (info if ok else None)
+                short, subject = git_last_commit(path, branch)
+                return name, (info if ok else None), (short, subject)
 
             probes = run_in_parallel(existing, _probe) if existing else []
-            deploy_info = {name: info for name, info in probes}
+            deploy_info = {name: info for name, info, _ in probes}
+            commit_info = {name: commit for name, _, commit in probes}
 
             self.after(
                 0,
@@ -614,6 +616,7 @@ class ActionTabBase(ttk.Frame):
                 existing,
                 missing,
                 deploy_info,
+                commit_info,
             )
 
         threading.Thread(target=_check, daemon=True).start()
@@ -624,8 +627,9 @@ class ActionTabBase(ttk.Frame):
         self.errors.add(message)
 
     def _on_branches_checked(self, environment, autoapprove_acc, existing,
-                             missing, deploy_info):
+                             missing, deploy_info, commit_info=None):
         """After the remote-branch scan: confirm missing repos, pick deploy set."""
+        commit_info = commit_info or {}
         env_label = "Development" if environment == "dev" else "Acceptance"
         if missing:
             if not ask_missing_remote_branches(self, missing, env_label):
@@ -638,7 +642,11 @@ class ActionTabBase(ttk.Frame):
             return
 
         entries = [
-            (name, bool((deploy_info.get(name) or {}).get("already_deployed")))
+            (
+                name,
+                bool((deploy_info.get(name) or {}).get("already_deployed")),
+                commit_info.get(name) or ("", ""),
+            )
             for name, _, _ in existing
         ]
         decisions = ask_deploy_selection(self, entries, env_label)
