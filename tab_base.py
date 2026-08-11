@@ -1084,9 +1084,17 @@ class ActionTabBase(ttk.Frame):
                     self.after(0, self.progress.set_branch, name, branch)
                 return True  # Skipped repos do not affect the success banner.
             self.after(0, self.progress.status, name, "in-progress")
-            ok, message = per_repo_fn(name, path)
+            raw_ok, message = per_repo_fn(name, path)
+            # per_repo_fn may return the sentinel "warning" for a non-fatal
+            # outcome (e.g. nothing to commit): shown amber, not a red error,
+            # and it does not count towards the green success banner.
+            is_warning = raw_ok == "warning"
+            ok = raw_ok is True
             if ok:
                 self.after(0, self.progress.status, name, "done")
+            elif is_warning:
+                self.after(0, self.progress.status, name, "warning")
+                self.after(0, self.errors.add, message, True)
             else:
                 self.after(0, self.progress.status, name, "error")
                 self.after(0, self.errors.add, message)
