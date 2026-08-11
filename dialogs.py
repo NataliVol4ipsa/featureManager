@@ -385,6 +385,109 @@ def ask_pr_details(parent, repo_count):
     return result["value"]
 
 
+_MERGE_STRATEGY_LABELS = [
+    ("Merge (no fast-forward)", "noFastForward"),
+    ("Squash commit", "squash"),
+    ("Rebase and fast-forward", "rebase"),
+    ("Semi-linear merge (rebase, then merge)", "rebaseMerge"),
+]
+
+
+def ask_complete_pr_details(parent, repo_count):
+    """Modal collecting completion (merge) options for the selected repos' PRs.
+
+    Lets the user pick the merge strategy, whether to delete each source branch
+    and transition linked work items, and how to remediate PRs that cannot merge
+    right away: publish drafts, queue a missing build, and set auto-complete when
+    a PR is not ready yet. Returns a dict with those choices or None if cancelled.
+    """
+    dialog = tk.Toplevel(parent)
+    dialog.title("Complete pull requests")
+    dialog.transient(parent.winfo_toplevel())
+    dialog.resizable(False, False)
+
+    tk.Label(
+        dialog,
+        text=f"Complete (merge) the open pull request to master for "
+             f"{repo_count} selected "
+             f"{'repository' if repo_count == 1 else 'repositories'}.",
+        justify="left",
+    ).pack(padx=16, pady=(16, 8), anchor="w")
+
+    tk.Label(dialog, text="Merge strategy:").pack(padx=16, anchor="w")
+    strategy = tk.StringVar(value="noFastForward")
+    for text, value in _MERGE_STRATEGY_LABELS:
+        ttk.Radiobutton(
+            dialog, text=text, variable=strategy, value=value,
+        ).pack(padx=36, anchor="w")
+
+    delete_branch = tk.BooleanVar(value=True)
+    ttk.Checkbutton(
+        dialog, variable=delete_branch,
+        text="Delete source branch after merging",
+    ).pack(padx=16, pady=(8, 0), anchor="w")
+
+    transition = tk.BooleanVar(value=True)
+    ttk.Checkbutton(
+        dialog, variable=transition,
+        text="Complete linked work items after merging",
+    ).pack(padx=16, pady=(4, 0), anchor="w")
+
+    ttk.Separator(dialog, orient="horizontal").pack(
+        fill="x", padx=16, pady=(10, 6)
+    )
+    tk.Label(
+        dialog, text="When a PR is not ready to merge:",
+        foreground=theme.FG_MUTED,
+    ).pack(padx=16, anchor="w")
+
+    publish_draft = tk.BooleanVar(value=True)
+    ttk.Checkbutton(
+        dialog, variable=publish_draft,
+        text="Publish draft PRs (unmark as draft) before completing",
+    ).pack(padx=16, pady=(4, 0), anchor="w")
+
+    queue_build = tk.BooleanVar(value=True)
+    ttk.Checkbutton(
+        dialog, variable=queue_build,
+        text="Queue the required build if a draft PR has none",
+    ).pack(padx=16, pady=(4, 0), anchor="w")
+
+    auto_complete = tk.BooleanVar(value=True)
+    ttk.Checkbutton(
+        dialog, variable=auto_complete,
+        text="Set auto-complete when build or policies are still running",
+    ).pack(padx=16, pady=(4, 0), anchor="w")
+
+    result = {"value": None}
+
+    def _ok():
+        result["value"] = {
+            "merge_strategy": strategy.get(),
+            "delete_source_branch": bool(delete_branch.get()),
+            "transition_work_items": bool(transition.get()),
+            "publish_draft": bool(publish_draft.get()),
+            "queue_build": bool(queue_build.get()),
+            "auto_complete_when_not_ready": bool(auto_complete.get()),
+        }
+        dialog.destroy()
+
+    def _cancel():
+        result["value"] = None
+        dialog.destroy()
+
+    bar = ttk.Frame(dialog)
+    bar.pack(padx=16, pady=12)
+    ttk.Button(bar, text="Complete", command=_ok).pack(side="left", padx=4)
+    ttk.Button(bar, text="Cancel", command=_cancel).pack(side="left", padx=4)
+
+    dialog.protocol("WM_DELETE_WINDOW", _cancel)
+    _center_over_parent(dialog, parent)
+    dialog.grab_set()
+    parent.wait_window(dialog)
+    return result["value"]
+
+
 def ask_pbi_number(parent):
     """Modal asking for the Azure DevOps PBI (work item) number.
 

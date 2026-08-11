@@ -13,11 +13,13 @@ from gitutils import (
     is_git_repo, git_current_branch, git_has_changes, commit_all, git_push,
     git_branch_url, create_ado_pr, ado_pr_title_from_branch,
     git_branch_is_empty, open_in_terminal_tabs, get_ado_pr_url,
-    remote_branch_exists, ado_work_item_id_from_branch,
+    remote_branch_exists, ado_work_item_id_from_branch, complete_ado_pr,
+    ado_host_for_path, check_ado_connectivity,
 )
 from dialogs import (
     ask_change_decision, ask_commit_message, ask_branch_warning, ask_pr_details,
     ask_missing_remote_branches, ask_acc_autoapprove, ask_deploy_selection,
+    ask_complete_pr_details,
 )
 from pipelines import (
     run_pipeline_for_repo_details,
@@ -347,6 +349,67 @@ class ActionTabBase(ttk.Frame):
         )
 
 
+    def complete_prs(self, repos):
+        """Complete (merge) each selected repo's open Azure DevOps pull request.
+
+        Asks once for the merge options (strategy, delete source branch,
+        transition work items), then completes the active PR of each repo's
+        current branch to master on a background thread. Each successfully
+        merged PR adds a clickable link to it in the Details table. Repos with
+        no open PR, or whose merge is rejected (unmet policies, conflicts,
+        pending approvals), are reported in the Errors panel.
+        """
+        self.errors.clear()
+        if not repos:
+            return
+
+        self.show_repos_async(repos, with_status=False)
+
+        options = ask_complete_pr_details(self, len(repos))
+        if options is None:
+            return
+
+        pr_urls = {}
+        self._last_pr_urls = pr_urls
+
+        def _complete(name, path):
+            ok, result, warning = complete_ado_pr(
+                name, path,
+                merge_strategy=options["merge_strategy"],
+                delete_source_branch=options["delete_source_branch"],
+                transition_work_items=options["transition_work_items"],
+                publish_draft=options["publish_draft"],
+                queue_build=options["queue_build"],
+                auto_complete_when_not_ready=options["auto_complete_when_not_ready"],
+            )
+            if ok:
+                pr_urls[name] = result
+                # A queued/async merge is non-fatal: the PR link still resolves,
+                # but surface the pending status so it is not silently lost.
+                if warning:
+                    self.after(0, self.errors.add, warning)
+                return True, ""
+            return False, result
+
+        def _copy_text(ok_repos):
+            return "\n".join(
+                f"{name} - {pr_urls[name]}"
+                for name, _ in ok_repos if name in pr_urls
+            )
+
+        self.run_repo_action(
+            repos,
+            _complete,
+            "All pull requests completed successfully.",
+            link_fn=lambda n, p: pr_urls.get(n, ""),
+            link_text="View PR",
+            link_header="Pull request",
+            show_branch=False,
+            completion_copy_fn=_copy_text,
+            parallel=True,
+        )
+
+
     # -- Open Git Bash terminals ------------------------------------------- #
     def open_terminals(self, repos):
         """Open each selected repo as a Git Bash tab in one Windows Terminal window.
@@ -507,6 +570,15 @@ class ActionTabBase(ttk.Frame):
         def _check():
             # Both the remote-branch scan and the deployment probe hit the
             # network per repo, so fan each out across a thread pool.
+            host = next(
+                (h for h in (ado_host_for_path(p) for _, p, _ in active) if h),
+                "",
+            )
+            reachable, conn_err = check_ado_connectivity(host)
+            if host and not reachable:
+                self.after(0, self._on_connectivity_failed, conn_err)
+                return
+
             def _scan(entry):
                 name, path, branch = entry
                 return is_git_repo(path) and remote_branch_exists(path, branch)
@@ -541,6 +613,11 @@ class ActionTabBase(ttk.Frame):
             )
 
         threading.Thread(target=_check, daemon=True).start()
+
+    def _on_connectivity_failed(self, message):
+        """Reset the busy indicator and report an Azure DevOps connectivity error."""
+        self.progress.show_repos([])
+        self.errors.add(message)
 
     def _on_branches_checked(self, environment, autoapprove_acc, existing,
                              missing, deploy_info):
@@ -710,6 +787,19 @@ class ActionTabBase(ttk.Frame):
         def _work():
             run_infos = {}
             errors = []
+            # Fail fast when Azure DevOps is unreachable (e.g. VPN off) instead
+            # of blocking on each repo's long request timeout in turn.
+            host = next(
+                (h for h in (ado_host_for_path(p) for _, p, _ in active) if h),
+                "",
+            )
+            reachable, conn_err = check_ado_connectivity(host)
+            if host and not reachable:
+                self.after(
+                    0, self._on_master_pipeline_monitor_resolved,
+                    {}, [conn_err], "", [],
+                )
+                return
             for name, path, _ in active:
                 ok, result = get_master_pipeline_run_for_merged_branch_details(
                     name, path, branch_of[name]

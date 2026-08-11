@@ -10,6 +10,7 @@ import json
 import time
 import base64
 import shutil
+import socket
 import threading
 import subprocess
 import urllib.parse
@@ -809,6 +810,28 @@ def parse_ado_remote(remote_url):
     return None
 
 
+def ado_host_for_path(path):
+    """Return the Azure DevOps host for *path*'s origin remote, or ""."""
+    parsed = parse_ado_remote(git_remote_url(path))
+    return parsed[3] if parsed else ""
+
+
+def check_ado_connectivity(host, timeout=4):
+    """Return (ok, error) after a fast TCP probe of *host* on port 443.
+
+    A quick reachability check so network-dependent batch actions fail fast with
+    a clear "check your VPN" message instead of blocking on each request's long
+    timeout when there is no route to Azure DevOps (e.g. the VPN is off).
+    """
+    if not host:
+        return False, ""
+    try:
+        with socket.create_connection((host, 443), timeout=timeout):
+            return True, ""
+    except OSError:
+        return False, f"cannot reach {host} - check your VPN / network connection"
+
+
 def get_git_credential(host, url=None):
     """Return (username, password) Git has stored for *host*, or (None, None).
 
@@ -1014,6 +1037,316 @@ def get_ado_pr_url(name, path, target="master"):
         f"{urllib.parse.quote(repo_name)}/pullrequest/{pr_id}"
     )
     return True, web_url
+
+
+# Merge strategies accepted by the Azure DevOps PR completion API.
+PR_MERGE_STRATEGIES = ("noFastForward", "squash", "rebase", "rebaseMerge")
+
+
+def _ado_get_json(url, auth, timeout=30):
+    """GET *url* with Basic *auth* and return (ok, json_or_error_message)."""
+    req = urllib.request.Request(url, method="GET")
+    req.add_header("Authorization", f"Basic {auth}")
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return True, json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", "replace").strip()
+        try:
+            detail = json.loads(detail).get("message", detail)
+        except ValueError:
+            pass
+        return False, f"({exc.code}) {detail}"
+    except (urllib.error.URLError, OSError) as exc:
+        return False, str(exc)
+
+
+def _ado_send_json(url, auth, body, method, timeout=30):
+    """Send *body* (dict, or None for an empty payload) to *url*.
+
+    Returns (ok, json_or_error_message). Used for the PR PATCH calls and the
+    empty-body policy requeue.
+    """
+    data = json.dumps(body).encode("utf-8") if body is not None else b""
+    req = urllib.request.Request(url, data=data, method=method)
+    req.add_header("Authorization", f"Basic {auth}")
+    if body is not None:
+        req.add_header("Content-Type", "application/json")
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            raw = resp.read().decode("utf-8")
+            return True, (json.loads(raw) if raw else {})
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", "replace").strip()
+        try:
+            detail = json.loads(detail).get("message", detail)
+        except ValueError:
+            pass
+        return False, f"({exc.code}) {detail}"
+    except (urllib.error.URLError, OSError) as exc:
+        return False, str(exc)
+
+
+def _ado_current_user_id(org, auth):
+    """Return the authenticated user's identity id (for auto-complete), or None."""
+    url = (
+        f"https://dev.azure.com/{urllib.parse.quote(org)}/"
+        f"_apis/connectionData?api-version=7.1"
+    )
+    ok, data = _ado_get_json(url, auth)
+    if not ok:
+        return None
+    return (data.get("authenticatedUser") or {}).get("id")
+
+
+def _pr_policy_state(org, project, project_id, pr_id, auth):
+    """Inspect the branch-policy evaluations of a PR.
+
+    Returns (pending, unrun_build_ids, rejected, count) where *pending* is True
+    when any required policy is queued or running, *unrun_build_ids* holds the
+    evaluation ids of build policies that are queued without a build yet (they
+    can be requeued to start the build), *rejected* is True when a policy failed,
+    and *count* is the number of evaluations returned.
+    """
+    artifact = f"vstfs:///CodeReview/CodeReviewId/{project_id}/{pr_id}"
+    query = urllib.parse.urlencode({
+        "artifactId": artifact,
+        "api-version": "7.1",
+    })
+    url = (
+        f"https://dev.azure.com/{urllib.parse.quote(org)}/"
+        f"{urllib.parse.quote(project)}/_apis/policy/evaluations?{query}"
+    )
+    ok, data = _ado_get_json(url, auth)
+    if not ok:
+        return False, [], False, 0
+
+    pending = False
+    rejected = False
+    unrun_build_ids = []
+    evals = data.get("value") or []
+    for evaluation in evals:
+        status = (evaluation.get("status") or "").lower()
+        config = evaluation.get("configuration") or {}
+        type_name = ((config.get("type") or {}).get("displayName") or "").lower()
+        is_build = "build" in type_name
+        if status in ("queued", "running"):
+            pending = True
+        if status in ("rejected", "broken"):
+            rejected = True
+        if is_build and status == "queued":
+            context = evaluation.get("context") or {}
+            if not context.get("buildId"):
+                eid = evaluation.get("evaluationId")
+                if eid:
+                    unrun_build_ids.append(eid)
+    return pending, unrun_build_ids, rejected, len(evals)
+
+
+def _requeue_policy_evaluation(org, project, evaluation_id, auth):
+    """Requeue a branch-policy evaluation (e.g. start a build). Returns (ok, err)."""
+    url = (
+        f"https://dev.azure.com/{urllib.parse.quote(org)}/"
+        f"{urllib.parse.quote(project)}/_apis/policy/evaluations/"
+        f"{urllib.parse.quote(str(evaluation_id))}?api-version=7.1"
+    )
+    return _ado_send_json(url, auth, None, "PATCH")
+
+
+def complete_ado_pr(name, path, target="master", merge_strategy="noFastForward",
+                    delete_source_branch=True, transition_work_items=True,
+                    publish_draft=True, auto_complete_when_not_ready=True,
+                    queue_build=True):
+    """Complete (merge) the open Azure DevOps PR for the repo's current branch.
+
+    Returns (ok, url_or_err, warning). Looks up the active pull request that
+    goes from the repo's current branch to *target* (master) and tries to merge
+    it with the given options. Authentication reuses the Git credential stored
+    for the host (no prompts).
+
+    The PR state is inspected and remediations are applied when enabled:
+
+    * ``publish_draft`` - when the PR is a draft it is published (unmarked as
+      draft) so its branch policies start; without this a draft cannot complete.
+    * ``queue_build`` - when a required build policy is queued but has no build
+      yet (typical for a freshly published draft) it is requeued so the build
+      runs.
+    * ``auto_complete_when_not_ready`` - when the PR is not immediately mergeable
+      (build/policies still running) it is set to auto-complete so Azure DevOps
+      merges it once every policy passes, instead of completing right now.
+
+    ok is False - with an explanatory message - when the repo is not an ADO
+    repo, has no stored credential, has no open pull request, a required
+    remediation is disabled, a policy was rejected, or the merge is refused.
+    """
+    if not is_git_repo(path):
+        return False, f"{name}: not a git repository", ""
+    branch = git_current_branch(path)
+    if not branch:
+        return False, f"{name}: not on a branch (detached HEAD)", ""
+    if branch == target:
+        return False, f"{name}: on {target}; no pull request to complete", ""
+
+    remote_url = git_remote_url(path)
+    parsed = parse_ado_remote(remote_url)
+    if not parsed:
+        return False, f"{name}: remote is not an Azure DevOps repository", ""
+    org, project, repo, host = parsed
+
+    username, password = get_git_credential(host, remote_url)
+    if not password:
+        return False, f"{name}: no stored Git credential for {host}", ""
+
+    auth = base64.b64encode(
+        f"{username or ''}:{password}".encode("utf-8")
+    ).decode("ascii")
+
+    # 1) Find the active PR for this branch (need its id and merge source commit).
+    query = urllib.parse.urlencode({
+        "searchCriteria.sourceRefName": f"refs/heads/{branch}",
+        "searchCriteria.targetRefName": f"refs/heads/{target}",
+        "searchCriteria.status": "active",
+        "api-version": "7.1",
+    })
+    base_url = (
+        f"https://dev.azure.com/{urllib.parse.quote(org)}/"
+        f"{urllib.parse.quote(project)}/_apis/git/repositories/"
+        f"{urllib.parse.quote(repo)}/pullrequests"
+    )
+    ok, data = _ado_get_json(f"{base_url}?{query}", auth)
+    if not ok:
+        return False, f"{name}: pull request lookup failed {data}", ""
+
+    prs = data.get("value") or []
+    if not prs:
+        return False, f"{name}: no open pull request for branch '{branch}'", ""
+
+    pr = prs[0]
+    pr_id = pr.get("pullRequestId")
+    is_draft = bool(pr.get("isDraft"))
+    merge_commit = (pr.get("lastMergeSourceCommit") or {}).get("commitId")
+    repo_info = pr.get("repository") or {}
+    project_id = (repo_info.get("project") or {}).get("id")
+    project_name = (repo_info.get("project") or {}).get("name") or project
+    repo_name = repo_info.get("name") or repo
+    web_url = (
+        f"https://dev.azure.com/{urllib.parse.quote(org)}/"
+        f"{urllib.parse.quote(project_name)}/_git/"
+        f"{urllib.parse.quote(repo_name)}/pullrequest/{pr_id}"
+    )
+    pr_url = f"{base_url}/{pr_id}?api-version=7.1"
+
+    if merge_strategy not in PR_MERGE_STRATEGIES:
+        merge_strategy = "noFastForward"
+
+    notes = []  # non-fatal actions taken, surfaced together as one warning
+
+    # 2) Publish the PR if it is a draft (draft PRs cannot complete and their
+    #    build policies do not run until published).
+    if is_draft:
+        if not publish_draft:
+            return (
+                False,
+                f"{name}: pull request is a draft; enable 'publish draft PRs' "
+                "to complete it",
+                "",
+            )
+        ok, result = _ado_send_json(pr_url, auth, {"isDraft": False}, "PATCH")
+        if not ok:
+            return False, f"{name}: could not publish draft PR: {result}", ""
+        notes.append("published draft")
+
+    # 3) Inspect branch-policy state to decide between an immediate merge and
+    #    setting auto-complete.
+    pending, unrun_build_ids, rejected, evaluation_count = (False, [], False, 0)
+    if project_id:
+        pending, unrun_build_ids, rejected, evaluation_count = _pr_policy_state(
+            org, project, project_id, pr_id, auth
+        )
+
+    if rejected:
+        return (
+            False,
+            f"{name}: a required branch policy was rejected; resolve it in the "
+            "PR before completing",
+            "",
+        )
+
+    # Queue any required build that has not started (common right after a draft
+    # is published). Doing so means the PR cannot merge immediately, so it will
+    # go down the auto-complete path below.
+    if queue_build and unrun_build_ids:
+        queued = 0
+        for eid in unrun_build_ids:
+            ok, _ = _requeue_policy_evaluation(org, project, eid, auth)
+            if ok:
+                queued += 1
+        if queued:
+            pending = True
+            notes.append(f"queued {queued} build{'s' if queued != 1 else ''}")
+
+    # A freshly published draft may not have its evaluations listed yet; assume
+    # policies still need to run so it is not completed prematurely.
+    if "published draft" in notes and evaluation_count == 0:
+        pending = True
+
+    completion_options = {
+        "deleteSourceBranch": bool(delete_source_branch),
+        "mergeStrategy": merge_strategy,
+        "transitionWorkItems": bool(transition_work_items),
+    }
+
+    # 4a) Not ready to merge now -> set auto-complete so ADO merges it later.
+    if pending:
+        if not auto_complete_when_not_ready:
+            extra = f" ({', '.join(notes)})" if notes else ""
+            return (
+                False,
+                f"{name}: pull request is not ready to complete - build or "
+                f"policies still running{extra}; enable auto-complete to merge "
+                "it automatically",
+                "",
+            )
+        user_id = _ado_current_user_id(org, auth)
+        if not user_id:
+            return (
+                False,
+                f"{name}: could not resolve identity to set auto-complete",
+                "",
+            )
+        body = {
+            "autoCompleteSetBy": {"id": user_id},
+            "completionOptions": completion_options,
+        }
+        ok, result = _ado_send_json(pr_url, auth, body, "PATCH")
+        if not ok:
+            return False, f"{name}: could not set auto-complete: {result}", ""
+        notes.append("set to auto-complete")
+        return True, web_url, f"{name}: {', '.join(notes)} (merges when policies pass)"
+
+    # 4b) Ready now -> complete immediately.
+    patch_body = {
+        "status": "completed",
+        "completionOptions": completion_options,
+    }
+    if merge_commit:
+        patch_body["lastMergeSourceCommit"] = {"commitId": merge_commit}
+    ok, result = _ado_send_json(pr_url, auth, patch_body, "PATCH")
+    if not ok:
+        return False, f"{name}: pull request completion failed {result}", ""
+
+    # ADO may queue the merge asynchronously; a non-completed status here means
+    # the merge is still pending (e.g. running policies) rather than done.
+    status = result.get("status")
+    if status and status != "completed":
+        merge_status = result.get("mergeStatus") or "queued"
+        notes.append(f"merge {status} (mergeStatus: {merge_status})")
+        return True, web_url, f"{name}: {', '.join(notes)}; check the PR"
+
+    if notes:
+        return True, web_url, f"{name}: {', '.join(notes)}, then completed"
+    return True, web_url, ""
+
 
 
 # Serialize every work-item link across threads. When PRs are created in

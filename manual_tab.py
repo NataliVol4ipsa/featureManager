@@ -130,6 +130,17 @@ class ManualTab(ActionTabBase):
                 "\u2192 feature(123) My desc). A link to each new PR is shown.",
             ),
             (
+                "Complete pull request",
+                self._action_complete_pr,
+                "For every selected repository: completes (merges) each repo's "
+                "open Azure DevOps pull request (current branch \u2192 master). "
+                "You choose the merge strategy and how to handle PRs that are "
+                "not ready: publish drafts, queue a missing build, and set "
+                "auto-complete when the build or policies are still running. "
+                "Repos with no open PR or a rejected policy are listed in the "
+                "Errors panel.",
+            ),
+            (
                 "Copy PR links",
                 self._action_copy_pr_links,
                 "For every selected repository: looks up each repo's open Azure "
@@ -417,6 +428,10 @@ class ManualTab(ActionTabBase):
     # -- Copy PR links ----------------------------------------------------- #
     def _action_copy_pr_links(self):
         self.copy_pr_links(self._all_selected_repos())
+
+    # -- Complete pull request --------------------------------------------- #
+    def _action_complete_pr(self):
+        self.complete_prs(self._all_selected_repos())
 
     # -- Bump NuGet packages ----------------------------------------------- #
     def _action_bump_public(self):

@@ -261,6 +261,17 @@ class WorkspacesTab(ActionTabBase):
                 "each new PR is shown.",
             ),
             (
+                "Complete pull request",
+                self._action_complete_pr,
+                "For the selected workspace's repositories (excluding skipped "
+                "repos): completes (merges) each repo's open Azure DevOps pull "
+                "request (current branch \u2192 master). You choose the merge "
+                "strategy and how to handle PRs that are not ready: publish "
+                "drafts, queue a missing build, and set auto-complete when the "
+                "build or policies are still running. Repos with no open PR or a "
+                "rejected policy are listed in the Errors panel.",
+            ),
+            (
                 "Copy PR links",
                 self._action_copy_pr_links,
                 "For the selected workspace's repositories (excluding skipped "
@@ -640,6 +651,16 @@ class WorkspacesTab(ActionTabBase):
                 self.errors.add(repos)
             return
         self.copy_pr_links(repos)
+
+    # -- Complete pull request --------------------------------------------- #
+    def _action_complete_pr(self):
+        ok, workspace, repos = self._selected_active_repos()
+        self.errors.clear()
+        if not ok:
+            if workspace is not None:
+                self.errors.add(repos)
+            return
+        self.complete_prs(repos)
 
     # -- Run pipelines ----------------------------------------------------- #
     def _action_run_dev_pipeline(self):

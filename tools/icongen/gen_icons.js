@@ -40,6 +40,7 @@ const MAP = {
   "upload": "Git push",
   "git-pull-request": "Create pull request",
   "link": "Copy PR links",
+  "git-merge": "Complete pull request",
   "package": "Bump NuGet packages (public)",
   "boxes": "Bump all NuGet packages",
   "package-check": "Restore NuGet packages",
@@ -63,6 +64,7 @@ grp("blue", [
 grp("red", [
   "Rebase current branch on master", "Commit all changes",
   "Git push", "Create pull request", "Copy PR links",
+  "Complete pull request",
 ]);
 grp("brown", [
   "Bump NuGet packages (public)", "Bump NuGet packages (private)",

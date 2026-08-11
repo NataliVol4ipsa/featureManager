@@ -179,6 +179,8 @@ class PipelineMonitorWindow(tk.Toplevel):
 
         controls = ttk.Frame(self)
         controls.pack(side="top", fill="x", padx=10, pady=(8, 0))
+        self._controls = controls
+        self._flash_label = None
 
         self._acc_button = None
         self._prod_button = None
@@ -486,6 +488,7 @@ class PipelineMonitorWindow(tk.Toplevel):
         self.clipboard_clear()
         self.clipboard_append(text)
         self.title("Pipeline monitor - links copied")
+        self._flash_copied()
 
     def _generate_release_message(self):
         """Copy the feature name, run links and linked test report links."""
@@ -507,6 +510,43 @@ class PipelineMonitorWindow(tk.Toplevel):
         self.clipboard_clear()
         self.clipboard_append(text)
         self.title("Pipeline monitor - release message copied")
+        self._flash_copied()
+
+    def _flash_copied(self, message="Copied!"):
+        """Show a short 'Copied!' label next to the button that fades out."""
+        if self._flash_label is not None:
+            self._flash_label.destroy()
+            self._flash_label = None
+
+        label = tk.Label(self._controls, text=message, background=theme.BG,
+                         font=("", 9, "bold"))
+        label.pack(side="left", padx=(10, 0))
+        self._flash_label = label
+
+        def _hex(color):
+            return tuple(int(color[i:i + 2], 16) for i in (1, 3, 5))
+
+        start, end = _hex(theme.SUCCESS), _hex(theme.BG)
+        steps, hold = 14, 6  # frames of fade, preceded by a brief solid hold
+
+        def _step(frame):
+            if self._closed or not label.winfo_exists():
+                return
+            if frame < hold:
+                self.after(60, _step, frame + 1)
+                return
+            t = (frame - hold) / steps
+            if t >= 1:
+                label.destroy()
+                if self._flash_label is label:
+                    self._flash_label = None
+                return
+            rgb = tuple(round(s + (e - s) * t) for s, e in zip(start, end))
+            label.config(foreground="#%02x%02x%02x" % rgb)
+            self.after(45, _step, frame + 1)
+
+        label.config(foreground=theme.SUCCESS)
+        self.after(45, _step, 0)
 
     def _on_canvas_layout_changed(self, _event=None):
         self._update_scrollregion_and_scrollbar()

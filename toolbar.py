@@ -23,7 +23,6 @@ _image_cache = {}
 # The two product logos are raster PNGs supplied larger than strip size, so they
 # get downscaled; Lucide action icons are already rendered at final size.
 _SUBSAMPLE = {
-    "Open workspace in VS Code": 4,
     "Open in Git Bash tabs": 4,
 }
 
@@ -72,6 +71,7 @@ GLYPHS = {
     "Git push": "\u2b06",                               # up arrow
     "Create pull request": "\U0001f4e4",                # outbox (submit request)
     "Copy PR links": "\U0001f517",                      # link
+    "Complete pull request": "\U0001f500",              # twisted arrows (merge)
     # Packages
     "Bump NuGet packages (public)": "\U0001f4e6",       # package
     "Bump NuGet packages (private)": "\U0001f510",      # locked with key
