@@ -373,10 +373,11 @@ class WorkspacesTab(ActionTabBase):
             (
                 "Open pull requests",
                 self._action_open_prs,
-                "For the selected workspace's repositories: looks up the open "
-                "Azure DevOps pull request for each repo's current branch and "
-                "opens it in your default web browser. Repos with no open PR are "
-                "reported in the Errors panel.",
+                "For the selected workspace's non-skipped repositories: looks up "
+                "the open Azure DevOps pull request for each repo's current "
+                "branch and opens it in your default web browser. Repos flagged "
+                "'ignore git' keep their own branch and are skipped. Repos with "
+                "no open PR are reported in the Errors panel.",
             ),
         ]
 
@@ -780,7 +781,7 @@ class WorkspacesTab(ActionTabBase):
 
     # -- Open pull requests in the browser --------------------------------- #
     def _action_open_prs(self):
-        ok, workspace, repos = self._selected_repos()
+        ok, workspace, repos = self._selected_active_repos()
         self.errors.clear()
         if not ok:
             if workspace is not None:
