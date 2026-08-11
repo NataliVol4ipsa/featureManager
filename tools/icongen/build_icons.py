@@ -27,8 +27,8 @@ def emit(b64):
     return "(\n" + "".join(f'        "{c}"\n' for c in lines) + "    )"
 
 
-def block(name, mapping):
-    entries = list(mapping.items()) + logos
+def block(name, mapping, extra=None):
+    entries = list(mapping.items()) + (logos if extra is None else extra)
     for label, b64 in entries:
         assert base64.b64decode(b64)[:8] == b"\x89PNG\r\n\x1a\n", label
     body = "".join(f"    {label!r}: {emit(b64)},\n" for label, b64 in entries)
@@ -50,13 +50,19 @@ rasterised to 18px PNG, recoloured per action group (blue=workspace/branch,
 red=git, brown=packages, green=pipelines, yellow=open); the light set uses
 darker/more saturated tones so they read on the light toolbar. The private-feed
 bump is a package+padlock composite. The VS Code and Git Bash entries are the
-products' own logos (shared by both sets). Regenerate via tools/icongen.
+products' own logos (shared by both sets). MISC_ICON_DARK / MISC_ICON_LIGHT hold
+non-toolbar icons (e.g. the pipeline monitor's "previous run" marker).
+Regenerate via tools/icongen.
 """
 
 
 '''
 
 out = header + block("ACTION_ICON_DARK", data["dark"]) + "\n" + block("ACTION_ICON_LIGHT", data["light"])
+misc = data.get("misc")
+if misc:
+    out += "\n" + block("MISC_ICON_DARK", misc["dark"], extra=[])
+    out += "\n" + block("MISC_ICON_LIGHT", misc["light"], extra=[])
 open(os.path.join(ROOT, "icons.py"), "w", encoding="utf-8").write(out)
 print("wrote icons.py: dark", len(data["dark"]) + len(logos),
       "light", len(data["light"]) + len(logos))

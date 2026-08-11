@@ -11,12 +11,27 @@ import webbrowser
 from tkinter import ttk
 
 import theme
+import icons
 from widgets import Tooltip
 from pipelines import (
     get_pipeline_stage_statuses,
     rerun_failed_stage,
     rerun_pipeline_from_latest_commit,
 )
+
+
+# Amber "previous run" marker (Lucide undo-2), matching the toolbar icon style.
+# Cached module-level so Tk doesn't garbage-collect the PhotoImage.
+_previous_run_img = None
+
+
+def _previous_run_icon():
+    global _previous_run_img
+    if _previous_run_img is None:
+        table = (icons.MISC_ICON_DARK if theme.load_dark_preference()
+                 else icons.MISC_ICON_LIGHT)
+        _previous_run_img = tk.PhotoImage(data=table["previous-run"])
+    return _previous_run_img
 
 
 _STAGE_ORDER = [
@@ -258,16 +273,12 @@ class PipelineMonitorWindow(tk.Toplevel):
         for index, (repo, info) in enumerate(sorted(self._run_infos.items())):
             self._inner.grid_rowconfigure(index, minsize=58)
 
-            # Column 0 (left of the name): yellow rewind glyph marking a row that
-            # shows an existing "previous run" instead of a freshly started one.
+            # Column 0 (left of the name): amber "previous run" marker on a row
+            # that shows an existing run instead of a freshly started one.
             rewind_icon = None
             if info.get("is_previous_run"):
-                # Segoe MDL2 Assets "Undo" glyph renders as a crisp monochrome
-                # icon; the plain Unicode arrow (U+21BA) falls back to a bulky
-                # colour-emoji glyph on Windows.
                 rewind_icon = tk.Label(
-                    self._inner, text="\uE7A7", foreground=theme.WARNING,
-                    background=theme.BG, font=("Segoe MDL2 Assets", 12),
+                    self._inner, image=_previous_run_icon(), background=theme.BG,
                 )
                 rewind_icon.grid(row=index, column=0, sticky="w",
                                  padx=(4, 0), pady=0)
@@ -624,10 +635,35 @@ class PipelineMonitorWindow(tk.Toplevel):
             x = start_x + idx * gap
             state = stages.get(key, "waiting")
             style = _STAGE_STYLE.get(state, _STAGE_STYLE["waiting"])
-            canvas.create_oval(
-                x - 10, y - 10, x + 10, y + 10,
-                fill=style["fill"], outline=style["outline"], width=2,
-            )
+            # A running stage with known progress is drawn as a circular bar: a
+            # blue pie sweeping clockwise from 12 o'clock over a track, filling
+            # by the stage's completion percent. Everything else is a plain dot.
+            percent = None
+            if state == "running":
+                percent = ((row.get("stage_progress") or {}).get(key) or {}).get(
+                    "percent"
+                )
+            if state == "running" and percent is not None and percent < 100:
+                canvas.create_oval(
+                    x - 10, y - 10, x + 10, y + 10,
+                    fill=theme.BG_INPUT, outline=style["outline"], width=2,
+                )
+                sweep = max(0.0, min(100.0, float(percent))) / 100.0 * 360.0
+                if sweep > 0:
+                    canvas.create_arc(
+                        x - 10, y - 10, x + 10, y + 10,
+                        start=90, extent=-sweep, style="pieslice",
+                        fill=style["fill"], outline=style["fill"],
+                    )
+                canvas.create_oval(
+                    x - 10, y - 10, x + 10, y + 10,
+                    fill="", outline=style["outline"], width=2,
+                )
+            else:
+                canvas.create_oval(
+                    x - 10, y - 10, x + 10, y + 10,
+                    fill=style["fill"], outline=style["outline"], width=2,
+                )
             canvas.create_text(x, y + 24, text=title, fill=theme.FG, font=("", 8))
             # Live theme colour so the state label stays visible in the light theme.
             label_color = (theme.FG_MUTED if state in ("waiting", "skipped")

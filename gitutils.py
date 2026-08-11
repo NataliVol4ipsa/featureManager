@@ -488,15 +488,6 @@ def git_commit_message(repo_path, ref):
     return out if ok else ""
 
 
-def git_last_commit(repo_path, ref):
-    """Return (short_hash, subject) of the commit at *ref*, or ('', '') on failure."""
-    ok, out = run_git(repo_path, ["log", "-1", "--format=%h%x1f%s", ref])
-    if not ok or "\x1f" not in out:
-        return "", ""
-    short, subject = out.split("\x1f", 1)
-    return short.strip(), subject.strip()
-
-
 def git_branch_is_empty(repo_path, target="master"):
     """Return True if the current branch has no changes versus *target*.
 
@@ -602,14 +593,13 @@ def has_savepos(repo_path, base_msg):
 def commit_all(name, path, message):
     """Stage and commit all changes in one repo with *message*. Returns (ok, err).
 
-    Repos that are not git repos are reported as errors; repos with nothing to
-    commit return the "warning" sentinel so they are shown as a warning rather
-    than an error.
+    Skips repos that are not git repos or have nothing to commit (those are
+    reported as errors so the user sees why they were not committed).
     """
     if not is_git_repo(path):
         return False, f"{name}: not a git repository"
     if not git_has_changes(path):
-        return "warning", f"{name}: no changes to commit"
+        return False, f"{name}: no changes to commit"
 
     ok, out = run_git(path, ["add", "-A"])
     if not ok:

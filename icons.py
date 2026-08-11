@@ -12,7 +12,9 @@ rasterised to 18px PNG, recoloured per action group (blue=workspace/branch,
 red=git, brown=packages, green=pipelines, yellow=open); the light set uses
 darker/more saturated tones so they read on the light toolbar. The private-feed
 bump is a package+padlock composite. The VS Code and Git Bash entries are the
-products' own logos (shared by both sets). Regenerate via tools/icongen.
+products' own logos (shared by both sets). MISC_ICON_DARK / MISC_ICON_LIGHT hold
+non-toolbar icons (e.g. the pipeline monitor's "previous run" marker).
+Regenerate via tools/icongen.
 """
 
 
@@ -627,5 +629,29 @@ ACTION_ICON_LIGHT = {
         "eDIQEjEPSd0XiBdCYuYhyQsT8UBI1DwkfWOkOgiJm4c0bo1Fg5CKeUjr3qAehNTMQ5o3R8NBSNU8"
         "pAkAyiG47UWOkrJ5+C5ujwN8tnkWxeOPAksoXap8g0xmPec8uD/tqnwLXEbJl7rQ9z8AAAAASUVO"
         "RK5CYII="
+    ),
+}
+
+MISC_ICON_DARK = {
+    'previous-run': (
+        "iVBORw0KGgoAAAANSUhEUgAAABIAAAASCAYAAABWzo5XAAABUklEQVR4nLWSTUrDQBiG34kZF4Kl"
+        "Ll3pEeoN9AYNmoWITQu2rkS9gb1BcRmENBVx0Uq8gd7A9ARmJe4suhFTOr6ppv/0R9sHZubly8zD"
+        "x0cE5sRiRY7nJcOP0NGE5h4d7t2zNJEhUVvy3nxgTGmaMP4k6pVAaLlCZreMKemI/iOJ6Ihst/rC"
+        "Y51rDCrgCx9Lslg4MHwWOnRFleolFE5YeFWAy/XJch8CIklZmnFjcH5818Wu3GWhWg6jLxP6Ts4w"
+        "GsxD2G6tBChLLutbuX0jAOkTRUwj+53nmwKKx5Z5ATIkiohlvRcH4UwfATQKlpnmOVoUYd94KbmC"
+        "YFRHERQ98XE9b5lZEObZcW69zfCr+SwEzvMZs8TS7KK2JGw6UGpNJuR23PFY0dV1Ld1S6pTxB4Uk"
+        "9xRDHbrM9v5Lk0UtdcbYhpcDbr6+qpfjTmL4bT7MTfQN+PiRE9gLG9UAAAAASUVORK5CYII="
+    ),
+}
+
+MISC_ICON_LIGHT = {
+    'previous-run': (
+        "iVBORw0KGgoAAAANSUhEUgAAABIAAAASCAYAAABWzo5XAAABUUlEQVR4nLWSQU7CQBSG34x1JSa4"
+        "dKVHwBvoDXBfYg2QuBHGG8gNJl2ZAKEEDuAN9AaWE9iVcScJLkwk8/xLQy0UCih8SdvXf958mZlW"
+        "0JbYrchRKj8ecQfD3X5bPyJaSUo0kXyaJ2IqEMnLP4mSEiHlda+pPVqTWPQfSUgssiv1N2I+RrkU"
+        "NAdMwrekaHhN7SOKwVhEqaJcZnOL4B3NXRL8hXgWpjzuRVwn8+eHeb+UqsphYzpIfSsnLzyth4hT"
+        "2OWaxuPK2pdn3oMOCMyIQtaRTc5zZD7Q0+i33HsCKVFIQhY3zmNXas+YPOy13CJeCfVinKoq0AEF"
+        "i1YUAtELzmzQb7sOgaWiLJwbdTr+Nq9CyLteS2tEm4siCXfwCY+sQ3k+XXGmyC6rIibUUUYIzmM7"
+        "BVQDS0on+S+tFgmjUEYwBdiOv5cjb7qSKZmiTdia6Ae/RpUTJqyDwAAAAABJRU5ErkJggg=="
     ),
 }

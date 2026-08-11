@@ -22,8 +22,8 @@ const iconsDir = path.join(__dirname, "node_modules", "lucide-static", "icons");
 // Group colours per theme. Light-theme tones are darker/more saturated so they
 // stay legible on the light toolbar (esp. yellow -> dark gold).
 const PALETTE = {
-  dark: { blue: "#3d9be8", red: "#e8432e", brown: "#9c5711", green: "#2f9e44", yellow: "#f5df84" },
-  light: { blue: "#1f77c4", red: "#cf3a26", brown: "#8a4a0e", green: "#2c8b3f", yellow: "#b8860b" },
+  dark: { blue: "#3d9be8", red: "#e8432e", brown: "#9c5711", green: "#2f9e44", yellow: "#f5df84", amber: "#e0a23c", gray: "#9aa1ab" },
+  light: { blue: "#1f77c4", red: "#cf3a26", brown: "#8a4a0e", green: "#2c8b3f", yellow: "#b8860b", amber: "#b8791e", gray: "#5c636e" },
 };
 
 // Lucide slug -> exact action button label.
@@ -73,6 +73,11 @@ grp("brown", [
 grp("green", ["Run dev pipelines", "Run acc pipelines", "View merged master pipelines"]);
 grp("yellow", ["Open repositories (master)", "Open remote branches", "Open pull requests"]);
 
+// Non-action ("misc") icons keyed by a stable name, each with its own colour.
+// Used outside the toolbar - e.g. the pipeline monitor's "previous run" marker.
+const MISC = { "undo-2": "previous-run" };
+const MISC_COLOR = { "previous-run": "gray" };
+
 function wrap(inner, color) {
   return (
     `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" ` +
@@ -103,7 +108,7 @@ function render(svg) {
 }
 
 const missing = [];
-for (const slug of Object.keys(MAP)) {
+for (const slug of [...Object.keys(MAP), ...Object.keys(MISC)]) {
   if (!fs.existsSync(path.join(iconsDir, slug + ".svg"))) missing.push(slug);
 }
 if (missing.length) {
@@ -122,6 +127,18 @@ for (const theme of Object.keys(PALETTE)) {
   }
   set["Bump NuGet packages (private)"] = render(packageLockSvg(colors.brown));
   out[theme] = set;
+}
+
+// Misc icons (own colours), keyed by stable name, for both themes.
+out.misc = {};
+for (const theme of Object.keys(PALETTE)) {
+  const colors = PALETTE[theme];
+  const set = {};
+  for (const [slug, key] of Object.entries(MISC)) {
+    const raw = fs.readFileSync(path.join(iconsDir, slug + ".svg"), "utf8");
+    set[key] = render(raw.replace(/currentColor/g, colors[MISC_COLOR[key]]));
+  }
+  out.misc[theme] = set;
 }
 
 fs.writeFileSync(path.join(__dirname, "_icons.json"), JSON.stringify(out));

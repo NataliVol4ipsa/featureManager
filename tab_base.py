@@ -14,7 +14,7 @@ from gitutils import (
     git_branch_url, create_ado_pr, ado_pr_title_from_branch,
     git_branch_is_empty, open_in_terminal_tabs, get_ado_pr_url,
     remote_branch_exists, ado_work_item_id_from_branch, complete_ado_pr,
-    ado_host_for_path, check_ado_connectivity, git_last_commit,
+    ado_host_for_path, check_ado_connectivity,
 )
 from dialogs import (
     ask_change_decision, ask_commit_message, ask_branch_warning, ask_pr_details,
@@ -512,9 +512,8 @@ class ActionTabBase(ttk.Frame):
             _bump,
             f"Package versions bumped ({label}).",
             skip_fn=_skip,
-            completion_report_fn=_report_text,
-            completion_report_label="View report",
-            completion_report_title=f"Package bump report ({label})",
+            completion_copy_fn=_report_text,
+            completion_copy_label="Copy report",
             parallel=True,
         )
 
@@ -543,10 +542,7 @@ class ActionTabBase(ttk.Frame):
             return ""
 
         def _restore(name, path):
-            ok, error = packages.dotnet_restore(path, token)
-            if not ok:
-                return False, f"{name}: {error}"
-            return True, ""
+            return packages.dotnet_restore(path, token)
 
         self.run_repo_action(
             repos,
@@ -601,12 +597,10 @@ class ActionTabBase(ttk.Frame):
                 ok, info = find_env_deployment_for_branch(
                     name, path, branch, environment
                 )
-                short, subject = git_last_commit(path, branch)
-                return name, (info if ok else None), (short, subject)
+                return name, (info if ok else None)
 
             probes = run_in_parallel(existing, _probe) if existing else []
-            deploy_info = {name: info for name, info, _ in probes}
-            commit_info = {name: commit for name, _, commit in probes}
+            deploy_info = {name: info for name, info in probes}
 
             self.after(
                 0,
@@ -616,7 +610,6 @@ class ActionTabBase(ttk.Frame):
                 existing,
                 missing,
                 deploy_info,
-                commit_info,
             )
 
         threading.Thread(target=_check, daemon=True).start()
@@ -627,9 +620,8 @@ class ActionTabBase(ttk.Frame):
         self.errors.add(message)
 
     def _on_branches_checked(self, environment, autoapprove_acc, existing,
-                             missing, deploy_info, commit_info=None):
+                             missing, deploy_info):
         """After the remote-branch scan: confirm missing repos, pick deploy set."""
-        commit_info = commit_info or {}
         env_label = "Development" if environment == "dev" else "Acceptance"
         if missing:
             if not ask_missing_remote_branches(self, missing, env_label):
@@ -642,11 +634,7 @@ class ActionTabBase(ttk.Frame):
             return
 
         entries = [
-            (
-                name,
-                bool((deploy_info.get(name) or {}).get("already_deployed")),
-                commit_info.get(name) or ("", ""),
-            )
+            (name, bool((deploy_info.get(name) or {}).get("already_deployed")))
             for name, _, _ in existing
         ]
         decisions = ask_deploy_selection(self, entries, env_label)
@@ -1025,10 +1013,7 @@ class ActionTabBase(ttk.Frame):
                         link_header="Link", show_branch=True,
                         completion_copy_fn=None, skip_fn=None,
                         completion_open_fn=None, completion_open_label="Open all",
-                        completion_copy_label="Copy all", parallel=False,
-                        completion_report_fn=None,
-                        completion_report_label="View report",
-                        completion_report_title="Report"):
+                        completion_copy_label="Copy all", parallel=False):
         """Run *per_repo_fn(name, path)* for each repo off the UI thread.
 
         *per_repo_fn* must return (ok, error_message). The table shows each
@@ -1064,8 +1049,7 @@ class ActionTabBase(ttk.Frame):
             args=(repos, per_repo_fn, success_msg, on_complete, link_fn,
                   link_text, show_branch, completion_copy_fn, skip_fn,
                   completion_open_fn, completion_open_label,
-                  completion_copy_label, parallel, completion_report_fn,
-                  completion_report_label, completion_report_title),
+                  completion_copy_label, parallel),
             daemon=True,
         ).start()
 
@@ -1073,10 +1057,7 @@ class ActionTabBase(ttk.Frame):
                 link_fn=None, link_text="View branch", show_branch=True,
                 completion_copy_fn=None, skip_fn=None,
                 completion_open_fn=None, completion_open_label="Open all",
-                completion_copy_label="Copy all", parallel=False,
-                completion_report_fn=None,
-                completion_report_label="View report",
-                completion_report_title="Report"):
+                completion_copy_label="Copy all", parallel=False):
         def _process_one(name, path):
             skip_result = skip_fn(name, path) if skip_fn is not None else False
             if skip_result:
@@ -1087,17 +1068,9 @@ class ActionTabBase(ttk.Frame):
                     self.after(0, self.progress.set_branch, name, branch)
                 return True  # Skipped repos do not affect the success banner.
             self.after(0, self.progress.status, name, "in-progress")
-            raw_ok, message = per_repo_fn(name, path)
-            # per_repo_fn may return the sentinel "warning" for a non-fatal
-            # outcome (e.g. nothing to commit): shown amber, not a red error,
-            # and it does not count towards the green success banner.
-            is_warning = raw_ok == "warning"
-            ok = raw_ok is True
+            ok, message = per_repo_fn(name, path)
             if ok:
                 self.after(0, self.progress.status, name, "done")
-            elif is_warning:
-                self.after(0, self.progress.status, name, "warning")
-                self.after(0, self.errors.add, message, True)
             else:
                 self.after(0, self.progress.status, name, "error")
                 self.after(0, self.errors.add, message)
@@ -1125,12 +1098,8 @@ class ActionTabBase(ttk.Frame):
         if all_ok and success_msg:
             copy_text = completion_copy_fn(repos) if completion_copy_fn else None
             open_urls = completion_open_fn(repos) if completion_open_fn else None
-            report_text = (completion_report_fn(repos)
-                           if completion_report_fn else None)
             self.after(0, self.progress.show_completion, success_msg, copy_text,
-                       open_urls, completion_open_label, completion_copy_label,
-                       report_text, completion_report_label,
-                       completion_report_title)
+                       open_urls, completion_open_label, completion_copy_label)
         if on_complete is not None:
             self.after(0, on_complete, all_ok)
 
