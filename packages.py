@@ -366,6 +366,7 @@ def _private_feed_prefixes(repo_path):
 
 # Cached AAD token ({"token", "expires"}) and per-feed flat-container base URLs.
 _token_cache = {"token": None, "expires": 0.0}
+_token_lock = threading.Lock()
 _feed_base_cache = {}
 
 
@@ -374,32 +375,49 @@ def get_azure_devops_token():
 
     Runs ``az account get-access-token`` scoped to the Azure DevOps resource id
     and caches the result for a while. Returns None when the Azure CLI is not
-    installed or the user is not logged in (``az login`` needed).
+    installed or the user is not logged in (``az login`` needed). Concurrent
+    callers coalesce behind a lock so only one ``az`` process is ever spawned
+    per cache miss (the slow part), rather than one per caller.
     """
     now = time.time()
     if _token_cache["token"] and _token_cache["expires"] > now:
         return _token_cache["token"]
-    az = shutil.which("az")
-    if not az:
-        return None
-    try:
-        result = subprocess.run(
-            [az, "account", "get-access-token", "--resource",
-             _AZURE_DEVOPS_RESOURCE, "--query", "accessToken", "-o", "tsv"],
-            capture_output=True, text=True, timeout=60,
-            creationflags=_NO_WINDOW,
-        )
-    except (OSError, subprocess.SubprocessError):
-        return None
-    if result.returncode != 0:
-        return None
-    token = result.stdout.strip()
-    if not token:
-        return None
-    # Tokens last ~1h; cache for 50 minutes to stay comfortably valid.
-    _token_cache["token"] = token
-    _token_cache["expires"] = now + 50 * 60
-    return token
+    with _token_lock:
+        # Re-check inside the lock: another caller may have just fetched it.
+        now = time.time()
+        if _token_cache["token"] and _token_cache["expires"] > now:
+            return _token_cache["token"]
+        az = shutil.which("az")
+        if not az:
+            return None
+        try:
+            result = subprocess.run(
+                [az, "account", "get-access-token", "--resource",
+                 _AZURE_DEVOPS_RESOURCE, "--query", "accessToken", "-o", "tsv"],
+                capture_output=True, text=True, timeout=60,
+                creationflags=_NO_WINDOW,
+            )
+        except (OSError, subprocess.SubprocessError):
+            return None
+        if result.returncode != 0:
+            return None
+        token = result.stdout.strip()
+        if not token:
+            return None
+        # Tokens last ~1h; cache for 50 minutes to stay comfortably valid.
+        _token_cache["token"] = token
+        _token_cache["expires"] = now + 50 * 60
+        return token
+
+
+def prewarm_azure_devops_token():
+    """Fetch the Azure DevOps token in the background to warm the cache.
+
+    Called once at startup so the slow ``az`` cold start happens before the
+    user triggers a bump/restore, making those actions feel instant. Silent:
+    a missing/not-logged-in Azure CLI just leaves the cache empty.
+    """
+    threading.Thread(target=get_azure_devops_token, daemon=True).start()
 
 
 def _flat_container_base(feed_index_url, token):
@@ -705,19 +723,43 @@ def dotnet_restore(repo_path, token=None):
 def _restore_solution(dotnet, solution, token=None):
     """Run ``dotnet restore`` for a single ``.sln`` in its own directory."""
     sln_dir = os.path.dirname(solution)
-    env = None
+    env = os.environ.copy()
+    # Never let the Azure Artifacts credential provider cache a cleartext
+    # session token into the user's NuGet.Config; it uses the encrypted MSAL
+    # cache instead (and the env token below when a private feed is present).
+    env["NUGET_CREDENTIALPROVIDER_SESSIONTOKENCACHE_ENABLED"] = "false"
     if token:
-        env = os.environ.copy()
         env["VSS_NUGET_ACCESSTOKEN"] = token
         # The credential provider only applies the token to feeds whose URI
         # matches one of these prefixes; without it the token is ignored.
         prefixes = _private_feed_prefixes(sln_dir)
         if prefixes:
             env["VSS_NUGET_URI_PREFIXES"] = prefixes
+    ok, error = _run_restore(dotnet, solution, sln_dir, env)
+    if ok:
+        return True, ""
+    # A solution that references a project file which is not on disk (e.g. a
+    # stale ".probe/reflect/reflect.csproj" left in the .sln) fails the whole
+    # restore with MSB3202. Fall back to restoring only the projects that exist,
+    # one at a time (dotnet restore accepts a single target only).
+    if _is_missing_project_error(error):
+        projects = [p for p in _solution_project_paths(solution)
+                    if os.path.isfile(p)]
+        if projects:
+            for project in projects:
+                ok, error = _run_restore(dotnet, project, sln_dir, env)
+                if not ok:
+                    return False, error
+            return True, ""
+    return False, error
+
+
+def _run_restore(dotnet, target, cwd, env):
+    """Run ``dotnet restore`` for a single *target*. Returns (ok, error)."""
     try:
         result = subprocess.run(
-            [dotnet, "restore"],
-            cwd=sln_dir, capture_output=True, text=True, timeout=600, env=env,
+            [dotnet, "restore", target],
+            cwd=cwd, capture_output=True, text=True, timeout=600, env=env,
             creationflags=_NO_WINDOW,
         )
     except (OSError, subprocess.SubprocessError) as error:
@@ -726,6 +768,39 @@ def _restore_solution(dotnet, solution, token=None):
         detail = _extract_restore_error(result.stdout, result.stderr)
         return False, f"dotnet restore failed: {detail}"
     return True, ""
+
+
+def _is_missing_project_error(message):
+    """True when a restore failed because a referenced project was not found."""
+    lowered = (message or "").lower()
+    return "msb3202" in lowered or "was not found" in lowered
+
+
+# Matches a solution project entry: Project(...) = "Name", "path", "{guid}".
+_SLN_PROJECT_RE = re.compile(
+    r'Project\("\{[^}]+\}"\)\s*=\s*"[^"]*",\s*"([^"]+)"', re.IGNORECASE
+)
+
+
+def _solution_project_paths(solution):
+    """Return absolute paths of the project files listed in a ``.sln``.
+
+    Solution folders (whose path is not a project file) are skipped; the paths
+    may or may not exist on disk - callers filter as needed.
+    """
+    sln_dir = os.path.dirname(solution)
+    paths = []
+    try:
+        with open(solution, "r", encoding="utf-8-sig", errors="ignore") as handle:
+            content = handle.read()
+    except OSError:
+        return paths
+    for rel in _SLN_PROJECT_RE.findall(content):
+        if not rel.lower().endswith("proj"):
+            continue  # solution folder, not a project
+        paths.append(os.path.normpath(os.path.join(sln_dir, rel)))
+    return paths
+
 
 
 def _extract_restore_error(stdout, stderr):

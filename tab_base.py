@@ -512,8 +512,9 @@ class ActionTabBase(ttk.Frame):
             _bump,
             f"Package versions bumped ({label}).",
             skip_fn=_skip,
-            completion_copy_fn=_report_text,
-            completion_copy_label="Copy report",
+            completion_report_fn=_report_text,
+            completion_report_label="View report",
+            completion_report_title=f"Package bump report ({label})",
             parallel=True,
         )
 
@@ -542,7 +543,10 @@ class ActionTabBase(ttk.Frame):
             return ""
 
         def _restore(name, path):
-            return packages.dotnet_restore(path, token)
+            ok, error = packages.dotnet_restore(path, token)
+            if not ok:
+                return False, f"{name}: {error}"
+            return True, ""
 
         self.run_repo_action(
             repos,
@@ -1013,7 +1017,10 @@ class ActionTabBase(ttk.Frame):
                         link_header="Link", show_branch=True,
                         completion_copy_fn=None, skip_fn=None,
                         completion_open_fn=None, completion_open_label="Open all",
-                        completion_copy_label="Copy all", parallel=False):
+                        completion_copy_label="Copy all", parallel=False,
+                        completion_report_fn=None,
+                        completion_report_label="View report",
+                        completion_report_title="Report"):
         """Run *per_repo_fn(name, path)* for each repo off the UI thread.
 
         *per_repo_fn* must return (ok, error_message). The table shows each
@@ -1049,7 +1056,8 @@ class ActionTabBase(ttk.Frame):
             args=(repos, per_repo_fn, success_msg, on_complete, link_fn,
                   link_text, show_branch, completion_copy_fn, skip_fn,
                   completion_open_fn, completion_open_label,
-                  completion_copy_label, parallel),
+                  completion_copy_label, parallel, completion_report_fn,
+                  completion_report_label, completion_report_title),
             daemon=True,
         ).start()
 
@@ -1057,7 +1065,10 @@ class ActionTabBase(ttk.Frame):
                 link_fn=None, link_text="View branch", show_branch=True,
                 completion_copy_fn=None, skip_fn=None,
                 completion_open_fn=None, completion_open_label="Open all",
-                completion_copy_label="Copy all", parallel=False):
+                completion_copy_label="Copy all", parallel=False,
+                completion_report_fn=None,
+                completion_report_label="View report",
+                completion_report_title="Report"):
         def _process_one(name, path):
             skip_result = skip_fn(name, path) if skip_fn is not None else False
             if skip_result:
@@ -1068,9 +1079,17 @@ class ActionTabBase(ttk.Frame):
                     self.after(0, self.progress.set_branch, name, branch)
                 return True  # Skipped repos do not affect the success banner.
             self.after(0, self.progress.status, name, "in-progress")
-            ok, message = per_repo_fn(name, path)
+            raw_ok, message = per_repo_fn(name, path)
+            # per_repo_fn may return the sentinel "warning" for a non-fatal
+            # outcome (e.g. nothing to commit): shown amber, not a red error,
+            # and it does not count towards the green success banner.
+            is_warning = raw_ok == "warning"
+            ok = raw_ok is True
             if ok:
                 self.after(0, self.progress.status, name, "done")
+            elif is_warning:
+                self.after(0, self.progress.status, name, "warning")
+                self.after(0, self.errors.add, message, True)
             else:
                 self.after(0, self.progress.status, name, "error")
                 self.after(0, self.errors.add, message)
@@ -1098,8 +1117,12 @@ class ActionTabBase(ttk.Frame):
         if all_ok and success_msg:
             copy_text = completion_copy_fn(repos) if completion_copy_fn else None
             open_urls = completion_open_fn(repos) if completion_open_fn else None
+            report_text = (completion_report_fn(repos)
+                           if completion_report_fn else None)
             self.after(0, self.progress.show_completion, success_msg, copy_text,
-                       open_urls, completion_open_label, completion_copy_label)
+                       open_urls, completion_open_label, completion_copy_label,
+                       report_text, completion_report_label,
+                       completion_report_title)
         if on_complete is not None:
             self.after(0, on_complete, all_ok)
 

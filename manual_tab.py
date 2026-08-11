@@ -402,7 +402,7 @@ class ManualTab(ActionTabBase):
         if git_current_branch(path) == "master":
             return False, f"{name} is on master. cannot commit changes on master"
         if not git_has_changes(path):
-            return False, f"{name}: no changes to commit"
+            return "warning", f"{name}: no changes to commit"
 
         ok, out = save_uncommitted(path, SAVEPOS_MSG)
         if not ok:

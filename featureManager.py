@@ -22,6 +22,7 @@ from manual_tab import ManualTab
 from workspaces_tab import WorkspacesTab
 from dialogs import edit_synonyms, ask_pipeline_poll_seconds, confirm_force_close
 from toolbar import build_action_toolbar
+import packages
 import theme
 
 
@@ -216,6 +217,10 @@ def main():
         root.focus_force()
 
     root.after(0, _grab_focus)
+
+    # Warm the Azure DevOps token cache in the background so the first
+    # bump/restore does not pay the slow ``az`` cold-start latency.
+    packages.prewarm_azure_devops_token()
 
     # Reopen any pipeline monitors that were open before a theme-change relaunch.
     root.after(0, lambda: [

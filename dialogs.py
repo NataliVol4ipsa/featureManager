@@ -165,6 +165,56 @@ def ask_branch_name(parent, title="Create feature branch", prefix="feature/",
     return result["name"]
 
 
+def show_report(parent, report_text, title="Report"):
+    """Modal showing *report_text* in a wide, read-only scrollable text field.
+
+    A Copy button places the full report on the clipboard. The window is made
+    wide so long NuGet package names fit without wrapping.
+    """
+    dialog = tk.Toplevel(parent)
+    dialog.title(title)
+    dialog.transient(parent.winfo_toplevel())
+    dialog.geometry("820x560")
+    dialog.minsize(560, 320)
+
+    body = ttk.Frame(dialog)
+    body.pack(fill="both", expand=True, padx=12, pady=(12, 6))
+
+    text = tk.Text(body, wrap="none", font=("Consolas", 9),
+                   background=theme.BG_INPUT, foreground=theme.FG,
+                   insertbackground=theme.FG, borderwidth=1, relief="solid",
+                   highlightthickness=0)
+    yscroll = ttk.Scrollbar(body, orient="vertical", command=text.yview)
+    xscroll = ttk.Scrollbar(body, orient="horizontal", command=text.xview)
+    text.configure(yscrollcommand=yscroll.set, xscrollcommand=xscroll.set)
+    text.grid(row=0, column=0, sticky="nsew")
+    yscroll.grid(row=0, column=1, sticky="ns")
+    xscroll.grid(row=1, column=0, sticky="ew")
+    body.rowconfigure(0, weight=1)
+    body.columnconfigure(0, weight=1)
+
+    text.insert("1.0", report_text)
+    text.config(state="disabled")
+
+    bar = ttk.Frame(dialog)
+    bar.pack(fill="x", padx=12, pady=(0, 12))
+
+    copy_button = ttk.Button(bar, text="Copy")
+
+    def _copy():
+        dialog.clipboard_clear()
+        dialog.clipboard_append(report_text)
+        copy_button.config(text="Copied!")
+
+    copy_button.config(command=_copy)
+    copy_button.pack(side="left")
+    ttk.Button(bar, text="Close", command=dialog.destroy).pack(side="right")
+
+    _center_over_parent(dialog, parent)
+    dialog.grab_set()
+    parent.wait_window(dialog)
+
+
 def ask_commit_message(parent, repo_count, branch_warning=None):
     """Modal asking for a commit message applied to every selected repo.
 
