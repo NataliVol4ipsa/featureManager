@@ -1345,17 +1345,53 @@ def complete_ado_pr(name, path, target="master", merge_strategy="noFastForward",
     if not ok:
         return False, f"{name}: pull request completion failed {result}", ""
 
-    # ADO may queue the merge asynchronously; a non-completed status here means
-    # the merge is still pending (e.g. running policies) rather than done.
+    # ADO processes the merge asynchronously: the completion PATCH usually
+    # returns while status is still "active" and mergeStatus "queued". That is
+    # not a second merge - it is the same one being applied. Poll the PR until
+    # the merge finishes so a queued merge that succeeds is reported as done,
+    # and only a real conflict/failure/rejection surfaces as an error.
     status = result.get("status")
     if status and status != "completed":
-        merge_status = result.get("mergeStatus") or "queued"
-        notes.append(f"merge {status} (mergeStatus: {merge_status})")
-        return True, web_url, f"{name}: {', '.join(notes)}; check the PR"
+        status, merge_status = _await_pr_merge(pr_url, auth)
+        if status == "completed":
+            pass  # fall through to the success return below
+        elif merge_status in ("conflicts", "failure", "rejectedByPolicy"):
+            return (
+                False,
+                f"{name}: merge {merge_status}; resolve it in the PR",
+                "",
+            )
+        else:
+            # Still queued after polling - not an error, just not confirmed yet.
+            notes.append("merge queued")
+            return True, web_url, f"{name}: {', '.join(notes)}; check the PR"
 
     if notes:
         return True, web_url, f"{name}: {', '.join(notes)}, then completed"
     return True, web_url, ""
+
+
+def _await_pr_merge(pr_url, auth, attempts=8, delay=1.5):
+    """Poll a completing PR until its merge settles. Returns (status, mergeStatus).
+
+    ADO applies the merge asynchronously after the completion PATCH, so the PR
+    briefly stays ``active`` with ``mergeStatus`` ``queued``. This re-reads the
+    PR a few times until it reports ``completed`` (or an abandoned/failed merge)
+    rather than treating the transient queued state as an error.
+    """
+    status, merge_status = "active", "queued"
+    for _ in range(attempts):
+        ok, data = _ado_get_json(pr_url, auth)
+        if not ok:
+            break
+        status = data.get("status") or status
+        merge_status = data.get("mergeStatus") or merge_status
+        if status == "completed" or status == "abandoned":
+            break
+        if merge_status in ("conflicts", "failure", "rejectedByPolicy"):
+            break
+        time.sleep(delay)
+    return status, merge_status
 
 
 

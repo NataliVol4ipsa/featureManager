@@ -16,6 +16,7 @@ from gitutils import (
     workspace_branch_entries, save_branch_overrides, IGNORE_GIT_KEY,
     SAVEPOS_MSG,
 )
+from parallel import run_in_parallel
 from widgets import WorkspaceList, Tooltip
 from tab_base import ActionTabBase
 from dialogs import (
@@ -466,19 +467,27 @@ class WorkspacesTab(ActionTabBase):
         # Split into repos we can switch and ones we skip. Workspaces often
         # bundle a docs folder (not a git repo) or repos where the feature
         # branch was only created in some services. Rather than abort the whole
-        # batch, we switch what we can and mark the rest "skipped".
-        skip_reasons = {}
-        switchable = []
-        for name, path in all_repos:
+        # batch, we switch what we can and mark the rest "skipped". The branch
+        # existence check spawns a git subprocess per repo, so fan it out.
+        def _classify(repo):
+            name, path = repo
             target = branch_of[name]
             if ignore_flag[name]:
-                skip_reasons[name] = "ignore git (keeps its own branch)"
-            elif not is_git_repo(path):
-                skip_reasons[name] = "not a git repository"
-            elif not git_branch_exists(path, target):
-                skip_reasons[name] = f"branch '{target}' does not exist"
-            else:
+                return "ignore git (keeps its own branch)"
+            if not is_git_repo(path):
+                return "not a git repository"
+            if not git_branch_exists(path, target):
+                return f"branch '{target}' does not exist"
+            return None
+
+        reasons = run_in_parallel(all_repos, _classify)
+        skip_reasons = {}
+        switchable = []
+        for (name, path), reason in zip(all_repos, reasons):
+            if reason is None:
                 switchable.append((name, path))
+            else:
+                skip_reasons[name] = reason
 
         # Mark skipped rows upfront so the user sees them before the modal.
         for name, reason in skip_reasons.items():

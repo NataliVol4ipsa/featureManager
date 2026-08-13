@@ -465,7 +465,7 @@ def ask_complete_pr_details(parent, repo_count):
     ).pack(padx=16, pady=(16, 8), anchor="w")
 
     tk.Label(dialog, text="Merge strategy:").pack(padx=16, anchor="w")
-    strategy = tk.StringVar(value="noFastForward")
+    strategy = tk.StringVar(value="squash")
     for text, value in _MERGE_STRATEGY_LABELS:
         ttk.Radiobutton(
             dialog, text=text, variable=strategy, value=value,
@@ -477,7 +477,7 @@ def ask_complete_pr_details(parent, repo_count):
         text="Delete source branch after merging",
     ).pack(padx=16, pady=(8, 0), anchor="w")
 
-    transition = tk.BooleanVar(value=True)
+    transition = tk.BooleanVar(value=False)
     ttk.Checkbutton(
         dialog, variable=transition,
         text="Complete linked work items after merging",

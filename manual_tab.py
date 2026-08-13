@@ -296,6 +296,7 @@ class ManualTab(ActionTabBase):
             repos,
             lambda n, p: self._checkout_and_pull(n, p, decisions.get(n)),
             "All repositories updated successfully.",
+            parallel=True,
         )
 
     def _checkout_and_pull(self, name, path, decision):
