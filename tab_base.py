@@ -154,12 +154,12 @@ class ActionTabBase(ttk.Frame):
         return decisions
 
     def commit_all_changes(self, repos):
-        """Commit all changes in *repos* with a single user-supplied message.
+        """Commit all changes in *repos* with user-supplied per-repo messages.
 
         Shows the Details table for the repos, warns if the selected repos are
-        not all on the same branch, asks for a commit message, then commits each
-        repo on a background thread. Repos that are clean or not git repos are
-        reported as errors during the run.
+        not all on the same branch, asks for shared and per-repo messages, then
+        commits each included repo on a background thread. Repos that are clean
+        or not git repos are reported as errors during the run.
         """
         self.errors.clear()
         if not repos:
@@ -181,14 +181,18 @@ class ActionTabBase(ttk.Frame):
                 "The selected repositories are not all on the same branch."
             )
 
-        message = ask_commit_message(self, len(repos), branch_warning=warning)
-        if not message:
+        messages = ask_commit_message(self, repos, branch_warning=warning)
+        if not messages:
             return
 
+        repos_to_commit = [
+            (name, path) for name, path in repos if name in messages
+        ]
+
         self.run_repo_action(
-            repos,
-            lambda n, p: commit_all(n, p, message),
-            "All changes committed successfully.",
+            repos_to_commit,
+            lambda n, p: commit_all(n, p, messages[n]),
+            "Changes committed successfully.",
             parallel=True,
         )
 
@@ -930,6 +934,10 @@ class ActionTabBase(ttk.Frame):
         if not is_git_repo(path):
             return "", f"{name}: not a git repository"
         branch = git_current_branch(path)
+        if not branch:
+            return "", f"{name}: not on a branch (detached HEAD)"
+        if not remote_branch_exists(path, branch):
+            return "", f"{name}: remote branch '{branch}' does not exist on origin"
         url = git_branch_url(path, branch)
         if not url:
             return "", f"{name}: could not resolve the remote URL for '{branch}'"
@@ -950,11 +958,15 @@ class ActionTabBase(ttk.Frame):
         slow) and the browser is opened back on the UI thread. *busy_msg* is
         shown on the completion banner while the lookup runs.
         """
-        self.show_repos_async(repos, with_status=False)
+        self.show_repos_async(repos, with_status=True)
         self.progress.show_completion(busy_msg)
 
         def _work():
-            results = [(name, *url_fn(name, path)) for name, path in repos]
+            def _resolve(repo):
+                name, path = repo
+                return name, *url_fn(name, path)
+
+            results = run_in_parallel(repos, _resolve)
             self.after(0, self._on_urls_resolved, results, what)
 
         threading.Thread(target=_work, daemon=True).start()
@@ -965,9 +977,11 @@ class ActionTabBase(ttk.Frame):
         opened = 0
         for name, url, error in results:
             if url:
+                self.progress.status(name, "done")
                 webbrowser.open(url, new=2)
                 opened += 1
             elif error:
+                self.progress.status(name, "error", tooltip=error)
                 self.errors.add(error)
         if opened:
             self.progress.show_completion(

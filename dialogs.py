@@ -215,12 +215,13 @@ def show_report(parent, report_text, title="Report"):
     parent.wait_window(dialog)
 
 
-def ask_commit_message(parent, repo_count, branch_warning=None):
-    """Modal asking for a commit message applied to every selected repo.
+def ask_commit_message(parent, repos, branch_warning=None):
+    """Collect a shared and optional per-repository commit message.
 
-    *repo_count* is shown for context. *branch_warning*, if given, is shown as a
-    red warning (e.g. when the repos are not all on the same branch). Returns the
-    entered message, or None if cancelled.
+    *repos* is a list of ``(name, path)`` pairs. The shared message updates all
+    included rows. Once included rows differ, the shared field is disabled until
+    their messages match again. Returns ``{repo_name: message}`` for included
+    repositories, or None if cancelled.
     """
     dialog = tk.Toplevel(parent)
     dialog.title("Commit all changes")
@@ -229,8 +230,8 @@ def ask_commit_message(parent, repo_count, branch_warning=None):
 
     tk.Label(
         dialog,
-        text=f"Commit all changes in {repo_count} selected "
-             f"{'repository' if repo_count == 1 else 'repositories'}.",
+        text=f"Commit changes in {len(repos)} selected "
+             f"{'repository' if len(repos) == 1 else 'repositories'}.",
         justify="left",
     ).pack(padx=16, pady=(16, 4), anchor="w")
 
@@ -243,26 +244,105 @@ def ask_commit_message(parent, repo_count, branch_warning=None):
         tk.Label(warn, text=branch_warning, foreground=theme.ERROR,
                  justify="left", wraplength=360).pack(side="left")
 
-    tk.Label(dialog, text="Commit message:").pack(padx=16, anchor="w")
-    entry = ttk.Entry(dialog, width=44)
-    entry.pack(padx=16, pady=(0, 4), fill="x")
-    entry.focus_set()
+    tk.Label(dialog, text="Shared commit message:").pack(padx=16, anchor="w")
+    shared_var = tk.StringVar()
+    shared_entry = ttk.Entry(dialog, textvariable=shared_var, width=52)
+    shared_entry.pack(padx=16, pady=(0, 8), fill="x")
+    shared_entry.focus_set()
+
+    body = ttk.Frame(dialog)
+    body.pack(padx=16, fill="x")
+    body.columnconfigure(0, minsize=260)
+    ttk.Label(body, text="Repository", font=("", 9, "bold")).grid(
+        row=0, column=0, sticky="w", padx=4, pady=(0, 4)
+    )
+    ttk.Label(body, text="Commit message", font=("", 9, "bold")).grid(
+        row=0, column=1, sticky="w", padx=4, pady=(0, 4)
+    )
+    ttk.Label(body, text="Exclude", font=("", 9, "bold")).grid(
+        row=0, column=2, sticky="w", padx=4, pady=(0, 4)
+    )
+
+    message_vars, exclude_vars = {}, {}
+    syncing = {"value": False}
+
+    def _included_messages():
+        return [
+            message_vars[name].get()
+            for name, _path in repos
+            if not exclude_vars[name].get()
+        ]
+
+    def _refresh_shared():
+        messages = _included_messages()
+        matching = bool(messages) and len(set(messages)) == 1
+        shared_entry.configure(state="normal" if matching else "disabled")
+        if matching and shared_var.get() != messages[0]:
+            syncing["value"] = True
+            shared_var.set(messages[0])
+            syncing["value"] = False
+
+    def _apply_shared(*_args):
+        if syncing["value"]:
+            return
+        syncing["value"] = True
+        for name, _path in repos:
+            if not exclude_vars[name].get():
+                message_vars[name].set(shared_var.get())
+        syncing["value"] = False
+        _refresh_shared()
+
+    def _message_changed(*_args):
+        if not syncing["value"]:
+            _refresh_shared()
+
+    for index, (name, _path) in enumerate(repos, start=1):
+        ttk.Label(body, text=name, justify="left").grid(
+            row=index, column=0, sticky="w", padx=4, pady=2
+        )
+        message_var = tk.StringVar()
+        message_var.trace_add("write", _message_changed)
+        entry = ttk.Entry(body, textvariable=message_var, width=34)
+        entry.grid(row=index, column=1, sticky="w", padx=4, pady=2)
+        exclude_var = tk.BooleanVar(value=False)
+
+        def _toggle(repo=name, field=entry):
+            field.configure(
+                state="disabled" if exclude_vars[repo].get() else "normal"
+            )
+            _refresh_shared()
+
+        ttk.Checkbutton(body, variable=exclude_var, command=_toggle).grid(
+            row=index, column=2, padx=4, pady=2
+        )
+        message_vars[name] = message_var
+        exclude_vars[name] = exclude_var
+
+    shared_var.trace_add("write", _apply_shared)
 
     error_label = tk.Label(dialog, text="", foreground=theme.ERROR)
     error_label.pack(padx=16, anchor="w")
 
-    result = {"message": None}
+    result = {"messages": None}
 
     def _ok():
-        message = entry.get().strip()
-        if not message:
-            error_label.config(text="Commit message is required.")
+        messages = {}
+        for name, _path in repos:
+            if exclude_vars[name].get():
+                continue
+            message = message_vars[name].get().strip()
+            if not message:
+                error_label.config(text=f"{name}: a commit message is required.")
+                return
+            messages[name] = message
+        if not messages:
+            error_label.config(text="Select at least one repository to commit.")
             return
-        result["message"] = message
+        result["messages"] = messages
         dialog.destroy()
 
     def _cancel():
-        result["message"] = None
+        result["messages"] = None
         dialog.destroy()
 
     bar = ttk.Frame(dialog)
@@ -270,12 +350,12 @@ def ask_commit_message(parent, repo_count, branch_warning=None):
     ttk.Button(bar, text="Commit", command=_ok).pack(side="left", padx=4)
     ttk.Button(bar, text="Cancel", command=_cancel).pack(side="left", padx=4)
 
-    entry.bind("<Return>", lambda _e: _ok())
+    dialog.bind("<Return>", lambda _e: _ok())
     dialog.protocol("WM_DELETE_WINDOW", _cancel)
     _center_over_parent(dialog, parent)
     dialog.grab_set()
     parent.wait_window(dialog)
-    return result["message"]
+    return result["messages"]
 
 
 def ask_branch_warning(parent, repo_count, title="Push all changes",
