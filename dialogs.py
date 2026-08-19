@@ -108,6 +108,79 @@ def ask_change_decision(parent, name, options, on_master=False, note=None):
     return choice["value"]
 
 
+def ask_interrupted_operation_decision(parent, name, operation,
+                                       staged_count, unstaged_count):
+    """Per-repo modal warning about an in-progress rebase or merge.
+
+    *operation* is "rebase" or "merge". Shows how many staged and unstaged files
+    the repo currently has and lets the user either abort the whole operation
+    (returns None, so callers cancel the batch) or abort the rebase/merge
+    (returns "abort_git"), which discards all staged and unstaged changes.
+    Closing the window is treated as aborting the whole operation.
+    """
+    dialog = tk.Toplevel(parent)
+    dialog.title(f"{operation.capitalize()} in progress - {name}")
+    dialog.transient(parent.winfo_toplevel())
+    dialog.resizable(False, False)
+
+    text = ttk.Frame(dialog)
+    text.pack(padx=16, pady=12, anchor="w")
+
+    line = ttk.Frame(text)
+    line.pack(anchor="w")
+    tk.Label(line, text="Repository ").pack(side="left")
+    tk.Label(line, text=name, font=("", 9, "bold")).pack(side="left")
+    tk.Label(line, text=f" has an unfinished {operation} in progress.").pack(
+        side="left"
+    )
+
+    # Warning that aborting the rebase/merge throws away the working changes.
+    warn = ttk.Frame(text)
+    warn.pack(anchor="w", pady=(8, 0))
+    tk.Label(warn, text="\u26A0", foreground=theme.ERROR,
+             font=("", 11, "bold")).pack(side="left", padx=(0, 4))
+    tk.Label(
+        warn,
+        text=(f"Aborting the {operation} discards ALL staged and unstaged "
+              f"changes in this repository."),
+        foreground=theme.ERROR, justify="left", wraplength=360,
+    ).pack(side="left")
+
+    # Show the current staged / unstaged counts so the user knows what is at risk.
+    counts = ttk.Frame(text)
+    counts.pack(anchor="w", pady=(8, 0))
+    tk.Label(counts, text="Uncommitted work: ").pack(side="left")
+    tk.Label(counts, text=f"{staged_count} staged",
+             font=("", 9, "bold")).pack(side="left")
+    tk.Label(counts, text=", ").pack(side="left")
+    tk.Label(counts, text=f"{unstaged_count} unstaged",
+             font=("", 9, "bold")).pack(side="left")
+    tk.Label(counts, text=" file(s).").pack(side="left")
+
+    tk.Label(text, text="What would you like to do?").pack(
+        anchor="w", pady=(8, 0)
+    )
+
+    choice = {"value": None}
+
+    def _set(value):
+        choice["value"] = value
+        dialog.destroy()
+
+    bar = ttk.Frame(dialog)
+    bar.pack(padx=16, pady=(0, 12))
+    ttk.Button(bar, text="Abort operation",
+               command=lambda: _set(None)).pack(side="left", padx=4)
+    ttk.Button(bar, text=f"Abort {operation} (discard changes)",
+               command=lambda: _set("abort_git")).pack(side="left", padx=4)
+
+    dialog.protocol("WM_DELETE_WINDOW", lambda: _set(None))
+    _center_over_parent(dialog, parent)
+    dialog.grab_set()
+    parent.wait_window(dialog)
+    return choice["value"]
+
+
 def ask_branch_name(parent, title="Create feature branch", prefix="feature/",
                     initial=""):
     """Modal with a fixed *prefix* label and a required, validated name field.

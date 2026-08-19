@@ -516,6 +516,66 @@ def git_rebase_in_progress(repo_path):
     )
 
 
+def git_merge_in_progress(repo_path):
+    """Return True if an unfinished (e.g. conflicted) merge exists in the repo."""
+    return os.path.isfile(os.path.join(repo_path, ".git", "MERGE_HEAD"))
+
+
+def git_interrupted_operation(repo_path):
+    """Return "rebase", "merge" or None depending on any unfinished git operation.
+
+    A rebase or merge left mid-way (usually because of conflicts) blocks every
+    other git action, so callers must resolve it before proceeding.
+    """
+    if git_rebase_in_progress(repo_path):
+        return "rebase"
+    if git_merge_in_progress(repo_path):
+        return "merge"
+    return None
+
+
+def git_change_counts(repo_path):
+    """Return the (staged, unstaged) file counts from the working tree.
+
+    Untracked files count as unstaged. A file that is both staged and modified
+    counts in each total. Returns (0, 0) if the status cannot be read.
+    """
+    ok, out = run_git(repo_path, ["status", "--porcelain"])
+    if not ok:
+        return 0, 0
+    staged = unstaged = 0
+    for line in out.splitlines():
+        if len(line) < 2:
+            continue
+        index_status, worktree_status = line[0], line[1]
+        if index_status not in (" ", "?"):
+            staged += 1
+        if worktree_status != " ":
+            unstaged += 1
+    return staged, unstaged
+
+
+def abort_interrupted_operation(repo_path):
+    """Abort an in-progress rebase or merge, discarding all uncommitted changes.
+
+    Returns (ok, output). Also runs a hard reset + clean so no staged, unstaged
+    or untracked leftovers from the aborted operation remain.
+    """
+    operation = git_interrupted_operation(repo_path)
+    if operation == "rebase":
+        ok, out = run_git(repo_path, ["rebase", "--abort"])
+    elif operation == "merge":
+        ok, out = run_git(repo_path, ["merge", "--abort"])
+    else:
+        return True, ""
+    if not ok:
+        return False, out
+    # Discard anything the abort left behind (staged/unstaged/untracked).
+    run_git(repo_path, ["reset", "--hard"])
+    run_git(repo_path, ["clean", "-fd"])
+    return True, ""
+
+
 def git_branch_exists(repo_path, branch):
     """Return True if a local branch named *branch* exists."""
     ok, _ = run_git(

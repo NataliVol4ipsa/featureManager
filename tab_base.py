@@ -15,11 +15,12 @@ from gitutils import (
     git_branch_is_empty, open_in_terminal_tabs, get_ado_pr_url,
     remote_branch_exists, ado_work_item_id_from_branch, complete_ado_pr,
     ado_host_for_path, check_ado_connectivity, git_last_commit,
+    git_interrupted_operation, git_change_counts, abort_interrupted_operation,
 )
 from dialogs import (
     ask_change_decision, ask_commit_message, ask_branch_warning, ask_pr_details,
     ask_missing_remote_branches, ask_acc_autoapprove, ask_deploy_selection,
-    ask_complete_pr_details,
+    ask_complete_pr_details, ask_interrupted_operation_decision,
 )
 from pipelines import (
     run_pipeline_for_repo_details,
@@ -88,6 +89,38 @@ class ActionTabBase(ttk.Frame):
         self.progress.pack(fill="both", expand=True, padx=4, pady=4)
 
     # -- Shared uncommitted-changes handling ------------------------------- #
+    def _resolve_interrupted_operations(self, repos):
+        """Handle any in-progress rebase/merge in *repos* before other git work.
+
+        Scans every repo (concurrently) for an unfinished rebase or merge. For
+        each one found, a modal warns the user and offers to abort the whole
+        operation or abort the rebase/merge (discarding all staged/unstaged
+        changes). Returns True to continue, or False if the user aborts/closes a
+        modal, or an abort fails (the error is recorded).
+        """
+        def _scan(repo):
+            _name, path = repo
+            if not is_git_repo(path):
+                return None
+            return git_interrupted_operation(path)
+
+        operations = run_in_parallel(repos, _scan)
+
+        for (name, path), operation in zip(repos, operations):
+            if operation is None:
+                continue
+            staged, unstaged = git_change_counts(path)
+            decision = ask_interrupted_operation_decision(
+                self, name, operation, staged, unstaged
+            )
+            if decision is None:
+                return False
+            ok, out = abort_interrupted_operation(path)
+            if not ok:
+                self.errors.add(f"{name}: could not abort {operation}: {out}")
+                return False
+        return True
+
     def collect_change_decisions(self, repos, allow_move=False, skip_branch=None,
                                  restore_option=False, note=None):
         """Ask, per repo, what to do with its uncommitted changes.
@@ -109,6 +142,12 @@ class ActionTabBase(ttk.Frame):
         later applied, the change set is committed preserving its staged/unstaged
         split so it can be restored.
         """
+        # An unfinished rebase or merge blocks every other git action, so deal
+        # with those first. The user either aborts the whole batch or aborts the
+        # rebase/merge (discarding all changes) so the repo becomes actionable.
+        if not self._resolve_interrupted_operations(repos):
+            return None
+
         # Read every repo's git status concurrently (the slow part); a repo that
         # needs a prompt yields its current branch, all others yield None. The
         # modals themselves stay on the UI thread, asked sequentially below.
