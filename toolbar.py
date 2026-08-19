@@ -24,6 +24,7 @@ _image_cache = {}
 # get downscaled; Lucide action icons are already rendered at final size.
 _SUBSAMPLE = {
     "Open in Git Bash tabs": 4,
+    "Open solutions in Visual Studio": 4,
 }
 
 

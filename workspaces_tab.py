@@ -12,7 +12,7 @@ from gitutils import (
     run_git, is_git_repo, git_branch_exists,
     save_uncommitted, has_savepos, restore_uncommitted,
     git_current_branch, create_feature_branch, rebase_on_master,
-    open_in_vscode, get_nuget_folders,
+    open_in_vscode, open_in_visual_studio, get_nuget_folders,
     workspace_branch_entries, save_branch_overrides, IGNORE_GIT_KEY,
     SAVEPOS_MSG,
 )
@@ -346,6 +346,16 @@ class WorkspacesTab(ActionTabBase):
                 "Opens the selected feature workspace (its .code-workspace file) "
                 "in VS Code, so every repository of the workspace loads in one "
                 "window.",
+            ),
+            (
+                "Open solutions in Visual Studio",
+                self._action_open_visual_studio,
+                "For the selected workspace's repositories: opens every Visual "
+                "Studio solution (.sln) in Visual Studio. Because Visual Studio "
+                "opens one solution per window, each solution is launched in its "
+                "own instance - including every sub-solution of a multi-"
+                "repository repo (e.g. InvestableUniverseCreation). Repos with no "
+                ".sln are skipped.",
             ),
             (
                 "Open in Git Bash tabs",
@@ -765,6 +775,19 @@ class WorkspacesTab(ActionTabBase):
             return
         path = os.path.join(WORKSPACES_ROOT, f"{workspace}.code-workspace")
         ok, message = open_in_vscode(path)
+        if not ok:
+            self.errors.add(message)
+
+    # -- Open solutions in Visual Studio ----------------------------------- #
+    def _action_open_visual_studio(self):
+        """Open every .sln of the selected workspace's repos in Visual Studio."""
+        ok, workspace, repos = self._selected_repos()
+        self.errors.clear()
+        if not ok:
+            if workspace is not None:
+                self.errors.add(repos)
+            return
+        ok, message = open_in_visual_studio(repos)
         if not ok:
             self.errors.add(message)
 

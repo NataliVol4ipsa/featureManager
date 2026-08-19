@@ -382,6 +382,69 @@ def open_in_vscode(path):
         return False, f"could not open VS Code: {exc}"
 
 
+def _find_devenv():
+    """Locate ``devenv.exe`` (the Visual Studio IDE) via vswhere, or None.
+
+    vswhere ships with every VS installer under Program Files (x86); asking it
+    for the latest install's ``productPath`` yields the devenv.exe to launch.
+    """
+    program_files_x86 = (
+        os.environ.get("ProgramFiles(x86)")
+        or os.environ.get("ProgramFiles", "")
+    )
+    vswhere = os.path.join(
+        program_files_x86, "Microsoft Visual Studio", "Installer", "vswhere.exe"
+    )
+    if not os.path.isfile(vswhere):
+        return None
+    try:
+        result = subprocess.run(
+            [vswhere, "-latest", "-prerelease", "-property", "productPath"],
+            capture_output=True, text=True, creationflags=NO_WINDOW,
+        )
+    except OSError:
+        return None
+    for line in result.stdout.splitlines():
+        candidate = line.strip()
+        if candidate and os.path.isfile(candidate):
+            return candidate
+    return None
+
+
+def open_in_visual_studio(repos):
+    """Open every ``.sln`` of each repo in a Visual Studio instance.
+
+    Visual Studio opens one solution per window, so each solution is launched
+    separately: the root ``.sln`` for a single-repository layout, or every
+    sub-solution ``.sln`` for a multi-repository repo (e.g.
+    ``InvestableUniverseCreation``). Launches ``devenv.exe`` per solution when it
+    can be located (so each solution gets its own instance); otherwise falls back
+    to the ``.sln`` file association via ``os.startfile``. *repos* is a list of
+    (name, path) pairs. Returns (ok, error_message).
+    """
+    import packages
+
+    solutions = []
+    for _, path in repos:
+        solutions.extend(packages.find_all_solution_files(path))
+    if not solutions:
+        return False, "no .sln found in the selected repositories"
+
+    devenv = _find_devenv()
+    startfile = getattr(os, "startfile", None)
+    if devenv is None and startfile is None:
+        return False, "Visual Studio (devenv.exe) not found"
+    try:
+        for sln in solutions:
+            if devenv is not None:
+                subprocess.Popen([devenv, sln], creationflags=NO_WINDOW)
+            else:
+                startfile(sln)
+        return True, ""
+    except OSError as exc:
+        return False, f"could not open Visual Studio: {exc}"
+
+
 # --------------------------------------------------------------------------- #
 # Core git runner
 # --------------------------------------------------------------------------- #

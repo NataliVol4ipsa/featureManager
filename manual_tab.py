@@ -7,7 +7,8 @@ from config import REPOS_ROOT, NUGETS_ROOT
 from gitutils import (
     get_service_folders, get_nuget_folders, write_workspace,
     run_git, is_git_repo, git_current_branch, git_has_changes,
-    save_uncommitted, create_feature_branch, rebase_on_master, SAVEPOS_MSG,
+    save_uncommitted, create_feature_branch, rebase_on_master,
+    open_in_visual_studio, SAVEPOS_MSG,
 )
 from widgets import FolderTab
 from tab_base import ActionTabBase
@@ -241,6 +242,15 @@ class ManualTab(ActionTabBase):
     def _open_actions(self):
         return [
             (
+                "Open solutions in Visual Studio",
+                self._action_open_visual_studio,
+                "For every selected repository: opens each Visual Studio solution "
+                "(.sln) in Visual Studio. Because Visual Studio opens one solution "
+                "per window, each solution is launched in its own instance - "
+                "including every sub-solution of a multi-repository repo (e.g. "
+                "InvestableUniverseCreation). Repos with no .sln are skipped.",
+            ),
+            (
                 "Open in Git Bash tabs",
                 self._action_open_terminals,
                 "For every selected repository: opens a Git Bash session in a "
@@ -425,6 +435,16 @@ class ManualTab(ActionTabBase):
     # -- Open in Git Bash tabs --------------------------------------------- #
     def _action_open_terminals(self):
         self.open_terminals(self._all_selected_repos())
+
+    # -- Open solutions in Visual Studio ----------------------------------- #
+    def _action_open_visual_studio(self):
+        self.errors.clear()
+        repos = self._all_selected_repos()
+        if not repos:
+            return
+        ok, message = open_in_visual_studio(repos)
+        if not ok:
+            self.errors.add(message)
 
     # -- Copy PR links ----------------------------------------------------- #
     def _action_copy_pr_links(self):

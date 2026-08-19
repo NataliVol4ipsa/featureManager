@@ -18,6 +18,7 @@ data = json.load(open(os.path.join(HERE, "_icons.json"), encoding="utf-8"))
 _src = getattr(cur, "ACTION_ICON_DARK", None) or cur.ACTION_ICON_B64
 logos = [
     ("Open workspace in VS Code", _src["Open workspace in VS Code"]),
+    ("Open solutions in Visual Studio", _src["Open solutions in Visual Studio"]),
     ("Open in Git Bash tabs", _src["Open in Git Bash tabs"]),
 ]
 
