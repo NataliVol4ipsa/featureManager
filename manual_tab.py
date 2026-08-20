@@ -8,11 +8,11 @@ from gitutils import (
     get_service_folders, get_nuget_folders, write_workspace,
     run_git, is_git_repo, git_current_branch, git_has_changes,
     save_uncommitted, create_feature_branch, rebase_on_master,
-    open_in_visual_studio, SAVEPOS_MSG,
+    list_solutions, open_solutions, SAVEPOS_MSG,
 )
 from widgets import FolderTab
 from tab_base import ActionTabBase
-from dialogs import ask_branch_name
+from dialogs import ask_branch_name, ask_solutions_to_open
 
 # Base message for the rebase savepos commits (see gitutils.save_uncommitted).
 REBASE_SAVE_MSG = "save changes before rebase"
@@ -442,9 +442,26 @@ class ManualTab(ActionTabBase):
         repos = self._all_selected_repos()
         if not repos:
             return
-        ok, message = open_in_visual_studio(repos)
+        solutions = self._choose_solutions(repos)
+        if not solutions:
+            return
+        ok, message = open_solutions(solutions)
         if not ok:
             self.errors.add(message)
+
+    def _choose_solutions(self, repos):
+        """Resolve which .sln paths to open, prompting when there is more than one.
+
+        Returns the selected paths, or None when nothing should be opened (no
+        solutions found, or the user cancelled the selection modal).
+        """
+        entries = list_solutions(repos)
+        if not entries:
+            self.errors.add("no .sln found in the selected repositories")
+            return None
+        if len(entries) == 1:
+            return [entries[0][1]]
+        return ask_solutions_to_open(self, entries)
 
     # -- Copy PR links ----------------------------------------------------- #
     def _action_copy_pr_links(self):

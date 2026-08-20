@@ -1258,6 +1258,78 @@ def ask_include_skipped(parent, action_label, names):
     return result["value"]
 
 
+def ask_solutions_to_open(parent, entries):
+    """Modal to choose which solutions to open in Visual Studio.
+
+    *entries* is a list of ``(repo_name, sln_path)`` pairs - either several repos
+    or the sub-solutions of a single multi-repository repo. Each solution gets an
+    "Open" checkbox (ticked by default), grouped and labelled by repo. Returns
+    the list of selected ``.sln`` paths on confirm, or ``None`` if cancelled.
+    """
+    import os
+
+    dialog = tk.Toplevel(parent)
+    dialog.title("Open solutions in Visual Studio")
+    dialog.transient(parent.winfo_toplevel())
+    dialog.resizable(False, False)
+
+    tk.Label(
+        dialog,
+        text="Select the solutions to open in Visual Studio. Each opens in its "
+             "own instance.",
+        justify="left", wraplength=460,
+    ).pack(padx=16, pady=(16, 8), anchor="w")
+
+    box = ttk.Frame(dialog)
+    box.pack(padx=16, fill="x")
+
+    checks = []  # (sln_path, var)
+    last_repo = None
+    for repo_name, sln in entries:
+        if repo_name != last_repo:
+            tk.Label(box, text=repo_name, font=("", 9, "bold")).pack(
+                anchor="w", pady=(6, 1)
+            )
+            last_repo = repo_name
+        var = tk.BooleanVar(value=True)
+        ttk.Checkbutton(
+            box, text=os.path.basename(sln), variable=var,
+        ).pack(anchor="w", padx=(16, 0), pady=1)
+        checks.append((sln, var))
+
+    def _set_all(value):
+        for _sln, var in checks:
+            var.set(value)
+
+    toggle_bar = ttk.Frame(dialog)
+    toggle_bar.pack(padx=16, pady=(8, 0), anchor="w")
+    ttk.Button(toggle_bar, text="Select all",
+               command=lambda: _set_all(True)).pack(side="left", padx=(0, 4))
+    ttk.Button(toggle_bar, text="Select none",
+               command=lambda: _set_all(False)).pack(side="left", padx=4)
+
+    result = {"value": None}
+
+    def _ok():
+        result["value"] = [sln for sln, var in checks if var.get()]
+        dialog.destroy()
+
+    def _cancel():
+        result["value"] = None
+        dialog.destroy()
+
+    bar = ttk.Frame(dialog)
+    bar.pack(padx=16, pady=12)
+    ttk.Button(bar, text="Open", command=_ok).pack(side="left", padx=4)
+    ttk.Button(bar, text="Cancel", command=_cancel).pack(side="left", padx=4)
+
+    dialog.protocol("WM_DELETE_WINDOW", _cancel)
+    _center_over_parent(dialog, parent)
+    dialog.grab_set()
+    parent.wait_window(dialog)
+    return result["value"]
+
+
 def ask_missing_remote_branches(parent, names, environment_label):
     """Modal warning that some repos have no remote feature branch.
 

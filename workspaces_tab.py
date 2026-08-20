@@ -12,7 +12,7 @@ from gitutils import (
     run_git, is_git_repo, git_branch_exists,
     save_uncommitted, has_savepos, restore_uncommitted,
     git_current_branch, create_feature_branch, rebase_on_master,
-    open_in_vscode, open_in_visual_studio, get_nuget_folders,
+    open_in_vscode, list_solutions, open_solutions, get_nuget_folders,
     workspace_branch_entries, save_branch_overrides, IGNORE_GIT_KEY,
     SAVEPOS_MSG,
 )
@@ -21,7 +21,7 @@ from widgets import WorkspaceList, Tooltip
 from tab_base import ActionTabBase
 from dialogs import (
     ask_branch_name, ask_pbi_number, resolve_pbi_repos, edit_branch_overrides,
-    ask_include_skipped, ask_workspace_branches,
+    ask_include_skipped, ask_workspace_branches, ask_solutions_to_open,
 )
 import pbi
 
@@ -787,7 +787,17 @@ class WorkspacesTab(ActionTabBase):
             if workspace is not None:
                 self.errors.add(repos)
             return
-        ok, message = open_in_visual_studio(repos)
+        entries = list_solutions(repos)
+        if not entries:
+            self.errors.add("no .sln found in the selected repositories")
+            return
+        if len(entries) == 1:
+            solutions = [entries[0][1]]
+        else:
+            solutions = ask_solutions_to_open(self, entries)
+        if not solutions:
+            return
+        ok, message = open_solutions(solutions)
         if not ok:
             self.errors.add(message)
 

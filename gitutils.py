@@ -411,24 +411,33 @@ def _find_devenv():
     return None
 
 
-def open_in_visual_studio(repos):
-    """Open every ``.sln`` of each repo in a Visual Studio instance.
+def list_solutions(repos):
+    """Return every openable ``.sln`` as ``(repo_name, sln_path)`` pairs.
 
-    Visual Studio opens one solution per window, so each solution is launched
-    separately: the root ``.sln`` for a single-repository layout, or every
-    sub-solution ``.sln`` for a multi-repository repo (e.g.
-    ``InvestableUniverseCreation``). Launches ``devenv.exe`` per solution when it
-    can be located (so each solution gets its own instance); otherwise falls back
-    to the ``.sln`` file association via ``os.startfile``. *repos* is a list of
-    (name, path) pairs. Returns (ok, error_message).
+    The root ``.sln`` for a single-repository layout, or every sub-solution
+    ``.sln`` for a multi-repository repo (e.g. ``InvestableUniverseCreation``).
+    *repos* is a list of (name, path) pairs. Pairs are returned so callers can
+    show which repo each solution belongs to.
     """
     import packages
 
-    solutions = []
-    for _, path in repos:
-        solutions.extend(packages.find_all_solution_files(path))
+    entries = []
+    for name, path in repos:
+        for sln in packages.find_all_solution_files(path):
+            entries.append((name, sln))
+    return entries
+
+
+def open_solutions(solutions):
+    """Open each ``.sln`` path in *solutions* in a Visual Studio instance.
+
+    Visual Studio opens one solution per window, so each solution is launched
+    separately. Launches ``devenv.exe`` per solution when it can be located (so
+    each solution gets its own instance); otherwise falls back to the ``.sln``
+    file association via ``os.startfile``. Returns (ok, error_message).
+    """
     if not solutions:
-        return False, "no .sln found in the selected repositories"
+        return False, "no .sln selected"
 
     devenv = _find_devenv()
     startfile = getattr(os, "startfile", None)
@@ -443,6 +452,18 @@ def open_in_visual_studio(repos):
         return True, ""
     except OSError as exc:
         return False, f"could not open Visual Studio: {exc}"
+
+
+def open_in_visual_studio(repos):
+    """Open every ``.sln`` of each repo in a Visual Studio instance.
+
+    Convenience wrapper that lists every solution of *repos* and opens them all.
+    *repos* is a list of (name, path) pairs. Returns (ok, error_message).
+    """
+    entries = list_solutions(repos)
+    if not entries:
+        return False, "no .sln found in the selected repositories"
+    return open_solutions([sln for _, sln in entries])
 
 
 # --------------------------------------------------------------------------- #
