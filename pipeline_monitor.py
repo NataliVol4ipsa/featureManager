@@ -18,6 +18,7 @@ from pipelines import (
     rerun_failed_stage,
     rerun_pipeline_from_latest_commit,
 )
+import pipeline_estimates
 
 
 # Amber "previous run" marker (Lucide undo-2), matching the toolbar icon style.
@@ -136,6 +137,7 @@ class PipelineMonitorWindow(tk.Toplevel):
         self._next_poll_token = None
         self._run_infos = dict(run_infos)
         self._show_autoapprove_controls = bool(show_autoapprove_controls)
+        self._estimates_enabled = bool(theme.load_pipeline_estimates_enabled())
         self._pbi_title = (pbi_title or "").strip()
         self._test_reports = list(test_reports or [])
         self._rows = {}
@@ -162,6 +164,9 @@ class PipelineMonitorWindow(tk.Toplevel):
         self.protocol("WM_DELETE_WINDOW", self._on_close)
         self.after_idle(self._fit_to_content)
         self.after(150, self._poll_once)
+        # Live-update the estimated time-left column once a second (no network).
+        if self._estimates_enabled:
+            self.after(1000, self._tick_estimates)
 
     def _fit_to_content(self):
         """Resize the window to exactly fit its content (capped to the screen)."""
@@ -340,7 +345,7 @@ class PipelineMonitorWindow(tk.Toplevel):
             if not self._show_autoapprove_controls:
                 rerun_button = ttk.Button(
                     self._inner,
-                    text="Run latest",
+                    text="Run new",
                     width=11,
                     command=lambda r=repo: self._rerun_from_latest(r),
                 )
@@ -352,6 +357,25 @@ class PipelineMonitorWindow(tk.Toplevel):
                     "the branch, using exactly the same parameters as this run. "
                     "This row then follows the new run.",
                 )
+
+            # Rightmost column: estimated total time left (excluding Production),
+            # shown only when the estimate feature is on.
+            estimate_label = None
+            estimate = None
+            if self._estimates_enabled:
+                estimate = pipeline_estimates.get_estimate(repo)
+                estimate_label = ttk.Label(
+                    self._inner, text="", foreground=theme.FG_MUTED, width=8,
+                )
+                estimate_label.grid(row=index, column=5, sticky="w",
+                                    padx=(10, 6), pady=0)
+                Tooltip(
+                    estimate_label,
+                    "Estimated total time left for this run, based on the "
+                    "average of the last successful master runs. This is an "
+                    "estimation and excludes Production.",
+                )
+                self._bind_pan_widget(estimate_label)
 
             self._rows[repo] = {
                 "graph": graph,
@@ -374,8 +398,13 @@ class PipelineMonitorWindow(tk.Toplevel):
                 "rewind_icon": rewind_icon,
                 "stage_progress": {},
                 "running_hitboxes": [],
+                "stage_times": {},
+                "estimate": estimate,
+                "estimate_label": estimate_label,
+                "environment": info.get("environment"),
             }
             self._draw_row(repo)
+            self._update_estimate_label(repo)
 
         self.after_idle(self._update_scrollregion_and_scrollbar)
 
@@ -692,6 +721,38 @@ class PipelineMonitorWindow(tk.Toplevel):
                 return key
         return None
 
+    def _update_estimate_label(self, repo):
+        """Refresh a row's estimated total time-left column (excludes Production)."""
+        row = self._rows.get(repo)
+        if not row:
+            return
+        label = row.get("estimate_label")
+        if label is None or not label.winfo_exists():
+            return
+        estimate = row.get("estimate")
+        if not estimate:
+            label.configure(text="")
+            return
+        total = pipeline_estimates.total_time_left(
+            estimate,
+            row.get("stages") or {},
+            row.get("stage_times") or {},
+            environment=row.get("environment"),
+            visible_stages=row.get("configured_stages"),
+        )
+        if total and total > 0:
+            label.configure(text="~" + pipeline_estimates.fmt_mmss(total))
+        else:
+            label.configure(text="")
+
+    def _tick_estimates(self):
+        """Re-render the estimated time-left columns once a second."""
+        if self._closed:
+            return
+        for repo in list(self._rows):
+            self._update_estimate_label(repo)
+        self.after(1000, self._tick_estimates)
+
     def _on_stage_motion(self, event, repo):
         """Show the rerun icon while hovering a failed stage circle."""
         row = self._rows.get(repo)
@@ -744,6 +805,19 @@ class PipelineMonitorWindow(tk.Toplevel):
         current = progress.get("current") or ""
         percent = progress.get("percent")
         text = f"{percent}% {current}".strip() if percent is not None else current
+        # Append the estimated time left for this stage (never for Production).
+        if self._estimates_enabled and key != "production":
+            estimate = row.get("estimate")
+            if estimate:
+                avg = (estimate.get("stages") or {}).get(key)
+                start = ((row.get("stage_times") or {}).get(key) or {}).get("start")
+                left = pipeline_estimates.stage_time_left(avg, "running", start)
+                if left is not None:
+                    extra = (
+                        "Est. time left: "
+                        + pipeline_estimates.fmt_mmss(left)
+                    )
+                    text = f"{text}\n{extra}" if text else extra
         if not text:
             return
         canvas = row["graph"]
@@ -937,6 +1011,9 @@ class PipelineMonitorWindow(tk.Toplevel):
                 self._rows[repo]["stage_progress"] = (
                     payload.get("stage_progress") or {}
                 )
+                self._rows[repo]["stage_times"] = (
+                    payload.get("stage_times") or {}
+                )
                 latest_timestamp = payload.get("updated_at", latest_timestamp)
                 if payload.get("autoapproved"):
                     target = payload.get("autoapproved_target")
@@ -959,6 +1036,7 @@ class PipelineMonitorWindow(tk.Toplevel):
                 if link_url:
                     link.bind("<Button-1>", lambda _e, u=link_url: webbrowser.open(u, new=2))
                 self._draw_row(repo)
+                self._update_estimate_label(repo)
             else:
                 any_error = True
                 self._rows[repo]["link"].configure(

@@ -34,6 +34,7 @@ from gitutils import (
     is_git_repo, git_remote_url, parse_ado_remote, get_git_credential,
     remote_branch_head,
 )
+from parallel import run_in_parallel
 
 
 # Standard EVC deployment-template parameter names, used when a repo's pipeline
@@ -564,6 +565,196 @@ def _build_stage_states(org, project, build_id, auth):
     return stages
 
 
+# --------------------------------------------------------------------------- #
+# Historical stage durations (for time-left estimates)
+# --------------------------------------------------------------------------- #
+
+def _parse_iso_utc(value):
+    """Return an aware UTC datetime for an ISO timestamp, or None.
+
+    Azure DevOps timeline timestamps are UTC (trailing ``Z`` or an explicit
+    offset). Normalising everything to UTC lets callers compare a remote stage
+    start against the local PC clock (``datetime.now(timezone.utc)``) regardless
+    of the machine's timezone.
+    """
+    if not value:
+        return None
+    iso = value
+    if iso.endswith("Z"):
+        iso = iso[:-1] + "+00:00"
+    try:
+        dt = datetime.datetime.fromisoformat(iso)
+    except ValueError:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=datetime.timezone.utc)
+    return dt.astimezone(datetime.timezone.utc)
+
+
+def _duration_seconds(start, finish):
+    """Return finish-start in seconds for two ISO timestamps, or None."""
+    start_dt = _parse_iso_utc(start)
+    finish_dt = _parse_iso_utc(finish)
+    if start_dt is None or finish_dt is None:
+        return None
+    return max(0.0, (finish_dt - start_dt).total_seconds())
+
+
+def _stage_timings_from_timeline(timeline):
+    """Return {stage_key: {"state","start","finish"}} from a build timeline."""
+    result = {}
+    for record in (timeline or {}).get("records") or []:
+        if (record.get("type") or "").lower() != "stage":
+            continue
+        key = _timeline_stage_key(record.get("name") or record.get("identifier"))
+        if not key:
+            continue
+        result[key] = {
+            "state": _timeline_state(record),
+            "start": record.get("startTime"),
+            "finish": record.get("finishTime"),
+        }
+    return result
+
+
+def _api_build_timeline_safe(org, project, build_id, auth):
+    """Return a build timeline, or {} on any lookup error (never raises)."""
+    try:
+        return _api_build_timeline(org, project, int(build_id), auth)
+    except (urllib.error.HTTPError, urllib.error.URLError, OSError,
+            ValueError, TypeError):
+        return {}
+
+
+# A repo that reached Azure DevOps but has no fully successful master run to
+# measure - a stable fact worth caching so it is not rescanned every refresh.
+_EMPTY_DURATIONS = {"stages": {}, "acc_parallel": False, "samples": 0}
+
+
+def get_master_stage_durations(name, path, count=15, scan=40):
+    """Return (ok, data_or_error) with average per-stage master run durations.
+
+    Collects the *count* most recent fully successful master runs of the repo's
+    deployment pipeline - a run where Build, Development, Acceptance and
+    Production all ran and succeeded - and averages each stage's wall-clock
+    duration (in seconds). Scheduled runs (e.g. the nightly Veracode scan) are
+    excluded so only real merge deployments are measured.
+
+    On success the data is::
+
+        {
+          "stages": {"build": s, "development": s, "acceptance": s, "production": s},
+          "acc_parallel": bool,   # Acceptance overlaps Development (vs. strictly after)
+          "samples": int,
+        }
+
+    A repo that definitively yields no estimate (not cloned, no ADO remote, no
+    deploy pipeline, or no fully successful runs) returns ``ok=True`` with an
+    empty ``stages`` and ``samples`` 0 so callers can cache the "nothing here"
+    answer and avoid rescanning it every time. Only transient problems (missing
+    credential, network/HTTP errors) return ``ok=False`` so they are retried.
+    """
+    # Stable "no estimate" facts about the repo: report empty so it is cached.
+    if not is_git_repo(path):
+        return True, dict(_EMPTY_DURATIONS)
+
+    parsed = parse_ado_remote(git_remote_url(path))
+    if not parsed:
+        return True, dict(_EMPTY_DURATIONS)
+    org, project, repo, host = parsed
+
+    # A missing credential is transient (VPN/PAT): keep it uncached to retry.
+    auth, err = _auth_for_host(host, org)
+    if err:
+        return False, f"{name}: {err}"
+
+    try:
+        repo_id = _resolve_repo_id(org, project, repo, auth)
+        if not repo_id:
+            return True, dict(_EMPTY_DURATIONS)
+        pipeline_id = _resolve_pipeline_id(org, project, repo_id, auth)
+        if not pipeline_id:
+            # No deploy pipeline (e.g. a plain NuGet repo): cache the empty result.
+            return True, dict(_EMPTY_DURATIONS)
+        query = urllib.parse.urlencode({
+            "definitions": str(pipeline_id),
+            "branchName": "refs/heads/master",
+            "statusFilter": "completed",
+            "resultFilter": "succeeded",
+            "queryOrder": "finishTimeDescending",
+            "$top": str(scan),
+            "api-version": "7.1",
+        })
+        url = (
+            f"https://dev.azure.com/{urllib.parse.quote(org)}/"
+            f"{urllib.parse.quote(project)}/_apis/build/builds?{query}"
+        )
+        builds = _api_get(url, auth).get("value") or []
+    except urllib.error.HTTPError as exc:
+        return False, f"{name}: run history lookup failed ({exc.code}): {_http_error_detail(exc)}"
+    except (urllib.error.URLError, OSError, ValueError) as exc:
+        return False, f"{name}: run history lookup failed: {exc}"
+
+    # Only real merge deployments; drop scheduled scans (e.g. nightly Veracode).
+    builds = [
+        build for build in builds
+        if (build.get("reason") or "").lower() in _MERGE_BUILD_REASONS
+    ]
+    if not builds:
+        return True, dict(_EMPTY_DURATIONS)
+
+    timelines = run_in_parallel(
+        builds,
+        lambda b: _api_build_timeline_safe(org, project, b.get("id"), auth),
+    )
+
+    stage_keys = ("build", "development", "acceptance", "production")
+    collected = []
+    parallel_votes = 0
+    overlap_samples = 0
+    for timeline in timelines:
+        timings = _stage_timings_from_timeline(timeline)
+        if not all(timings.get(k, {}).get("state") == "done" for k in stage_keys):
+            continue
+        durations = {}
+        ok = True
+        for key in stage_keys:
+            secs = _duration_seconds(
+                timings[key].get("start"), timings[key].get("finish")
+            )
+            if secs is None:
+                ok = False
+                break
+            durations[key] = secs
+        if not ok:
+            continue
+        # Decide whether Acceptance overlaps Development (parallel) or strictly
+        # follows it, from the actual start/finish ordering of this run.
+        dev_finish = _parse_iso_utc(timings["development"].get("finish"))
+        acc_start = _parse_iso_utc(timings["acceptance"].get("start"))
+        if dev_finish and acc_start:
+            overlap_samples += 1
+            if acc_start < dev_finish:
+                parallel_votes += 1
+        collected.append(durations)
+        if len(collected) >= count:
+            break
+
+    if not collected:
+        return True, dict(_EMPTY_DURATIONS)
+
+    averages = {
+        key: sum(d[key] for d in collected) / len(collected)
+        for key in stage_keys
+    }
+    acc_parallel = overlap_samples > 0 and parallel_votes * 2 >= overlap_samples
+    return True, {
+        "stages": averages,
+        "acc_parallel": acc_parallel,
+        "samples": len(collected),
+    }
+
+
 def find_env_deployment_for_branch(name, path, branch, environment):
     """Check whether origin/*branch*'s tip already deployed to *environment*.
 
@@ -938,6 +1129,12 @@ def get_pipeline_stage_statuses(run_info):
         stage_identifiers[key] = record.get("identifier") or record.get("name")
         stage_records[key] = record
 
+    # Per-stage start/finish timestamps, used to estimate remaining time.
+    stage_times = {
+        key: {"start": record.get("startTime"), "finish": record.get("finishTime")}
+        for key, record in stage_records.items()
+    }
+
     # For running stages, derive the current step + step-count completion %
     # from the same timeline (no extra API calls).
     stage_progress = {}
@@ -1045,6 +1242,7 @@ def get_pipeline_stage_statuses(run_info):
         "stages": stages,
         "stage_identifiers": stage_identifiers,
         "stage_progress": stage_progress,
+        "stage_times": stage_times,
         "approval_target": approval_target,
         "autoapproved": autoapproved,
         "autoapproved_target": autoapproved_target,

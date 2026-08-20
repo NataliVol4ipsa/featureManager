@@ -168,6 +168,18 @@ def save_pipeline_poll_seconds(seconds):
     _save_prefs(data)
 
 
+def load_pipeline_estimates_enabled():
+    """Return the "estimate pipeline time left" preference (defaults to False)."""
+    return bool(_load_prefs().get("pipeline_estimates_enabled", False))
+
+
+def save_pipeline_estimates_enabled(enabled):
+    """Persist the "estimate pipeline time left" preference."""
+    data = _load_prefs()
+    data["pipeline_estimates_enabled"] = bool(enabled)
+    _save_prefs(data)
+
+
 def apply_theme(root, dark=None):
     """Apply the chosen palette to *root* and every widget created under it.
 

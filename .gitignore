@@ -74,6 +74,7 @@ secrets.json
 repo_synonyms.json
 ui_prefs.json
 monitor_session.json
+pipeline_estimates.json
 
 # Local-only Copilot working notes (not shared with the team).
 .github/copilot-instructions.md

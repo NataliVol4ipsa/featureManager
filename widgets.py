@@ -378,6 +378,10 @@ class ErrorList(ttk.Frame):
 
         self._text = tk.Text(self, height=6, wrap="word", state="disabled",
                              foreground=theme.ERROR)
+        # Severity colours: errors keep the default red; warnings are amber and
+        # info lines are gray.
+        self._text.tag_config("warning", foreground=theme.WARNING)
+        self._text.tag_config("info", foreground=theme.FG_MUTED)
         scrollbar = ttk.Scrollbar(self, orient="vertical",
                                   command=self._text.yview)
         self._text.configure(yscrollcommand=scrollbar.set)
@@ -390,13 +394,17 @@ class ErrorList(ttk.Frame):
         self._text.delete("1.0", "end")
         self._text.config(state="disabled")
 
-    def add(self, message):
-        """Append an error, prefixing each line with the current time (HH:MM:SS)."""
+    def add(self, message, warning=False, info=False):
+        """Append a line per message row, timestamped (HH:MM:SS).
+
+        *warning* renders amber and *info* gray; the default is a red error.
+        """
         stamp = datetime.now().strftime("%H:%M:%S")
+        tag = "info" if info else "warning" if warning else ""
         self._text.config(state="normal")
         # Multi-line messages (e.g. git output) get a timestamp on every row.
         for line in message.rstrip().splitlines():
-            self._text.insert("end", f"[{stamp}] {line}\n")
+            self._text.insert("end", f"[{stamp}] {line}\n", tag)
         self._text.config(state="disabled")
         self._text.see("end")
 

@@ -15,6 +15,7 @@ Shared building blocks live in: config, gitutils, widgets, tab_base, dialogs.
 
 import os
 import sys
+import threading
 import tkinter as tk
 from tkinter import ttk
 
@@ -23,6 +24,7 @@ from workspaces_tab import WorkspacesTab
 from dialogs import edit_synonyms, ask_pipeline_poll_seconds, confirm_force_close
 from toolbar import build_action_toolbar
 import packages
+import pipeline_estimates
 import theme
 
 
@@ -100,6 +102,21 @@ def main():
         if value is not None:
             theme.save_pipeline_poll_seconds(value)
 
+    def _toggle_pipeline_estimates():
+        enabled = not theme.load_pipeline_estimates_enabled()
+        theme.save_pipeline_estimates_enabled(enabled)
+        if not enabled:
+            return
+        # Turning it on: refresh now only when the cache is missing/expired;
+        # a still-valid cache is kept as-is and we just report the next refresh.
+        if pipeline_estimates.needs_refresh():
+            threading.Thread(
+                target=lambda: pipeline_estimates.refresh_all(log=_log_estimate),
+                daemon=True,
+            ).start()
+        else:
+            _log_estimate(pipeline_estimates.status_message())
+
     def _settings_entries():
         return [
             ("Repository synonyms\u2026", lambda: edit_synonyms(root), False),
@@ -107,6 +124,11 @@ def main():
                 f"Pipeline monitor polling ({theme.load_pipeline_poll_seconds()}s)\u2026",
                 _set_pipeline_poll_seconds,
                 False,
+            ),
+            (
+                "Estimate pipeline time left",
+                _toggle_pipeline_estimates,
+                theme.load_pipeline_estimates_enabled(),
             ),
             ("Dark theme", _toggle_theme, theme.load_dark_preference()),
         ]
@@ -180,6 +202,15 @@ def main():
     _rebuild_toolbar()
     app.bind("<<NotebookTabChanged>>", _rebuild_toolbar, add="+")
 
+    def _log_estimate(message):
+        """Append a gray info line to the active tab's log (thread-safe)."""
+        def _append():
+            active = app.nametowidget(app.select())
+            panel = getattr(active, "errors", None)
+            if panel is not None:
+                panel.add(message, info=True)
+        root.after(0, _append)
+
     def _on_close():
         open_monitors = [
             win
@@ -221,6 +252,14 @@ def main():
     # Warm the Azure DevOps token cache in the background so the first
     # bump/restore does not pay the slow ``az`` cold-start latency.
     packages.prewarm_azure_devops_token()
+
+    # When enabled, refresh the cached pipeline time-left estimates in the
+    # background (only stale/missing repos actually hit Azure DevOps).
+    if theme.load_pipeline_estimates_enabled():
+        threading.Thread(
+            target=lambda: pipeline_estimates.refresh_all(log=_log_estimate),
+            daemon=True,
+        ).start()
 
     # Reopen any pipeline monitors that were open before a theme-change relaunch.
     root.after(0, lambda: [
