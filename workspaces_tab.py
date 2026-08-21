@@ -634,13 +634,18 @@ class WorkspacesTab(ActionTabBase):
 
     # -- Commit all changes (custom message) ------------------------------- #
     def _action_commit_all(self):
-        ok, workspace, repos = self._selected_active_repos()
+        ok, workspace, entries = self._selected_entries()
         self.errors.clear()
         if not ok:
             if workspace is not None:
-                self.errors.add(repos)
+                self.errors.add(entries)
             return
-        self.commit_all_changes(repos)
+        # Non-ignored repos are committed; each is compared to the feature
+        # branch configured for it in the workspace, not to the other repos.
+        active = [e for e in entries if not e["ignoreGit"]]
+        repos = [(e["name"], e["path"]) for e in active]
+        expected_branches = {e["name"]: e["branch"] for e in active}
+        self.commit_all_changes(repos, expected_branches=expected_branches)
 
     # -- Git push ---------------------------------------------------------- #
     def _action_push(self):

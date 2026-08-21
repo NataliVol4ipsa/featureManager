@@ -192,13 +192,19 @@ class ActionTabBase(ttk.Frame):
             decisions[name] = decision
         return decisions
 
-    def commit_all_changes(self, repos):
+    def commit_all_changes(self, repos, expected_branches=None):
         """Commit all changes in *repos* with user-supplied per-repo messages.
 
-        Shows the Details table for the repos, warns if the selected repos are
-        not all on the same branch, asks for shared and per-repo messages, then
-        commits each included repo on a background thread. Repos that are clean
-        or not git repos are reported as errors during the run.
+        Shows the Details table for the repos, warns about branch mismatches,
+        asks for shared and per-repo messages, then commits each included repo
+        on a background thread. Repos that are clean or not git repos are
+        reported as errors during the run.
+
+        When *expected_branches* is given (a {repo_name: branch} map, e.g. the
+        workspace's configured feature branches) each repo's current branch is
+        compared to its configured branch and a warning is shown for any repo
+        that is not on it. Without the map, the fallback warning is shown when
+        the selected repos are not all on the same branch.
         """
         self.errors.clear()
         if not repos:
@@ -206,19 +212,39 @@ class ActionTabBase(ttk.Frame):
 
         self.show_repos_async(repos, with_status=False)
 
-        # Warn if the selected git repositories are not all on the same branch,
-        # since the one commit message would land on different branches.
-        branches = {
-            git_current_branch(path)
-            for _, path in repos
-            if is_git_repo(path)
-        }
-        branches.discard("")  # ignore repos whose branch could not be read
         warning = None
-        if len(branches) > 1:
-            warning = (
-                "The selected repositories are not all on the same branch."
-            )
+        if expected_branches:
+            # Warn about repos not on the branch configured for them in the
+            # workspace, since the commit would land on an unexpected branch.
+            off_branch = []
+            for name, path in repos:
+                if not is_git_repo(path):
+                    continue
+                expected = expected_branches.get(name)
+                if not expected:
+                    continue
+                current = git_current_branch(path)
+                if current and current != expected:
+                    off_branch.append(name)
+            if off_branch:
+                names = ", ".join(off_branch)
+                warning = (
+                    "Not on the configured workspace branch: "
+                    f"{names}."
+                )
+        else:
+            # Fallback: warn if the selected git repositories are not all on the
+            # same branch, since one commit message would land on different ones.
+            branches = {
+                git_current_branch(path)
+                for _, path in repos
+                if is_git_repo(path)
+            }
+            branches.discard("")  # ignore repos whose branch could not be read
+            if len(branches) > 1:
+                warning = (
+                    "The selected repositories are not all on the same branch."
+                )
 
         messages = ask_commit_message(self, repos, branch_warning=warning)
         if not messages:
