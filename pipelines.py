@@ -86,6 +86,10 @@ PIPELINE_STAGE_DEFAULTS = {
     "production": "waiting",
 }
 
+# Stages shown for a "Redeploy latest master" monitor row: Production is never
+# part of the overview, so a viewed run's Production stage is excluded.
+REDEPLOY_VISIBLE_STAGES = ("build", "development", "acceptance")
+
 _STAGE_DONE_STATES = {"done", "skipped"}
 
 
@@ -186,6 +190,28 @@ def build_template_parameters(repo_path, environment):
     role_to_name = _discover_role_params(repo_path) or DEFAULT_ROLE_PARAMS
     params = {}
     for role, value in _env_roles(environment).items():
+        name = role_to_name.get(role)
+        if name:
+            params[name] = value
+    return params
+
+
+def build_template_parameters_for_roles(repo_path, deploy_dev, deploy_acc):
+    """Return the {parameter_name: bool} template parameters for a combined run.
+
+    Like :func:`build_template_parameters` but the Development and Acceptance
+    toggles are chosen independently so a single run can deploy to both (or just
+    one). Infrastructure is always on; Production is always off.
+    """
+    role_to_name = _discover_role_params(repo_path) or DEFAULT_ROLE_PARAMS
+    roles = {
+        "infra": True,
+        "dev": bool(deploy_dev),
+        "acc": bool(deploy_acc),
+        "prod": False,
+    }
+    params = {}
+    for role, value in roles.items():
         name = role_to_name.get(role)
         if name:
             params[name] = value
@@ -507,6 +533,38 @@ def _pipeline_build_for_commit(org, project, repo_id, commit_id, auth):
         key=lambda build: build.get("queueTime") or "",
         reverse=True,
     )
+    return candidates[0]
+
+
+def _latest_master_deploy_build(org, project, repo_id, auth):
+    """Return the newest master deployment build, or None.
+
+    Considers every recent build on ``refs/heads/master`` regardless of status
+    (running, failed, succeeded), but excludes non-deployment definitions
+    (PR/library builds) and scheduled runs such as the nightly Veracode scan, so
+    the row follows the real master deployment pipeline.
+    """
+    query = urllib.parse.urlencode({
+        "repositoryId": str(repo_id),
+        "repositoryType": "TfsGit",
+        "branchName": "refs/heads/master",
+        "queryOrder": "queueTimeDescending",
+        "$top": "100",
+        "api-version": "7.1",
+    })
+    url = (
+        f"https://dev.azure.com/{urllib.parse.quote(org)}/"
+        f"{urllib.parse.quote(project)}/_apis/build/builds?{query}"
+    )
+    builds = (_api_get(url, auth).get("value") or [])
+    candidates = [
+        build for build in builds
+        if (build.get("reason") or "").lower() != "schedule"
+        and _is_deploy_definition_name((build.get("definition") or {}).get("name"))
+    ]
+    if not candidates:
+        return None
+    candidates.sort(key=lambda build: build.get("queueTime") or "", reverse=True)
     return candidates[0]
 
 
@@ -1384,6 +1442,111 @@ def rerun_pipeline_from_latest_commit(run_info):
         "pipeline_id": pipeline_id,
         "visible_stages": list(run_info.get("visible_stages") or []),
         "template_parameters": dict(params),
+    }
+
+
+def redeploy_master_for_repo_details(name, path, deploy_dev, deploy_acc):
+    """Queue a master-branch run for one repo and return monitor-ready metadata.
+
+    The run is queued on ``refs/heads/master`` (Azure DevOps builds the tip of
+    that ref, i.e. the latest master commit) with the Development and Acceptance
+    deploy toggles set independently and Production always off. *deploy_dev* and
+    *deploy_acc* are booleans; at least one is expected to be true.
+    """
+    if not is_git_repo(path):
+        return False, f"{name}: not a git repository"
+
+    parsed = parse_ado_remote(git_remote_url(path))
+    if not parsed:
+        return False, f"{name}: remote is not an Azure DevOps repository"
+    org, project, repo, host = parsed
+
+    auth, err = _auth_for_host(host, org)
+    if err:
+        return False, f"{name}: {err}"
+
+    try:
+        repo_id = _resolve_repo_id(org, project, repo, auth)
+        if not repo_id:
+            return False, f"{name}: could not resolve the repository in Azure DevOps"
+        pipeline_id = _resolve_pipeline_id(org, project, repo_id, auth)
+        if not pipeline_id:
+            return False, f"{name}: no pipeline is configured for this repository"
+        params = build_template_parameters_for_roles(path, deploy_dev, deploy_acc)
+        visible_stages = _visible_stages_for_run(path, params)
+        data = _queue_run(org, project, pipeline_id, "master", params, auth)
+    except urllib.error.HTTPError as exc:
+        return False, f"{name}: pipeline run failed ({exc.code}): {_http_error_detail(exc)}"
+    except (urllib.error.URLError, OSError, ValueError) as exc:
+        return False, f"{name}: pipeline run failed: {exc}"
+
+    url = ((data.get("_links") or {}).get("web") or {}).get("href") or ""
+    build_id = _parse_build_id_from_url(url)
+    if build_id is None:
+        try:
+            build_id = int(data.get("id"))
+        except (TypeError, ValueError):
+            build_id = None
+    return True, {
+        "url": url,
+        "build_id": build_id,
+        "org": org,
+        "project": project,
+        "repo": repo,
+        "host": host,
+        "branch": "master",
+        "pipeline_id": pipeline_id,
+        "visible_stages": visible_stages,
+        "template_parameters": params,
+    }
+
+
+def get_latest_master_pipeline_run_details(name, path):
+    """Return (ok, details_or_error) for a repo's newest master deployment run.
+
+    Finds the most recent build on ``refs/heads/master`` regardless of status,
+    ignoring scheduled/Veracode scans and non-deployment definitions, and returns
+    monitor-ready metadata so the run can be followed live. Production is left out
+    of the tracked stages.
+    """
+    if not is_git_repo(path):
+        return False, f"{name}: not a git repository"
+
+    parsed = parse_ado_remote(git_remote_url(path))
+    if not parsed:
+        return False, f"{name}: remote is not an Azure DevOps repository"
+    org, project, repo, host = parsed
+
+    auth, err = _auth_for_host(host, org)
+    if err:
+        return False, f"{name}: {err}"
+
+    try:
+        repo_id = _resolve_repo_id(org, project, repo, auth)
+        if not repo_id:
+            return False, f"{name}: could not resolve the repository in Azure DevOps"
+        build = _latest_master_deploy_build(org, project, repo_id, auth)
+        if not build:
+            return False, f"{name}: no master pipeline run found"
+        pipeline_id = _resolve_pipeline_id(org, project, repo_id, auth)
+    except urllib.error.HTTPError as exc:
+        return False, f"{name}: pipeline run lookup failed ({exc.code}): {_http_error_detail(exc)}"
+    except (urllib.error.URLError, OSError, ValueError) as exc:
+        return False, f"{name}: pipeline run lookup failed: {exc}"
+
+    web = _build_web_url(org, project, build)
+    if not web:
+        return False, f"{name}: pipeline run found but could not build a web URL"
+    return True, {
+        "url": web,
+        "build_id": build.get("id"),
+        "org": org,
+        "project": project,
+        "repo": repo,
+        "host": host,
+        "branch": "master",
+        "pipeline_id": pipeline_id,
+        "visible_stages": list(REDEPLOY_VISIBLE_STAGES),
     }
 
 

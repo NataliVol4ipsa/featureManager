@@ -317,6 +317,18 @@ class WorkspacesTab(ActionTabBase):
                 "monitor window with one row per repository. Auto-approve "
                 "controls are shown only in this master-pipeline monitor.",
             ),
+            (
+                "Redeploy latest master commit",
+                self._action_redeploy_latest_master,
+                "For the selected workspace's non-skipped repositories: opens a "
+                "dialog to pick, per repository, whether to redeploy the latest "
+                "master commit to Development and/or Acceptance (never "
+                "Production), or to only follow the newest master run (any "
+                "status) via 'View latest'. Ticking 'View latest' disables that "
+                "row's Dev/Acc. It then queues the chosen master runs and opens "
+                "a live monitor with an Auto-approve ACC button. Needs an "
+                "ADO_PAT with Build (Read & execute) permission.",
+            ),
         ]
 
     def _action_show_master_pipelines_merged_pr(self):
@@ -337,6 +349,25 @@ class WorkspacesTab(ActionTabBase):
             )
             return
         self.show_master_pipeline_monitor_for_merged_prs(active)
+
+    def _action_redeploy_latest_master(self):
+        """Open the redeploy dialog + monitor for the active repos' master runs."""
+        self.errors.clear()
+        ok, workspace, entries = self._selected_entries()
+        if not ok:
+            self.errors.add(entries)
+            return
+
+        active = [
+            (e["name"], e["path"], e["branch"])
+            for e in entries if not e["ignoreGit"]
+        ]
+        if not active:
+            self.errors.add(
+                "this workspace has no repositories to redeploy master for"
+            )
+            return
+        self.redeploy_latest_master(active)
 
     def _open_actions(self):
         return [

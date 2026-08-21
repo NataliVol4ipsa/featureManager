@@ -120,7 +120,8 @@ class PipelineMonitorWindow(tk.Toplevel):
     """Always-on-top floating monitor for pipeline stage statuses."""
 
     def __init__(self, parent, run_infos, show_autoapprove_controls=False,
-                 pbi_title="", test_reports=None):
+                 pbi_title="", test_reports=None, show_prod_control=True,
+                 release_message=True):
         super().__init__(parent.winfo_toplevel())
         self.title("Pipeline monitor")
         # Actual size is fitted to the content once the UI is built; this is only
@@ -137,6 +138,8 @@ class PipelineMonitorWindow(tk.Toplevel):
         self._next_poll_token = None
         self._run_infos = dict(run_infos)
         self._show_autoapprove_controls = bool(show_autoapprove_controls)
+        self._show_prod_control = bool(show_prod_control)
+        self._release_message = bool(release_message)
         self._estimates_enabled = bool(theme.load_pipeline_estimates_enabled())
         self._pbi_title = (pbi_title or "").strip()
         self._test_reports = list(test_reports or [])
@@ -216,18 +219,19 @@ class PipelineMonitorWindow(tk.Toplevel):
                 "for the tracked master runs.",
             )
 
-            self._prod_button = ttk.Button(
-                controls,
-                command=self._toggle_autoapprove_production,
-            )
-            self._prod_button.pack(side="left", padx=(6, 0))
-            Tooltip(
-                self._prod_button,
-                "Toggle auto-approval of the Production (PRD) deployment gate "
-                "for the tracked master runs.",
-            )
+            if self._show_prod_control:
+                self._prod_button = ttk.Button(
+                    controls,
+                    command=self._toggle_autoapprove_production,
+                )
+                self._prod_button.pack(side="left", padx=(6, 0))
+                Tooltip(
+                    self._prod_button,
+                    "Toggle auto-approval of the Production (PRD) deployment "
+                    "gate for the tracked master runs.",
+                )
 
-        if self._show_autoapprove_controls:
+        if self._show_autoapprove_controls and self._release_message:
             self._copy_links_button = ttk.Button(
                 controls,
                 text="Generate release message",
@@ -429,10 +433,11 @@ class PipelineMonitorWindow(tk.Toplevel):
             text=acc_text,
             state=("disabled" if self._acc_locked_by_master else "normal"),
         )
-        self._prod_button.configure(
-            text=prod_text,
-            state=("disabled" if self._prod_locked_by_master else "normal"),
-        )
+        if self._prod_button is not None:
+            self._prod_button.configure(
+                text=prod_text,
+                state=("disabled" if self._prod_locked_by_master else "normal"),
+            )
 
     def _apply_autoapprove_flags(self):
         """Propagate monitor toggle state into each tracked run info payload."""
@@ -510,6 +515,8 @@ class PipelineMonitorWindow(tk.Toplevel):
             }
         return {
             "show_autoapprove_controls": self._show_autoapprove_controls,
+            "show_prod_control": self._show_prod_control,
+            "release_message": self._release_message,
             "pbi_title": self._pbi_title,
             "test_reports": [list(item) for item in self._test_reports],
             "run_infos": infos,

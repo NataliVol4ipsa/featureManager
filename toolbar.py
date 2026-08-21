@@ -82,6 +82,7 @@ GLYPHS = {
     "Run dev pipelines": "\u25b6",                      # play
     "Run acc pipelines": "\u23e9",                      # fast-forward
     "View merged master pipelines": "\U0001f440",       # eyes
+    "Redeploy latest master commit": "\U0001f9f9",      # broom (redeploy)
     # Open
     "Open in Git Bash tabs": "\U0001f5a5",              # desktop computer
     "Open repositories (master)": "\U0001f310",         # globe

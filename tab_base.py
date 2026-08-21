@@ -21,6 +21,7 @@ from dialogs import (
     ask_change_decision, ask_commit_message, ask_branch_warning, ask_pr_details,
     ask_missing_remote_branches, ask_acc_autoapprove, ask_deploy_selection,
     ask_complete_pr_details, ask_interrupted_operation_decision,
+    ask_redeploy_selection,
 )
 from pipelines import (
     run_pipeline_for_repo_details,
@@ -28,6 +29,8 @@ from pipelines import (
     get_work_item_report_details_for_repo,
     find_env_deployment_for_branch,
     build_template_parameters,
+    redeploy_master_for_repo_details,
+    get_latest_master_pipeline_run_details,
 )
 import packages
 from parallel import run_in_parallel
@@ -816,7 +819,8 @@ class ActionTabBase(ttk.Frame):
         )
 
     def _open_pipeline_monitor(self, run_infos, show_autoapprove_controls=False,
-                               pbi_title="", test_reports=None):
+                               pbi_title="", test_reports=None,
+                               show_prod_control=True, release_message=True):
         """Create a floating always-on-top window tracking started pipeline runs."""
         monitor = PipelineMonitorWindow(
             self,
@@ -824,6 +828,8 @@ class ActionTabBase(ttk.Frame):
             show_autoapprove_controls=show_autoapprove_controls,
             pbi_title=pbi_title,
             test_reports=test_reports,
+            show_prod_control=show_prod_control,
+            release_message=release_message,
         )
         # Drop dead references before storing the new monitor.
         self._pipeline_monitors = [
@@ -843,6 +849,8 @@ class ActionTabBase(ttk.Frame):
             show_autoapprove_controls=bool(session.get("show_autoapprove_controls")),
             pbi_title=session.get("pbi_title", "") or "",
             test_reports=test_reports,
+            show_prod_control=bool(session.get("show_prod_control", True)),
+            release_message=bool(session.get("release_message", True)),
         )
 
     def show_master_pipeline_monitor_for_merged_prs(self, active):
@@ -948,6 +956,114 @@ class ActionTabBase(ttk.Frame):
             show_autoapprove_controls=True,
             pbi_title=pbi_title,
             test_reports=test_reports,
+        )
+        count = len(run_infos)
+        self.progress.show_completion(
+            f"Opened monitor for {count} master pipeline run"
+            f"{'s' if count != 1 else ''}."
+        )
+
+    # -- Redeploy latest master commit ------------------------------------- #
+    def redeploy_latest_master(self, active):
+        """Queue master runs / follow latest master runs per the redeploy dialog.
+
+        *active* is a list of (name, path, branch). The dialog offers per-repo
+        Development/Acceptance (never Production) and a "View latest" choice.
+        Repositories the user leaves untouched are skipped. The Azure DevOps work
+        (queuing runs and resolving the latest master builds) runs on a
+        background thread, then a monitor opens for every resolved run.
+        """
+        self.errors.clear()
+        if not active:
+            return
+
+        selection = ask_redeploy_selection(self, [name for name, _, _ in active])
+        if selection is None:
+            return
+
+        # Build the task list: a "view" repo just follows its latest master run;
+        # a "run" repo queues a new master run with the chosen dev/acc toggles.
+        tasks = []  # (name, path, mode, dev, acc)
+        path_of = {name: path for name, path, _ in active}
+        for name in path_of:
+            sel = selection.get(name) or {}
+            if sel.get("view"):
+                tasks.append((name, path_of[name], "view", False, False))
+            elif sel.get("dev") or sel.get("acc"):
+                tasks.append(
+                    (name, path_of[name], "run",
+                     bool(sel.get("dev")), bool(sel.get("acc")))
+                )
+        if not tasks:
+            self.errors.add(
+                "No repositories were selected to redeploy or view."
+            )
+            return
+
+        repos = [(name, path) for name, path, _m, _d, _a in tasks]
+        self.show_repos_async(repos, with_status=False)
+        self.progress.show_completion(
+            "Resolving latest master pipeline runs for monitor..."
+        )
+
+        def _work():
+            host = next(
+                (h for h in (ado_host_for_path(p) for _, p, _m, _d, _a in tasks)
+                 if h),
+                "",
+            )
+            reachable, conn_err = check_ado_connectivity(host)
+            if host and not reachable:
+                self.after(0, self._on_redeploy_resolved, {}, [conn_err])
+                return
+
+            def _resolve(task):
+                name, path, mode, dev, acc = task
+                if mode == "view":
+                    ok, result = get_latest_master_pipeline_run_details(name, path)
+                else:
+                    ok, result = redeploy_master_for_repo_details(
+                        name, path, dev, acc
+                    )
+                return name, mode, ok, result
+
+            results = run_in_parallel(tasks, _resolve)
+            run_infos = {}
+            errors = []
+            for name, mode, ok, result in results:
+                if not ok:
+                    errors.append(result)
+                    continue
+                if result.get("build_id") is None:
+                    errors.append(
+                        f"{name}: pipeline started, but build id was unavailable "
+                        "for live monitoring"
+                    )
+                    continue
+                # Master-style runs so the auto-approve lock logic applies; a
+                # viewed run is an existing run, marked with the rewind icon.
+                result["is_master_run"] = True
+                if mode == "view":
+                    result["is_previous_run"] = True
+                run_infos[name] = result
+            self.after(0, self._on_redeploy_resolved, run_infos, errors)
+
+        threading.Thread(target=_work, daemon=True).start()
+
+    def _on_redeploy_resolved(self, run_infos, errors):
+        """Open the redeploy monitor (ACC auto-approve only, no Production)."""
+        self.progress.clear_completion()
+        for message in errors:
+            self.errors.add(message)
+
+        if not run_infos:
+            return
+
+        self._open_pipeline_monitor(
+            run_infos,
+            show_autoapprove_controls=True,
+            show_prod_control=False,
+            release_message=False,
         )
         count = len(run_infos)
         self.progress.show_completion(

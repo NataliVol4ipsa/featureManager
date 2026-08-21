@@ -1487,6 +1487,144 @@ def ask_deploy_selection(parent, entries, environment_label):
     return result["value"]
 
 
+def ask_redeploy_selection(parent, names):
+    """Modal to choose per-repo Development/Acceptance/View for a master redeploy.
+
+    *names* is a list of repository names. Each row has three checkboxes:
+
+      * **Dev** - queue a master run deploying to Development.
+      * **Acc** - queue a master run deploying to Acceptance.
+      * **View latest** - just follow the repo's latest master run (any status);
+        ticking it disables that row's Dev/Acc (the run is not restarted).
+
+    Each column also has a header "all" checkbox that toggles every row at once.
+    Returns ``{repo: {"dev": bool, "acc": bool, "view": bool}}`` on confirm, or
+    ``None`` if cancelled. Production is never offered.
+    """
+    dialog = tk.Toplevel(parent)
+    dialog.title("Redeploy latest master commit")
+    dialog.transient(parent.winfo_toplevel())
+    dialog.resizable(False, False)
+
+    tk.Label(
+        dialog,
+        text="Choose what to do for each repository's master branch.",
+        justify="left", wraplength=520,
+    ).pack(padx=16, pady=(16, 4), anchor="w")
+    tk.Label(
+        dialog,
+        text="Tick Dev and/or Acc to queue a new master run from the latest "
+             "commit. Tick 'View latest' to only follow the newest master run "
+             "(any status) without starting a new one - this disables Dev/Acc "
+             "for that repository. Production is never deployed.",
+        foreground=theme.FG_MUTED, justify="left", wraplength=520,
+    ).pack(padx=16, pady=(0, 8), anchor="w")
+
+    table = ttk.Frame(dialog)
+    table.pack(padx=16, fill="x")
+
+    dev_all = tk.BooleanVar(value=False)
+    acc_all = tk.BooleanVar(value=False)
+    view_all = tk.BooleanVar(value=False)
+
+    ttk.Label(table, text="Dev", font=("", 9, "bold")).grid(
+        row=0, column=1, sticky="w", padx=4, pady=(0, 2)
+    )
+    ttk.Label(table, text="Acc", font=("", 9, "bold")).grid(
+        row=0, column=2, sticky="w", padx=4, pady=(0, 2)
+    )
+    ttk.Label(table, text="View latest", font=("", 9, "bold")).grid(
+        row=0, column=3, sticky="w", padx=4, pady=(0, 2)
+    )
+    ttk.Label(table, text="Repository", font=("", 9, "bold")).grid(
+        row=0, column=4, sticky="w", padx=(10, 4), pady=(0, 2)
+    )
+
+    rows = []  # (name, dev_var, acc_var, view_var, dev_cb, acc_cb)
+
+    def _apply_row_lock(row):
+        """Disable Dev/Acc when a row's View latest is ticked."""
+        _name, dev_var, acc_var, view_var, dev_cb, acc_cb = row
+        state = "disabled" if view_var.get() else "normal"
+        dev_cb.configure(state=state)
+        acc_cb.configure(state=state)
+
+    for index, name in enumerate(names, start=2):
+        dev_var = tk.BooleanVar(value=False)
+        acc_var = tk.BooleanVar(value=False)
+        view_var = tk.BooleanVar(value=False)
+        dev_cb = ttk.Checkbutton(table, variable=dev_var)
+        dev_cb.grid(row=index, column=1, sticky="w", padx=4, pady=2)
+        acc_cb = ttk.Checkbutton(table, variable=acc_var)
+        acc_cb.grid(row=index, column=2, sticky="w", padx=4, pady=2)
+        view_cb = ttk.Checkbutton(table, variable=view_var)
+        view_cb.grid(row=index, column=3, sticky="w", padx=4, pady=2)
+        tk.Label(table, text=name, font=("", 9, "bold")).grid(
+            row=index, column=4, sticky="w", padx=(10, 4), pady=2
+        )
+        row = (name, dev_var, acc_var, view_var, dev_cb, acc_cb)
+        rows.append(row)
+        view_var.trace_add("write", lambda *_a, r=row: _apply_row_lock(r))
+
+    def _toggle_all_dev():
+        value = dev_all.get()
+        for _n, dev_var, _a, view_var, _dc, _ac in rows:
+            if not view_var.get():
+                dev_var.set(value)
+
+    def _toggle_all_acc():
+        value = acc_all.get()
+        for _n, _d, acc_var, view_var, _dc, _ac in rows:
+            if not view_var.get():
+                acc_var.set(value)
+
+    def _toggle_all_view():
+        value = view_all.get()
+        for _n, _d, _a, view_var, _dc, _ac in rows:
+            view_var.set(value)
+
+    ttk.Checkbutton(table, variable=dev_all, command=_toggle_all_dev).grid(
+        row=1, column=1, sticky="w", padx=4, pady=(2, 4)
+    )
+    ttk.Checkbutton(table, variable=acc_all, command=_toggle_all_acc).grid(
+        row=1, column=2, sticky="w", padx=4, pady=(2, 4)
+    )
+    ttk.Checkbutton(table, variable=view_all, command=_toggle_all_view).grid(
+        row=1, column=3, sticky="w", padx=4, pady=(2, 4)
+    )
+    ttk.Label(table, text="all", foreground=theme.FG_MUTED).grid(
+        row=1, column=4, sticky="w", padx=(10, 4), pady=(2, 4)
+    )
+
+    result = {"value": None}
+
+    def _ok():
+        result["value"] = {
+            name: {
+                "dev": bool(dev_var.get()) and not view_var.get(),
+                "acc": bool(acc_var.get()) and not view_var.get(),
+                "view": bool(view_var.get()),
+            }
+            for name, dev_var, acc_var, view_var, _dc, _ac in rows
+        }
+        dialog.destroy()
+
+    def _cancel():
+        result["value"] = None
+        dialog.destroy()
+
+    bar = ttk.Frame(dialog)
+    bar.pack(padx=16, pady=12)
+    ttk.Button(bar, text="Start", command=_ok).pack(side="left", padx=4)
+    ttk.Button(bar, text="Cancel", command=_cancel).pack(side="left", padx=4)
+
+    dialog.protocol("WM_DELETE_WINDOW", _cancel)
+    _center_over_parent(dialog, parent)
+    dialog.grab_set()
+    parent.wait_window(dialog)
+    return result["value"]
+
+
 def ask_acc_autoapprove(parent):
     """Modal asking whether ACC pipeline acceptance approvals should auto-approve.
 

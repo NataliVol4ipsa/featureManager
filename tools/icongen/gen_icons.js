@@ -47,6 +47,7 @@ const MAP = {
   "play": "Run dev pipelines",
   "fast-forward": "Run acc pipelines",
   "rocket": "View merged master pipelines",
+  "brush-cleaning": "Redeploy latest master commit",
   "globe": "Open repositories (master)",
   "git-branch": "Open remote branches",
   "git-pull-request-arrow": "Open pull requests",
@@ -70,7 +71,7 @@ grp("brown", [
   "Bump NuGet packages (public)", "Bump NuGet packages (private)",
   "Bump all NuGet packages", "Restore NuGet packages",
 ]);
-grp("green", ["Run dev pipelines", "Run acc pipelines", "View merged master pipelines"]);
+grp("green", ["Run dev pipelines", "Run acc pipelines", "View merged master pipelines", "Redeploy latest master commit"]);
 grp("yellow", ["Open repositories (master)", "Open remote branches", "Open pull requests"]);
 
 // Non-action ("misc") icons keyed by a stable name, each with its own colour.

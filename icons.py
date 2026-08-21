@@ -226,6 +226,18 @@ ACTION_ICON_DARK = {
         "LPimOvvVGGuhLWeDARcMyCzAkkAk4phs3sy/EA4K9UaARrA/umEBhccdCUIPwW8E2vadyW5F/QAA"
         "AABJRU5ErkJggg=="
     ),
+    'Redeploy latest master commit': (
+        "iVBORw0KGgoAAAANSUhEUgAAABIAAAASCAYAAABWzo5XAAAB50lEQVR4nM2UsW4TQRCG/1nosMTR"
+        "pTRPwKakwpHOiNK8wd3R0BGJLg2hgQqJjspZ8wQcHYotYSrKbJ4Al+lySEGiCDv8e+czJ2IH0uWT"
+        "Vjeze/PvaGbuBP/AulEC/Ex8/mmBS7hUyLqhU9UMRCDvfTHNsIGNQtY96quef4sCdCuFPhPp3fF5"
+        "WdG/gHCtxbp0oIrPItihi9b2+WyONQjXWq6PEAtsRXFbBZaFfhuDub0Ukl2eebo4KqZf+FghXDVN"
+        "BuIY0scSHn73xSyJI6B6dsqtLhWFmeG0Fua7DfZgOKHICGIyIFSo6flul+JlaFGUDJ9wJHbpdYXS"
+        "OYAtmBvPJYQz2htRY3oIv97QPGHGA5CV0PZ4+C6IPqX534gxez47fE3zj5B1D0eq4YPA7EHCV25t"
+        "Rs19RXglYh77/LDkTkdoWSOmmoDE7gG3Fm2NYsGBH/22uCxFxfCSNcpAVkL3DtJTfg4f2wP6yla/"
+        "9E9m+yB2nO5zJF4cF7M6Jl6swIPjYnqXbiMUb+fMHLGdOW+cxO40c4OddgD/3mNMxhjHmG3G+EZo"
+        "nNa30Rkxq0oF8aXMQAboEKBzBk6YKbPRRIGSdp01Yynk0kG8jeaVaTOshSLxtwGcc/EQZosPsDMn"
+        "fKy4uH9z0f7wfgNdZfcTBYo7IQAAAABJRU5ErkJggg=="
+    ),
     'Open repositories (master)': (
         "iVBORw0KGgoAAAANSUhEUgAAABIAAAASCAYAAABWzo5XAAACNElEQVR4nKWUwW4SURSG/wPdFEhK"
         "og/A7E2A6F7Y6qY+gfAErUtbiDXQurQ8AfgEdqNbcK8Bku6HB9CEJoVuKNfvzsC0xJo26Z/cnHP+"
@@ -273,6 +285,20 @@ ACTION_ICON_DARK = {
         "I1LmZ49aI7sXlYMigHE2W6lUYWcbpN1osCgqQ3CdB+pjx4U/6asumwVYo4DWSgkk4/T0p+vVg032"
         "W4wQcxx3kY+4Vf4EPzPTYWRoru74TrHtshmGefee8/beZt7KR7cnlugwCjhxPaA8yV3R2BSq1YE6"
         "6mP4Q7CnoUYBPDOXGcyP7S1DKL8BWqtEDophJXkAAAAASUVORK5CYII="
+    ),
+    'Open workspace in VS Code': (
+        "iVBORw0KGgoAAAANSUhEUgAAABIAAAASCAYAAABWzo5XAAACZ0lEQVR42pXU3UtTcRzH8c8UvCnB"
+        "0glR4dTNy6BLb6KroGv/i3Q2c5otdTMfMlNXGd2EFpU1I/eYT5sY3gSBe3DOELIRXQgZoW4DKXHf"
+        "Ppuw/bxSD7z4wQ6/Nzs/zvkCJ7na57WajgXHudH4txpfyqT3psp0rl3NiRq4G6hkaBGWgJQ+WZUa"
+        "bzJj3eBNNendqfPHi1gCevrCmKDNL6WPGfIkcwyeZPToSNvcJdzxx0mybs/JWXtMDO7kIYB9tRiP"
+        "Vm1cr8H+tSD/L/waRmppgySnZVZK7bE9g5MBRSbkJ6FdDK9aMRQ9DfN0IVpn62iTRPEPLTOOije/"
+        "RvSTCVEBQ7FZEoUXrQEzmqcSaJmWAzOZ9Q/MM81onS7Sf0jYSFTAYKwcgyuTlCbJ6gulYeZ5mHzC"
+        "oMA8tQbzx6swubKPXv0+YSNRHZzHw5ViDERHMLCyT5LVH+GZfBI0eqdwy1eunn/1BEMTDCgO7ph8"
+        "p2H0PINlcR/3lxmJKpa96IscClW9S9hIVIx4tLjpcVAaDS6exbygN5JGH4N5a/ztCqzh7KNVvd2x"
+        "kaiARrefJOeG04eupSZuTJAottATaeK9oqpxhsYZUABG1wIJ7cLo7kKD5xR6woXcVIfuyCZJXvgv"
+        "usKOi6O/n1a+3hEV0OAsRr2zG/Wu65R/IXvDGm6qxb3wBlfJsYbSZwbje5WvGFAc/YnYwpdhC8UZ"
+        "kKyOoJQMxEX3cueQ4320naFq+kyCdoYefBfdi21V9PhjpDPIMRLkGFmSkv510Y1tZ/wgK0MXTjaT"
+        "LEvaAktwvGz451rF6Lax4vmWVjeWzA62/7g5+fW3FAP9AAAAAElFTkSuQmCC"
     ),
     'Open solutions in Visual Studio': (
         "iVBORw0KGgoAAAANSUhEUgAAAEgAAABICAYAAABV7bNHAAAAAXNSR0IArs4c6QAAAARnQU1BAACx"
@@ -409,20 +435,6 @@ ACTION_ICON_DARK = {
         "P7K/iIhYUMuJXlzfFefchMj5TxEy+x4CZ96Cv+M1cCYVvOPPvFwV7i3hBge3/GfjsX834Tv36meh"
         "C2pTgpzulPvNuHrPe9q5K/zJZZt4U4vtjbf9GB/jY3yMj/F3EP8Xi0HsiOPz4DUAAAAASUVORK5C"
         "YII="
-    ),
-    'Open workspace in VS Code': (
-        "iVBORw0KGgoAAAANSUhEUgAAABIAAAASCAYAAABWzo5XAAACZ0lEQVR42pXU3UtTcRzH8c8UvCnB"
-        "0glR4dTNy6BLb6KroGv/i3Q2c5otdTMfMlNXGd2EFpU1I/eYT5sY3gSBe3DOELIRXQgZoW4DKXHf"
-        "Ppuw/bxSD7z4wQ6/Nzs/zvkCJ7na57WajgXHudH4txpfyqT3psp0rl3NiRq4G6hkaBGWgJQ+WZUa"
-        "bzJj3eBNNendqfPHi1gCevrCmKDNL6WPGfIkcwyeZPToSNvcJdzxx0mybs/JWXtMDO7kIYB9tRiP"
-        "Vm1cr8H+tSD/L/waRmppgySnZVZK7bE9g5MBRSbkJ6FdDK9aMRQ9DfN0IVpn62iTRPEPLTOOije/"
-        "RvSTCVEBQ7FZEoUXrQEzmqcSaJmWAzOZ9Q/MM81onS7Sf0jYSFTAYKwcgyuTlCbJ6gulYeZ5mHzC"
-        "oMA8tQbzx6swubKPXv0+YSNRHZzHw5ViDERHMLCyT5LVH+GZfBI0eqdwy1eunn/1BEMTDCgO7ph8"
-        "p2H0PINlcR/3lxmJKpa96IscClW9S9hIVIx4tLjpcVAaDS6exbygN5JGH4N5a/ztCqzh7KNVvd2x"
-        "kaiARrefJOeG04eupSZuTJAottATaeK9oqpxhsYZUABG1wIJ7cLo7kKD5xR6woXcVIfuyCZJXvgv"
-        "usKOi6O/n1a+3hEV0OAsRr2zG/Wu65R/IXvDGm6qxb3wBlfJsYbSZwbje5WvGFAc/YnYwpdhC8UZ"
-        "kKyOoJQMxEX3cueQ4320naFq+kyCdoYefBfdi21V9PhjpDPIMRLkGFmSkv510Y1tZ/wgK0MXTjaT"
-        "LEvaAktwvGz451rF6Lax4vmWVjeWzA62/7g5+fW3FAP9AAAAAElFTkSuQmCC"
     ),
     'Open in Git Bash tabs': (
         "iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAYAAACqaXHeAAAHJUlEQVR4nNWbf2xV1QHHP+c+akut"
@@ -667,6 +679,18 @@ ACTION_ICON_LIGHT = {
         "FFbBwKdN9pTFBM4ygkoy9fKZ2YWxFjOkkmgyN/YQGGDfCWPdC38AzFz2aaNb+ekAAAAASUVORK5C"
         "YII="
     ),
+    'Redeploy latest master commit': (
+        "iVBORw0KGgoAAAANSUhEUgAAABIAAAASCAYAAABWzo5XAAAB70lEQVR4nM2Uv5LSUBTGv5NQOiN2"
+        "ltgvDpZWhDfAN4idnasLzTbLNlqwO9pZgk8gPgGhspQReintNs5YbnL8JQFkdEHHan8zl/Mn5373"
+        "5txLTH+h9SaqY+rzF8lKBzgo1LyIRu4eC0z2ftFPYu1hrxA7aVxf+9dCwE2p3J/XanaPnaU8/oO9"
+        "QkfDKJJ8SklHJZW/7CeJbsAYN3J7hOhNK3O7a7m3cve3lHRIg08Ds2MPbE6gxcvpDLPFGCXFDsx8"
+        "5K6G1tDo75xUHfE6jb8itcWkNKxZh+aXwsQVzWE0ltQlEyOW4qtW05zC0i8oFtMaJk7cNF72kmPC"
+        "Iq6gKCG4H8pOslA/SO0lzHQnk1+69I2eRQLmVjy8iN7Rk2e4/0yg4PRLf/oa95cQt7jr7h9wT0l/"
+        "wh7AH/PzysyeLHrJBH9HaN2jornY8vQwq02PiOuYBvEcW9SnmAn1sWBHqH1F+HHz4GjYpgV2Tg8G"
+        "Ano4YCdny/6snIPQWObtRW/2gFDGKFZrcbyfLbCni5NkzKSISVMedxBKBL/nmpdR7LmP+P89KnZZ"
+        "ClE0oOjMFHQVKlXuXAGPLQwi7eBZntCXsQJGprornyB8jvBgIxRRxmr/Q7XDUqiA1+OzoYYg4D5h"
+        "lHNPMFuCcJ3PqjwXdsVrrQQ/AYFE6hOUiiOjAAAAAElFTkSuQmCC"
+    ),
     'Open repositories (master)': (
         "iVBORw0KGgoAAAANSUhEUgAAABIAAAASCAYAAABWzo5XAAACP0lEQVR4nKVUwW4SURQ9dxyiDWhJ"
         "9ANwb8IQ3QubyugGv0D4guKmEVxYF1LTTeULwC+QjYLdQPcaIOlePkATaiHVdJzreTNAmbQNTXqS"
@@ -715,6 +739,20 @@ ACTION_ICON_LIGHT = {
         "kAzXJ7UYDVWXxc1yw3SKd98CmRbSNgt+ntFP+Q63+fbySo3LOgEjFDHdKRG0ErZVZ7HbIJEQgDTm"
         "+Iw0CosIw9YxIY3ObuZNAT9pMwYXaL/lQSt0D2GGX/kec9w7GQpOPQ+N9OykFGg4oxEW8IeopsLx"
         "T14snXM54UFnx+cUy28ONzFu3Zf8eQAAAABJRU5ErkJggg=="
+    ),
+    'Open workspace in VS Code': (
+        "iVBORw0KGgoAAAANSUhEUgAAABIAAAASCAYAAABWzo5XAAACZ0lEQVR42pXU3UtTcRzH8c8UvCnB"
+        "0glR4dTNy6BLb6KroGv/i3Q2c5otdTMfMlNXGd2EFpU1I/eYT5sY3gSBe3DOELIRXQgZoW4DKXHf"
+        "Ppuw/bxSD7z4wQ6/Nzs/zvkCJ7na57WajgXHudH4txpfyqT3psp0rl3NiRq4G6hkaBGWgJQ+WZUa"
+        "bzJj3eBNNendqfPHi1gCevrCmKDNL6WPGfIkcwyeZPToSNvcJdzxx0mybs/JWXtMDO7kIYB9tRiP"
+        "Vm1cr8H+tSD/L/waRmppgySnZVZK7bE9g5MBRSbkJ6FdDK9aMRQ9DfN0IVpn62iTRPEPLTOOije/"
+        "RvSTCVEBQ7FZEoUXrQEzmqcSaJmWAzOZ9Q/MM81onS7Sf0jYSFTAYKwcgyuTlCbJ6gulYeZ5mHzC"
+        "oMA8tQbzx6swubKPXv0+YSNRHZzHw5ViDERHMLCyT5LVH+GZfBI0eqdwy1eunn/1BEMTDCgO7ph8"
+        "p2H0PINlcR/3lxmJKpa96IscClW9S9hIVIx4tLjpcVAaDS6exbygN5JGH4N5a/ztCqzh7KNVvd2x"
+        "kaiARrefJOeG04eupSZuTJAottATaeK9oqpxhsYZUABG1wIJ7cLo7kKD5xR6woXcVIfuyCZJXvgv"
+        "usKOi6O/n1a+3hEV0OAsRr2zG/Wu65R/IXvDGm6qxb3wBlfJsYbSZwbje5WvGFAc/YnYwpdhC8UZ"
+        "kKyOoJQMxEX3cueQ4320naFq+kyCdoYefBfdi21V9PhjpDPIMRLkGFmSkv510Y1tZ/wgK0MXTjaT"
+        "LEvaAktwvGz451rF6Lax4vmWVjeWzA62/7g5+fW3FAP9AAAAAElFTkSuQmCC"
     ),
     'Open solutions in Visual Studio': (
         "iVBORw0KGgoAAAANSUhEUgAAAEgAAABICAYAAABV7bNHAAAAAXNSR0IArs4c6QAAAARnQU1BAACx"
@@ -851,20 +889,6 @@ ACTION_ICON_LIGHT = {
         "P7K/iIhYUMuJXlzfFefchMj5TxEy+x4CZ96Cv+M1cCYVvOPPvFwV7i3hBge3/GfjsX834Tv36meh"
         "C2pTgpzulPvNuHrPe9q5K/zJZZt4U4vtjbf9GB/jY3yMj/F3EP8Xi0HsiOPz4DUAAAAASUVORK5C"
         "YII="
-    ),
-    'Open workspace in VS Code': (
-        "iVBORw0KGgoAAAANSUhEUgAAABIAAAASCAYAAABWzo5XAAACZ0lEQVR42pXU3UtTcRzH8c8UvCnB"
-        "0glR4dTNy6BLb6KroGv/i3Q2c5otdTMfMlNXGd2EFpU1I/eYT5sY3gSBe3DOELIRXQgZoW4DKXHf"
-        "Ppuw/bxSD7z4wQ6/Nzs/zvkCJ7na57WajgXHudH4txpfyqT3psp0rl3NiRq4G6hkaBGWgJQ+WZUa"
-        "bzJj3eBNNendqfPHi1gCevrCmKDNL6WPGfIkcwyeZPToSNvcJdzxx0mybs/JWXtMDO7kIYB9tRiP"
-        "Vm1cr8H+tSD/L/waRmppgySnZVZK7bE9g5MBRSbkJ6FdDK9aMRQ9DfN0IVpn62iTRPEPLTOOije/"
-        "RvSTCVEBQ7FZEoUXrQEzmqcSaJmWAzOZ9Q/MM81onS7Sf0jYSFTAYKwcgyuTlCbJ6gulYeZ5mHzC"
-        "oMA8tQbzx6swubKPXv0+YSNRHZzHw5ViDERHMLCyT5LVH+GZfBI0eqdwy1eunn/1BEMTDCgO7ph8"
-        "p2H0PINlcR/3lxmJKpa96IscClW9S9hIVIx4tLjpcVAaDS6exbygN5JGH4N5a/ztCqzh7KNVvd2x"
-        "kaiARrefJOeG04eupSZuTJAottATaeK9oqpxhsYZUABG1wIJ7cLo7kKD5xR6woXcVIfuyCZJXvgv"
-        "usKOi6O/n1a+3hEV0OAsRr2zG/Wu65R/IXvDGm6qxb3wBlfJsYbSZwbje5WvGFAc/YnYwpdhC8UZ"
-        "kKyOoJQMxEX3cueQ4320naFq+kyCdoYefBfdi21V9PhjpDPIMRLkGFmSkv510Y1tZ/wgK0MXTjaT"
-        "LEvaAktwvGz451rF6Lax4vmWVjeWzA62/7g5+fW3FAP9AAAAAElFTkSuQmCC"
     ),
     'Open in Git Bash tabs': (
         "iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAYAAACqaXHeAAAHJUlEQVR4nNWbf2xV1QHHP+c+akut"
