@@ -432,11 +432,12 @@ def ask_commit_message(parent, repos, branch_warning=None):
 
 
 def ask_branch_warning(parent, repo_count, title="Push all changes",
-                       action_label="Push"):
-    """Modal warning that the selected repos are not all on the same branch.
+                       action_label="Push", warning=None):
+    """Modal warning about a branch mismatch before a no-input action.
 
     Used by actions (e.g. push) that otherwise need no input: it is only shown
-    when a warning applies. Returns True if the user confirms, False otherwise.
+    when a warning applies. *warning* overrides the default message. Returns True
+    if the user confirms, False otherwise.
     """
     dialog = tk.Toplevel(parent)
     dialog.title(title)
@@ -454,7 +455,9 @@ def ask_branch_warning(parent, repo_count, title="Push all changes",
     warn.pack(padx=16, pady=(0, 4), anchor="w")
     tk.Label(warn, text="\u26A0", foreground=theme.ERROR,
              font=("", 11, "bold")).pack(side="left", padx=(0, 4))
-    tk.Label(warn, text="The selected repositories are not all on the same branch.",
+    tk.Label(warn,
+             text=warning or
+             "The selected repositories are not all on the same branch.",
              foreground=theme.ERROR, justify="left", wraplength=360).pack(side="left")
 
     skip_empty = tk.BooleanVar(value=True)

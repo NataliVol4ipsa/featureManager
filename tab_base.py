@@ -195,6 +195,42 @@ class ActionTabBase(ttk.Frame):
             decisions[name] = decision
         return decisions
 
+    def _branch_mismatch_warning(self, repos, expected_branches):
+        """Return a branch-mismatch warning string for *repos*, or None.
+
+        With *expected_branches* (a {repo_name: branch} map, e.g. the workspace's
+        configured feature branches) it warns about any repo whose current branch
+        differs from its configured branch. Without the map it falls back to
+        warning when the selected repos are not all on the same branch.
+        """
+        if expected_branches:
+            off_branch = []
+            for name, path in repos:
+                if not is_git_repo(path):
+                    continue
+                expected = expected_branches.get(name)
+                if not expected:
+                    continue
+                current = git_current_branch(path)
+                if current and current != expected:
+                    off_branch.append(name)
+            if off_branch:
+                return (
+                    "Not on the configured workspace branch: "
+                    f"{', '.join(off_branch)}."
+                )
+            return None
+
+        branches = {
+            git_current_branch(path)
+            for _, path in repos
+            if is_git_repo(path)
+        }
+        branches.discard("")  # ignore repos whose branch could not be read
+        if len(branches) > 1:
+            return "The selected repositories are not all on the same branch."
+        return None
+
     def commit_all_changes(self, repos, expected_branches=None):
         """Commit all changes in *repos* with user-supplied per-repo messages.
 
@@ -215,39 +251,7 @@ class ActionTabBase(ttk.Frame):
 
         self.show_repos_async(repos, with_status=False)
 
-        warning = None
-        if expected_branches:
-            # Warn about repos not on the branch configured for them in the
-            # workspace, since the commit would land on an unexpected branch.
-            off_branch = []
-            for name, path in repos:
-                if not is_git_repo(path):
-                    continue
-                expected = expected_branches.get(name)
-                if not expected:
-                    continue
-                current = git_current_branch(path)
-                if current and current != expected:
-                    off_branch.append(name)
-            if off_branch:
-                names = ", ".join(off_branch)
-                warning = (
-                    "Not on the configured workspace branch: "
-                    f"{names}."
-                )
-        else:
-            # Fallback: warn if the selected git repositories are not all on the
-            # same branch, since one commit message would land on different ones.
-            branches = {
-                git_current_branch(path)
-                for _, path in repos
-                if is_git_repo(path)
-            }
-            branches.discard("")  # ignore repos whose branch could not be read
-            if len(branches) > 1:
-                warning = (
-                    "The selected repositories are not all on the same branch."
-                )
+        warning = self._branch_mismatch_warning(repos, expected_branches)
 
         messages = ask_commit_message(self, repos, branch_warning=warning)
         if not messages:
@@ -264,13 +268,18 @@ class ActionTabBase(ttk.Frame):
             parallel=True,
         )
 
-    def push_all(self, repos):
+    def push_all(self, repos, expected_branches=None):
         """Push every selected repo's current branch to origin.
 
-        Shows the Details table for the repos. If the selected repos are not all
-        on the same branch a warning modal is shown to confirm; otherwise the
-        push runs with no modals. Remote branches that do not exist yet are
-        created automatically without any interaction.
+        Shows the Details table for the repos. A warning modal is shown to
+        confirm when a branch mismatch is detected; otherwise the push runs with
+        no modals. Remote branches that do not exist yet are created
+        automatically without any interaction.
+
+        With *expected_branches* (a {repo_name: branch} map, e.g. the workspace's
+        configured feature branches) the modal is shown when any repo is not on
+        its configured branch. Without the map it falls back to warning when the
+        selected repos are not all on the same branch.
         """
         self.errors.clear()
         if not repos:
@@ -278,18 +287,13 @@ class ActionTabBase(ttk.Frame):
 
         self.show_repos_async(repos, with_status=False)
 
-        # Only show a modal when the repos are on different branches; otherwise
-        # push straight away with no interaction. When no modal is shown the
-        # "skip empty branches" option defaults to on (matching the checkbox).
+        # Only show a modal on a branch mismatch; otherwise push straight away
+        # with no interaction. When no modal is shown the "skip empty branches"
+        # option defaults to on (matching the checkbox).
         skip_empty = True
-        branches = {
-            git_current_branch(path)
-            for _, path in repos
-            if is_git_repo(path)
-        }
-        branches.discard("")  # ignore repos whose branch could not be read
-        if len(branches) > 1:
-            answer = ask_branch_warning(self, len(repos))
+        warning = self._branch_mismatch_warning(repos, expected_branches)
+        if warning:
+            answer = ask_branch_warning(self, len(repos), warning=warning)
             if not answer["ok"]:
                 return
             skip_empty = answer["skip_empty"]
