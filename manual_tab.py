@@ -558,42 +558,11 @@ class ManualTab(ActionTabBase):
 
     # -- Create feature workspace and branches ----------------------------- #
     def _action_create_workspace_and_branches(self):
-        """Combine create-feature-branch then create-feature-workspace.
+        """Name the workspace, configure per-repo branches, then create them.
 
-        Branches are created first (same flow/handling as the standalone
-        action); once they finish the workspace file is written for the same
-        feature name.
+        Uses the same branch-configuration modal as the create-from-PBI flow.
         """
         repos = self._all_selected_repos()
         if not repos:
             return
-
-        feature_name = ask_branch_name(self)
-        if not feature_name:
-            return
-
-        decisions = self.collect_change_decisions(
-            repos, allow_move=True, skip_branch=f"feature/{feature_name}"
-        )
-        if decisions is None:
-            return  # user aborted
-
-        # After the branches finish, write the workspace. The combined green
-        # banner appears only when every branch succeeded and the file was saved.
-        def _then(all_ok):
-            ok, message = write_workspace(feature_name, repos)
-            if not ok:
-                self.errors.add(message)
-                return
-            if all_ok:
-                self.progress.show_completion(
-                    f"Feature branches created. {message}"
-                )
-
-        self.run_repo_action(
-            repos,
-            lambda n, p: create_feature_branch(n, p, feature_name, decisions.get(n)),
-            None,  # completion handled by _then so we get a combined message
-            on_complete=_then,
-            parallel=True,
-        )
+        self.create_workspace_with_branches(repos)

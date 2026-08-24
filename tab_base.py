@@ -16,12 +16,14 @@ from gitutils import (
     remote_branch_exists, ado_work_item_id_from_branch, complete_ado_pr,
     ado_host_for_path, check_ado_connectivity, git_last_commit,
     git_interrupted_operation, git_change_counts, abort_interrupted_operation,
+    write_workspace, save_branch_overrides, create_feature_branch,
+    IGNORE_GIT_KEY,
 )
 from dialogs import (
     ask_change_decision, ask_commit_message, ask_branch_warning, ask_pr_details,
     ask_missing_remote_branches, ask_acc_autoapprove, ask_deploy_selection,
     ask_complete_pr_details, ask_interrupted_operation_decision,
-    ask_redeploy_selection,
+    ask_redeploy_selection, ask_workspace_branches,
 )
 from pipelines import (
     run_pipeline_for_repo_details,
@@ -304,6 +306,90 @@ class ActionTabBase(ttk.Frame):
             "All branches pushed successfully.",
             link_fn=lambda n, p: git_branch_url(p, git_current_branch(p)),
             skip_fn=git_branch_is_empty if skip_empty else None,
+            parallel=True,
+        )
+
+    def create_workspace_with_branches(self, repos, initial="", on_created=None):
+        """Name a workspace, configure per-repo branches, then create them.
+
+        Shows the same branch-configuration modal as the create-from-PBI flow
+        (``ask_workspace_branches``): the workspace is named, each repo's feature
+        branch is set (pre-filled with the workspace name), and repos ticked
+        "Ignore git" keep their own branch. The workspace file is written with
+        the resulting branch overrides, then each repo's feature branch is
+        created. *repos* is a list of ``(name, path)``. *initial* pre-fills the
+        workspace name. *on_created*, if given, is called with the workspace name
+        after the file is written (e.g. to refresh a workspace list).
+        """
+        if not repos:
+            return
+
+        self.errors.clear()
+
+        current_branches = {n: git_current_branch(p) for n, p in repos}
+        info = ask_workspace_branches(
+            self, [n for n, _ in repos], initial=initial,
+            current_branches=current_branches,
+        )
+        if info is None:
+            return
+        name = info["name"]
+
+        # Turn the per-repo choices into branch overrides: an "Ignore git" repo
+        # gets a skip override (and its current branch); a repo whose branch
+        # differs from the workspace name gets a branch override.
+        branch_suffix = {}
+        overrides, ignore_folders = {}, set()
+        ignore_branches = info.get("ignore_branches", {})
+        for repo_name, _ in repos:
+            if info["ignore_git"].get(repo_name):
+                override = {IGNORE_GIT_KEY: True}
+                current = ignore_branches.get(repo_name)
+                if current:
+                    override["branch"] = current
+                overrides[repo_name] = override
+                ignore_folders.add(repo_name)
+                continue
+            suffix = info["branches"].get(repo_name, name)
+            branch_suffix[repo_name] = suffix
+            if suffix != name:
+                overrides[repo_name] = {"branch": f"feature/{suffix}"}
+
+        ok_ws, message = write_workspace(name, repos)
+        if not ok_ws:
+            self.errors.add(message)
+            return
+
+        if overrides:
+            ok_ov, msg_ov = save_branch_overrides(name, overrides)
+            if not ok_ov:
+                self.errors.add(msg_ov)
+        if on_created:
+            on_created(name)
+
+        # Create each repo's feature branch (its own name), except the ignored
+        # ones. Uncommitted changes are handled per repo; repos already on their
+        # branch are skipped without a prompt.
+        branch_repos = [(n, p) for n, p in repos if n not in ignore_folders]
+        decisions = self.collect_change_decisions(
+            branch_repos, allow_move=True,
+            skip_branch=lambda n: f"feature/{branch_suffix.get(n, name)}",
+        )
+        if decisions is None:
+            # User aborted branch creation; the workspace file was still written.
+            self.show_repos_async(repos, with_status=True)
+            return
+
+        self.run_repo_action(
+            repos,
+            lambda n, p: create_feature_branch(
+                n, p, branch_suffix.get(n, name), decisions.get(n)
+            ),
+            f"{message}\nFeature branches created.",
+            skip_fn=lambda n, _p: (
+                "Skipped: ignore git (keeps its own branch)"
+                if n in ignore_folders else False
+            ),
             parallel=True,
         )
 

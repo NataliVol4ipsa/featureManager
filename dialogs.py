@@ -918,6 +918,11 @@ def ask_workspace_branches(parent, repo_names, initial="", current_branches=None
     # The value each field held just before "Ignore git" was ticked, so
     # unticking can restore it instead of resetting to the workspace name.
     pre_tick = {}
+    # Repos whose branch the user edited by hand stop tracking the workspace
+    # name. A guard flag marks our own programmatic field updates so they are
+    # not mistaken for a manual override.
+    overridden = {}
+    syncing = {"on": False}
     current_branches = current_branches or {}
 
     for index, repo in enumerate(repo_names, start=2):
@@ -934,8 +939,10 @@ def ask_workspace_branches(parent, repo_names, initial="", current_branches=None
         ignore_var = tk.BooleanVar(value=False)
 
         # Ticking "Ignore git" shows the repo's current branch (disabled); it is
-        # stored in the workspace file. Unticking restores the pre-tick value.
+        # stored in the workspace file. Unticking resumes tracking the workspace
+        # name unless the repo was manually overridden (then its pre-tick value).
         def _toggle(r=repo, e=branch_entry, p=prefix):
+            syncing["on"] = True
             if ignore_vars[r].get():
                 pre_tick[r] = branch_vars[r].get()
                 p.pack_forget()  # a full branch is shown, not a 'feature/' suffix
@@ -944,13 +951,36 @@ def ask_workspace_branches(parent, repo_names, initial="", current_branches=None
             else:
                 p.pack(side="left", before=e)
                 e.config(state="normal")
-                branch_vars[r].set(pre_tick.get(r, initial))
+                branch_vars[r].set(
+                    pre_tick.get(r, name_var.get().strip())
+                    if overridden.get(r) else name_var.get().strip()
+                )
+            syncing["on"] = False
+
+        # A hand-edit (not one of our programmatic sets) stops name tracking.
+        def _mark_override(r=repo, *_a):
+            if not syncing["on"] and not ignore_vars[r].get():
+                overridden[r] = True
 
         ttk.Checkbutton(body, variable=ignore_var, command=_toggle).grid(
             row=index, column=2, padx=4, pady=2
         )
+        branch_var.trace_add("write", _mark_override)
         branch_vars[repo] = branch_var
         ignore_vars[repo] = ignore_var
+
+    # Live-sync every non-overridden, non-ignored branch field to the workspace
+    # name as it is typed (matches the pre-filled create-from-PBI behaviour).
+    def _sync_branches_to_name(*_a):
+        new = name_var.get().strip()
+        syncing["on"] = True
+        for repo_name in repo_names:
+            if ignore_vars[repo_name].get() or overridden.get(repo_name):
+                continue
+            branch_vars[repo_name].set(new)
+        syncing["on"] = False
+
+    name_var.trace_add("write", _sync_branches_to_name)
 
     error_label = tk.Label(dialog, text="", foreground=theme.ERROR,
                            justify="left", wraplength=460)

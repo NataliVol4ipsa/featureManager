@@ -8,12 +8,12 @@ from tkinter import ttk
 
 from config import WORKSPACES_ROOT, REPOS_ROOT, NUGETS_ROOT
 from gitutils import (
-    list_workspaces_detailed, read_workspace_repos, write_workspace,
+    list_workspaces_detailed, read_workspace_repos,
     run_git, is_git_repo, git_branch_exists,
     save_uncommitted, has_savepos, restore_uncommitted,
     git_current_branch, create_feature_branch, rebase_on_master,
     open_in_vscode, list_solutions, open_solutions, get_nuget_folders,
-    workspace_branch_entries, save_branch_overrides, IGNORE_GIT_KEY,
+    workspace_branch_entries, save_branch_overrides,
     SAVEPOS_MSG,
 )
 from parallel import run_in_parallel
@@ -21,7 +21,7 @@ from widgets import WorkspaceList, Tooltip
 from tab_base import ActionTabBase
 from dialogs import (
     ask_branch_name, ask_pbi_number, resolve_pbi_repos, edit_branch_overrides,
-    ask_include_skipped, ask_workspace_branches, ask_solutions_to_open,
+    ask_include_skipped, ask_solutions_to_open,
 )
 import pbi
 
@@ -957,73 +957,11 @@ class WorkspacesTab(ActionTabBase):
             return
 
         # Name the workspace and set a per-repo feature branch (pre-filled with
-        # the workspace name). Repos ticked "Ignore git" keep their own branch.
+        # the workspace name), then create the branches - same modal and flow as
+        # the manual "create feature workspace and branches" action.
         initial = f"{result['id']}_{pbi.slugify_title(result['title'])}"
-        current_branches = {n: git_current_branch(p) for n, p in chosen}
-        info = ask_workspace_branches(
-            self, [n for n, _ in chosen], initial=initial,
-            current_branches=current_branches,
-        )
-        if info is None:
-            return
-        name = info["name"]
-
-        # Turn the per-repo choices into branch overrides: an "Ignore git" repo
-        # gets a skip override (and no branch); a repo whose branch differs from
-        # the workspace name gets a branch override. Matches are left implicit.
-        branch_suffix = {}
-        overrides, ignore_folders = {}, set()
-        ignore_branches = info.get("ignore_branches", {})
-        for repo_name, _ in chosen:
-            if info["ignore_git"].get(repo_name):
-                override = {IGNORE_GIT_KEY: True}
-                # Record the repo's current branch so the workspace remembers it.
-                current = ignore_branches.get(repo_name)
-                if current:
-                    override["branch"] = current
-                overrides[repo_name] = override
-                ignore_folders.add(repo_name)
-                continue
-            suffix = info["branches"].get(repo_name, name)
-            branch_suffix[repo_name] = suffix
-            if suffix != name:
-                overrides[repo_name] = {"branch": f"feature/{suffix}"}
-
-        ok_ws, message = write_workspace(name, chosen)
-        if not ok_ws:
-            self.errors.add(message)
-            return
-
-        if overrides:
-            ok_ov, msg_ov = save_branch_overrides(name, overrides)
-            if not ok_ov:
-                self.errors.add(msg_ov)
-        self._refresh()
-
-        # Create each repo's feature branch (its own name), except the ignored
-        # ones (they keep their own branch). Uncommitted changes are handled per
-        # repo; repos already on their branch are skipped without a prompt.
-        branch_repos = [(n, p) for n, p in chosen if n not in ignore_folders]
-        decisions = self.collect_change_decisions(
-            branch_repos, allow_move=True,
-            skip_branch=lambda n: f"feature/{branch_suffix.get(n, name)}",
-        )
-        if decisions is None:
-            # User aborted branch creation; the workspace file was still written.
-            self.show_repos_async(chosen, with_status=True)
-            return
-
-        self.run_repo_action(
-            chosen,
-            lambda n, p: create_feature_branch(
-                n, p, branch_suffix.get(n, name), decisions.get(n)
-            ),
-            f"{message}\nFeature branches created.",
-            skip_fn=lambda n, _p: (
-                "Skipped: ignore git (keeps its own branch)"
-                if n in ignore_folders else False
-            ),
-            parallel=True,
+        self.create_workspace_with_branches(
+            chosen, initial=initial, on_created=lambda _name: self._refresh()
         )
 
     # -- Create feature branch --------------------------------------------- #
