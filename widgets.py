@@ -409,6 +409,154 @@ class ErrorList(ttk.Frame):
         self._text.see("end")
 
 
+def _hex_to_rgb(value):
+    value = value.lstrip("#")
+    return tuple(int(value[i:i + 2], 16) for i in (0, 2, 4))
+
+
+# Cache of rendered box images keyed by (size, fill, outline, bg); values are
+# tk.PhotoImage. Held module-wide so Tk does not garbage-collect them.
+_BOX_IMAGE_CACHE = {}
+
+
+def _rounded_box_image(size, fill, outline, bg, radius=4, border=1.4, ss=4):
+    """Return an anti-aliased rounded-box ``tk.PhotoImage`` (cached).
+
+    Corners and edges are supersampled (``ss`` x ``ss`` per pixel) and blended
+    against *bg* so they look smooth on the panel - the Tk canvas has no
+    anti-aliasing of its own, which made every polygon/arc attempt look jagged.
+    """
+    key = (size, fill, outline, bg, radius, border)
+    cached = _BOX_IMAGE_CACHE.get(key)
+    if cached is not None:
+        return cached
+
+    s, r, b = size, radius, border
+    fr, fg, fb = _hex_to_rgb(fill)
+    or_, og, ob = _hex_to_rgb(outline)
+    br, bgc, bb = _hex_to_rgb(bg)
+    centers = ((r, r), (s - r, r), (r, s - r), (s - r, s - r))
+
+    def _in_shape(x, y, inset, rad):
+        lo, hi = inset, s - inset
+        if not (lo <= x <= hi and lo <= y <= hi):
+            return False
+        for cx, cy in centers:
+            near_x = x < cx if cx == r else x > cx
+            near_y = y < cy if cy == r else y > cy
+            if near_x and near_y:
+                return (x - cx) ** 2 + (y - cy) ** 2 <= rad * rad
+        return True
+
+    rows = []
+    for py in range(s):
+        row = []
+        for px in range(s):
+            fills = outs = total = 0
+            for j in range(ss):
+                for i in range(ss):
+                    sx = px + (i + 0.5) / ss
+                    sy = py + (j + 0.5) / ss
+                    total += 1
+                    if _in_shape(sx, sy, b, r - b):
+                        fills += 1
+                    elif _in_shape(sx, sy, 0, r):
+                        outs += 1
+            bgs = total - fills - outs
+            red = (fr * fills + or_ * outs + br * bgs) // total
+            grn = (fg * fills + og * outs + bgc * bgs) // total
+            blu = (fb * fills + ob * outs + bb * bgs) // total
+            row.append(f"#{red:02x}{grn:02x}{blu:02x}")
+        rows.append("{" + " ".join(row) + "}")
+
+    image = tk.PhotoImage(width=s, height=s)
+    image.put(" ".join(rows))
+    _BOX_IMAGE_CACHE[key] = image
+    return image
+
+
+class GlyphCheck(tk.Canvas):
+    """A checkbox replacement that toggles a ``tk.BooleanVar``.
+
+    Drop-in for a bare ``ttk.Checkbutton`` (one bound to a variable, optionally
+    with a ``command``). Draws an anti-aliased rounded box: empty when unticked,
+    filled with a white glyph when ticked:
+
+      * ``mark="check"`` - green box + white checkmark.
+      * ``mark="cross"`` - red box + white cross.
+
+    Supports ``config(state=...)`` and ``config(command=...)`` so existing
+    Checkbutton call sites keep working.
+    """
+
+    _SIZE = 18
+
+    def __init__(self, master, variable, mark="check", command=None, **kwargs):
+        self._var = variable
+        self._mark = "cross" if mark == "cross" else "check"
+        self._command = command
+        self._enabled = True
+        self._bg = str(kwargs.get("background", theme.BG))
+        kwargs.setdefault("background", self._bg)
+        super().__init__(
+            master, width=self._SIZE, height=self._SIZE,
+            highlightthickness=0, borderwidth=0, cursor="hand2", **kwargs,
+        )
+        self.bind("<Button-1>", self._on_click)
+        variable.trace_add("write", lambda *_a: self._render())
+        self._render()
+
+    def _on_click(self, _event=None):
+        if not self._enabled:
+            return
+        self._var.set(not self._var.get())
+        if self._command is not None:
+            self._command()
+
+    def configure(self, cnf=None, **kwargs):
+        # Intercept the Checkbutton-style options so call sites can keep using
+        # .config(state=...) / .config(command=...).
+        if "state" in kwargs:
+            state = kwargs.pop("state")
+            self._enabled = str(state) not in ("disabled", "disable")
+            super().configure(cursor="hand2" if self._enabled else "arrow")
+            self._render()
+        if "command" in kwargs:
+            self._command = kwargs.pop("command")
+        return super().configure(cnf, **kwargs) if (cnf or kwargs) else None
+
+    config = configure
+
+    def _render(self):
+        self.delete("all")
+        on = bool(self._var.get())
+        s = self._SIZE
+        if not self._enabled:
+            fill, outline = theme.BG_INPUT, theme.BORDER
+            mark_color = theme.FG_MUTED if on else None
+        elif on:
+            fill = theme.SUCCESS if self._mark == "check" else theme.ERROR
+            outline, mark_color = fill, "#ffffff"
+        else:
+            fill, outline, mark_color = theme.BG_INPUT, theme.BORDER, None
+
+        image = _rounded_box_image(s, fill, outline, self._bg)
+        self.create_image(0, 0, anchor="nw", image=image)
+        self._image = image  # keep a per-widget reference too
+        if not (on and mark_color):
+            return
+        if self._mark == "check":
+            self.create_line(
+                s * 0.26, s * 0.52, s * 0.43, s * 0.69, s * 0.74, s * 0.30,
+                fill=mark_color, width=2, capstyle="round", joinstyle="round",
+            )
+        else:
+            self.create_line(s * 0.31, s * 0.31, s * 0.69, s * 0.69,
+                             fill=mark_color, width=2, capstyle="round")
+            self.create_line(s * 0.69, s * 0.31, s * 0.31, s * 0.69,
+                             fill=mark_color, width=2, capstyle="round")
+
+
 class CheckboxList(ttk.Frame):
     """A scrollable list of checkboxes.
 
@@ -458,9 +606,17 @@ class CheckboxList(ttk.Frame):
             # Reuse an existing BooleanVar so a rescan keeps the user's choices.
             var = self.vars.get(name, tk.BooleanVar(value=False))
             new_vars[name] = var
-            ttk.Checkbutton(
-                self._inner, text=name, variable=var, command=self._notify,
-            ).pack(anchor="w", padx=4, pady=1)
+            row = ttk.Frame(self._inner)
+            row.pack(anchor="w", fill="x", padx=4, pady=1)
+            GlyphCheck(row, variable=var, mark="check",
+                       command=self._notify).pack(side="left")
+            label = tk.Label(row, text=name, cursor="hand2")
+            label.pack(side="left", padx=(4, 0))
+            # Clicking the name toggles the row too (matches a Checkbutton label).
+            label.bind(
+                "<Button-1>",
+                lambda _e, v=var: (v.set(not v.get()), self._notify()),
+            )
         self.vars = new_vars
 
     def set_all(self, value):

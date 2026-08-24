@@ -9,7 +9,7 @@ import tkinter as tk
 from tkinter import ttk
 
 from gitutils import is_valid_branch_name
-from widgets import Tooltip
+from widgets import Tooltip, GlyphCheck
 import pbi
 import theme
 
@@ -385,9 +385,8 @@ def ask_commit_message(parent, repos, branch_warning=None):
             )
             _refresh_shared()
 
-        ttk.Checkbutton(body, variable=exclude_var, command=_toggle).grid(
-            row=index, column=2, padx=4, pady=2
-        )
+        GlyphCheck(body, variable=exclude_var, mark="cross",
+                   command=_toggle).grid(row=index, column=2, padx=4, pady=2)
         message_vars[name] = message_var
         exclude_vars[name] = exclude_var
 
@@ -962,9 +961,8 @@ def ask_workspace_branches(parent, repo_names, initial="", current_branches=None
             if not syncing["on"] and not ignore_vars[r].get():
                 overridden[r] = True
 
-        ttk.Checkbutton(body, variable=ignore_var, command=_toggle).grid(
-            row=index, column=2, padx=4, pady=2
-        )
+        GlyphCheck(body, variable=ignore_var, mark="cross",
+                   command=_toggle).grid(row=index, column=2, padx=4, pady=2)
         branch_var.trace_add("write", _mark_override)
         branch_vars[repo] = branch_var
         ignore_vars[repo] = ignore_var
@@ -1179,7 +1177,7 @@ def edit_branch_overrides(parent, workspace_name, entries):
         )
         branch_entry = ttk.Entry(table, textvariable=branch_var, width=34)
         branch_entry.grid(row=index, column=1, sticky="w", padx=4, pady=2)
-        ignore_check = ttk.Checkbutton(table, variable=ignore_var)
+        ignore_check = GlyphCheck(table, variable=ignore_var, mark="cross")
         ignore_check.grid(row=index, column=2, padx=4, pady=2)
 
         if not is_git:
@@ -1266,7 +1264,12 @@ def ask_include_skipped(parent, action_label, names):
     checks = {}
     for name in names:
         var = tk.BooleanVar(value=False)
-        ttk.Checkbutton(box, text=name, variable=var).pack(anchor="w", pady=1)
+        row = ttk.Frame(box)
+        row.pack(anchor="w", fill="x", pady=1)
+        GlyphCheck(row, variable=var, mark="check").pack(side="left")
+        label = tk.Label(row, text=name, cursor="hand2")
+        label.pack(side="left", padx=(4, 0))
+        label.bind("<Button-1>", lambda _e, v=var: v.set(not v.get()))
         checks[name] = var
 
     result = {"value": None}
@@ -1325,9 +1328,12 @@ def ask_solutions_to_open(parent, entries):
             )
             last_repo = repo_name
         var = tk.BooleanVar(value=True)
-        ttk.Checkbutton(
-            box, text=os.path.basename(sln), variable=var,
-        ).pack(anchor="w", padx=(16, 0), pady=1)
+        row = ttk.Frame(box)
+        row.pack(anchor="w", fill="x", padx=(16, 0), pady=1)
+        GlyphCheck(row, variable=var, mark="check").pack(side="left")
+        label = tk.Label(row, text=os.path.basename(sln), cursor="hand2")
+        label.pack(side="left", padx=(4, 0))
+        label.bind("<Button-1>", lambda _e, v=var: v.set(not v.get()))
         checks.append((sln, var))
 
     def _set_all(value):
@@ -1460,7 +1466,7 @@ def ask_deploy_selection(parent, entries, environment_label):
     for index, (name, already, *rest) in enumerate(entries, start=1):
         short, subject = (rest[0] if rest else ("", "")) or ("", "")
         var = tk.BooleanVar(value=not already)
-        ttk.Checkbutton(table, variable=var).grid(
+        GlyphCheck(table, variable=var, mark="check").grid(
             row=index, column=0, sticky="w", padx=4, pady=2
         )
         tk.Label(table, text=name, font=("", 9, "bold")).grid(
@@ -1586,11 +1592,11 @@ def ask_redeploy_selection(parent, names):
         dev_var = tk.BooleanVar(value=False)
         acc_var = tk.BooleanVar(value=False)
         view_var = tk.BooleanVar(value=False)
-        dev_cb = ttk.Checkbutton(table, variable=dev_var)
+        dev_cb = GlyphCheck(table, variable=dev_var, mark="check")
         dev_cb.grid(row=index, column=1, sticky="w", padx=4, pady=2)
-        acc_cb = ttk.Checkbutton(table, variable=acc_var)
+        acc_cb = GlyphCheck(table, variable=acc_var, mark="check")
         acc_cb.grid(row=index, column=2, sticky="w", padx=4, pady=2)
-        view_cb = ttk.Checkbutton(table, variable=view_var)
+        view_cb = GlyphCheck(table, variable=view_var, mark="check")
         view_cb.grid(row=index, column=3, sticky="w", padx=4, pady=2)
         tk.Label(table, text=name, font=("", 9, "bold")).grid(
             row=index, column=4, sticky="w", padx=(10, 4), pady=2
@@ -1616,13 +1622,16 @@ def ask_redeploy_selection(parent, names):
         for _n, _d, _a, view_var, _dc, _ac in rows:
             view_var.set(value)
 
-    ttk.Checkbutton(table, variable=dev_all, command=_toggle_all_dev).grid(
+    GlyphCheck(table, variable=dev_all, mark="check",
+               command=_toggle_all_dev).grid(
         row=1, column=1, sticky="w", padx=4, pady=(2, 4)
     )
-    ttk.Checkbutton(table, variable=acc_all, command=_toggle_all_acc).grid(
+    GlyphCheck(table, variable=acc_all, mark="check",
+               command=_toggle_all_acc).grid(
         row=1, column=2, sticky="w", padx=4, pady=(2, 4)
     )
-    ttk.Checkbutton(table, variable=view_all, command=_toggle_all_view).grid(
+    GlyphCheck(table, variable=view_all, mark="check",
+               command=_toggle_all_view).grid(
         row=1, column=3, sticky="w", padx=4, pady=(2, 4)
     )
     ttk.Label(table, text="all", foreground=theme.FG_MUTED).grid(
