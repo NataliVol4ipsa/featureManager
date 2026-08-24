@@ -692,11 +692,13 @@ _EMPTY_DURATIONS = {"stages": {}, "acc_parallel": False, "samples": 0}
 def get_master_stage_durations(name, path, count=15, scan=40):
     """Return (ok, data_or_error) with average per-stage master run durations.
 
-    Collects the *count* most recent fully successful master runs of the repo's
-    deployment pipeline - a run where Build, Development, Acceptance and
-    Production all ran and succeeded - and averages each stage's wall-clock
-    duration (in seconds). Scheduled runs (e.g. the nightly Veracode scan) are
-    excluded so only real merge deployments are measured.
+    Collects the *count* most recent master runs of the repo's deployment
+    pipeline and averages each stage's wall-clock duration (in seconds)
+    independently over the runs where that stage ran and succeeded. Averaging
+    per stage (rather than only over runs where all four stages completed) keeps
+    a Build+Development+Acceptance estimate available for repos whose master runs
+    rarely complete a Production stage. Scheduled runs (e.g. the nightly Veracode
+    scan) are excluded so only real merge deployments are measured.
 
     On success the data is::
 
@@ -738,7 +740,7 @@ def get_master_stage_durations(name, path, count=15, scan=40):
             "definitions": str(pipeline_id),
             "branchName": "refs/heads/master",
             "statusFilter": "completed",
-            "resultFilter": "succeeded",
+            "resultFilter": "succeeded,partiallySucceeded",
             "queryOrder": "finishTimeDescending",
             "$top": str(scan),
             "api-version": "7.1",
@@ -767,49 +769,53 @@ def get_master_stage_durations(name, path, count=15, scan=40):
     )
 
     stage_keys = ("build", "development", "acceptance", "production")
-    collected = []
+    # Average each stage independently over the runs where that stage ran and
+    # succeeded, so a Build+Dev+Acc estimate is still available for repos whose
+    # master runs rarely (or never) complete a Production stage.
+    per_stage = {key: [] for key in stage_keys}
     parallel_votes = 0
     overlap_samples = 0
+    runs_used = 0
     for timeline in timelines:
         timings = _stage_timings_from_timeline(timeline)
-        if not all(timings.get(k, {}).get("state") == "done" for k in stage_keys):
-            continue
-        durations = {}
-        ok = True
+        contributed = False
         for key in stage_keys:
-            secs = _duration_seconds(
-                timings[key].get("start"), timings[key].get("finish")
-            )
+            record = timings.get(key) or {}
+            if record.get("state") != "done":
+                continue
+            secs = _duration_seconds(record.get("start"), record.get("finish"))
             if secs is None:
-                ok = False
-                break
-            durations[key] = secs
-        if not ok:
-            continue
+                continue
+            per_stage[key].append(secs)
+            contributed = True
         # Decide whether Acceptance overlaps Development (parallel) or strictly
-        # follows it, from the actual start/finish ordering of this run.
-        dev_finish = _parse_iso_utc(timings["development"].get("finish"))
-        acc_start = _parse_iso_utc(timings["acceptance"].get("start"))
-        if dev_finish and acc_start:
-            overlap_samples += 1
-            if acc_start < dev_finish:
-                parallel_votes += 1
-        collected.append(durations)
-        if len(collected) >= count:
+        # follows it, from runs where both stages ran.
+        dev = timings.get("development") or {}
+        acc = timings.get("acceptance") or {}
+        if dev.get("state") == "done" and acc.get("state") == "done":
+            dev_finish = _parse_iso_utc(dev.get("finish"))
+            acc_start = _parse_iso_utc(acc.get("start"))
+            if dev_finish and acc_start:
+                overlap_samples += 1
+                if acc_start < dev_finish:
+                    parallel_votes += 1
+        if contributed:
+            runs_used += 1
+        if runs_used >= count:
             break
 
-    if not collected:
+    averages = {
+        key: sum(values) / len(values)
+        for key, values in per_stage.items() if values
+    }
+    if not averages:
         return True, dict(_EMPTY_DURATIONS)
 
-    averages = {
-        key: sum(d[key] for d in collected) / len(collected)
-        for key in stage_keys
-    }
     acc_parallel = overlap_samples > 0 and parallel_votes * 2 >= overlap_samples
     return True, {
         "stages": averages,
         "acc_parallel": acc_parallel,
-        "samples": len(collected),
+        "samples": runs_used,
     }
 
 

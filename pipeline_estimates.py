@@ -26,6 +26,10 @@ _CACHE_PATH = os.path.join(
 # How long a cached average stays valid before it is refreshed from ADO.
 CACHE_TTL_DAYS = 7
 
+# Cache schema version. Bump when the estimate computation changes so existing
+# entries are treated as stale and refetched with the new logic.
+_SCHEMA = 2
+
 _STAGE_KEYS = ("build", "development", "acceptance", "production")
 
 _lock = threading.Lock()
@@ -59,8 +63,11 @@ def _save_cache(data):
 
 
 def _is_fresh(entry):
-    """Return True when *entry* was written within the cache TTL."""
-    updated = (entry or {}).get("updated_at")
+    """Return True when *entry* matches the current schema and is within the TTL."""
+    entry = entry or {}
+    if entry.get("schema") != _SCHEMA:
+        return False
+    updated = entry.get("updated_at")
     dt = pipelines._parse_iso_utc(updated) if updated else None
     if dt is None:
         return False
@@ -92,6 +99,7 @@ def _store(name, payload):
             "updated_at": datetime.datetime.now(
                 datetime.timezone.utc
             ).isoformat(timespec="seconds"),
+            "schema": _SCHEMA,
             "stages": payload.get("stages") or {},
             "acc_parallel": bool(payload.get("acc_parallel")),
             "samples": payload.get("samples"),
