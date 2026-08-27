@@ -224,8 +224,9 @@ class ManualTab(ActionTabBase):
                 "Acceptance environment only (infrastructure + Acceptance on; "
                 "Development and Production off). Repositories whose branch is "
                 "not on the remote are reported first, letting you abort or "
-                "continue for the rest. Needs an ADO_PAT with Build (Read & "
-                "execute) permission.",
+                "continue for the rest. The live monitor shows an Auto-approve "
+                "ACC button to approve the Acceptance gate. Needs an ADO_PAT "
+                "with Build (Read & execute) permission.",
             ),
             (
                 "View merged master pipelines",
@@ -234,8 +235,8 @@ class ManualTab(ActionTabBase):
                 "Azure DevOps pull request from that repository's current "
                 "branch to master, resolves the matching master pipeline run "
                 "for that exact merge commit, and opens a live monitor. "
-                "Auto-approve controls are shown only in this master-pipeline "
-                "monitor.",
+                "This master monitor has both Auto-approve ACC and Auto-approve "
+                "PRD controls.",
             ),
         ]
 

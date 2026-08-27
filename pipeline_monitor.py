@@ -343,10 +343,10 @@ class PipelineMonitorWindow(tk.Toplevel):
                 link.configure(foreground=theme.FG_MUTED, cursor="", font=("", 9))
 
             # Dev/acc monitors get a per-row action to queue a fresh run from the
-            # latest commit of the branch (master monitors don't - master runs
-            # are tied to a specific merge commit).
+            # latest commit of the branch (master runs don't - they are tied to
+            # a specific merge commit).
             rerun_button = None
-            if not self._show_autoapprove_controls:
+            if not info.get("is_master_run"):
                 rerun_button = ttk.Button(
                     self._inner,
                     text="Run new",

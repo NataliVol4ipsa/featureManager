@@ -305,7 +305,9 @@ class WorkspacesTab(ActionTabBase):
                 "(infrastructure + Acceptance on; Development and Production "
                 "off). Repositories whose feature branch is not on the remote "
                 "are reported first, letting you abort or continue for the rest. "
-                "Needs an ADO_PAT with Build (Read & execute) permission.",
+                "The live monitor shows an Auto-approve ACC button to approve "
+                "the Acceptance gate. Needs an ADO_PAT with Build (Read & "
+                "execute) permission.",
             ),
             (
                 "View merged master pipelines",
@@ -314,8 +316,9 @@ class WorkspacesTab(ActionTabBase):
                 "finds the latest completed pull request from each workspace "
                 "feature branch to master, resolves the matching master "
                 "pipeline run for that exact merge commit, and opens a live "
-                "monitor window with one row per repository. Auto-approve "
-                "controls are shown only in this master-pipeline monitor.",
+                "monitor window with one row per repository. This master "
+                "monitor has both Auto-approve ACC and Auto-approve PRD "
+                "controls.",
             ),
             (
                 "Redeploy latest master commit",

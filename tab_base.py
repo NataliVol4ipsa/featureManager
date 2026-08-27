@@ -21,7 +21,7 @@ from gitutils import (
 )
 from dialogs import (
     ask_change_decision, ask_commit_message, ask_branch_warning, ask_pr_details,
-    ask_missing_remote_branches, ask_acc_autoapprove, ask_deploy_selection,
+    ask_missing_remote_branches, ask_deploy_selection,
     ask_complete_pr_details, ask_interrupted_operation_decision,
     ask_redeploy_selection, ask_workspace_branches,
 )
@@ -255,7 +255,18 @@ class ActionTabBase(ttk.Frame):
 
         warning = self._branch_mismatch_warning(repos, expected_branches)
 
-        messages = ask_commit_message(self, repos, branch_warning=warning)
+        # Count staged/unstaged changes per repo concurrently so the modal can
+        # show them without a noticeable delay for larger workspaces.
+        counts = run_in_parallel(
+            repos,
+            lambda repo: git_change_counts(repo[1]) if is_git_repo(repo[1])
+            else (0, 0),
+        )
+        change_counts = {name: count for (name, _path), count in zip(repos, counts)}
+
+        messages = ask_commit_message(
+            self, repos, branch_warning=warning, change_counts=change_counts
+        )
         if not messages:
             return
 
@@ -723,10 +734,11 @@ class ActionTabBase(ttk.Frame):
         must exist; those that do not are reported in a modal that lets the user
         abort or continue for the rest. The remote check hits the network so it
         runs on a background thread. *active* is assumed non-empty.
+
+        Acceptance auto-approval is not asked upfront: the monitor window shows
+        an "Auto-approve ACC" toggle button (like the master monitor) instead.
         """
         autoapprove_acc = False
-        if environment == "acc":
-            autoapprove_acc = ask_acc_autoapprove(self)
 
         self.show_repos_async([(n, p) for n, p, _ in active], with_status=True)
 
@@ -813,6 +825,18 @@ class ActionTabBase(ttk.Frame):
             self.progress.show_repos([])
             return
 
+        # ACC runs get the master-style Auto-approve ACC toggle in the monitor
+        # (Production never applies here, and there is no release message).
+        monitor_kwargs = (
+            {
+                "show_autoapprove_controls": True,
+                "show_prod_control": False,
+                "release_message": False,
+            }
+            if environment == "acc"
+            else {}
+        )
+
         to_run = [(n, p, b) for n, p, b in existing if decisions.get(n)]
         to_skip = [(n, p, b) for n, p, b in existing if not decisions.get(n)]
 
@@ -853,7 +877,7 @@ class ActionTabBase(ttk.Frame):
         if not to_run:
             monitor_runs = dict(run_infos)
             if monitor_runs:
-                self._open_pipeline_monitor(monitor_runs)
+                self._open_pipeline_monitor(monitor_runs, **monitor_kwargs)
             self.progress.show_completion(
                 f"No new {env_label} deployments were started "
                 "(all selected repositories were skipped)."
@@ -887,7 +911,7 @@ class ActionTabBase(ttk.Frame):
                         "for live monitoring"
                     )
             if monitor_runs:
-                self._open_pipeline_monitor(monitor_runs)
+                self._open_pipeline_monitor(monitor_runs, **monitor_kwargs)
 
         self.run_repo_action(
             repos,

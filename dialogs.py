@@ -8,7 +8,7 @@ import json
 import tkinter as tk
 from tkinter import ttk
 
-from gitutils import is_valid_branch_name
+from gitutils import is_valid_branch_name, git_file_changes
 from widgets import Tooltip, GlyphCheck
 import pbi
 import theme
@@ -288,14 +288,17 @@ def show_report(parent, report_text, title="Report"):
     parent.wait_window(dialog)
 
 
-def ask_commit_message(parent, repos, branch_warning=None):
+def ask_commit_message(parent, repos, branch_warning=None, change_counts=None):
     """Collect a shared and optional per-repository commit message.
 
     *repos* is a list of ``(name, path)`` pairs. The shared message updates all
     included rows. Once included rows differ, the shared field is disabled until
-    their messages match again. Returns ``{repo_name: message}`` for included
-    repositories, or None if cancelled.
+    their messages match again. *change_counts* is an optional
+    ``{repo_name: (staged, unstaged)}`` map whose figures are shown next to each
+    repository. Returns ``{repo_name: message}`` for included repositories, or
+    None if cancelled.
     """
+    change_counts = change_counts or {}
     dialog = tk.Toplevel(parent)
     dialog.title("Commit all changes")
     dialog.transient(parent.winfo_toplevel())
@@ -334,6 +337,9 @@ def ask_commit_message(parent, repos, branch_warning=None):
     )
     ttk.Label(body, text="Exclude", font=("", 9, "bold")).grid(
         row=0, column=2, sticky="w", padx=4, pady=(0, 4)
+    )
+    ttk.Label(body, text="Changes", font=("", 9, "bold")).grid(
+        row=0, column=3, sticky="w", padx=4, pady=(0, 4)
     )
 
     message_vars, exclude_vars = {}, {}
@@ -377,7 +383,12 @@ def ask_commit_message(parent, repos, branch_warning=None):
         message_var.trace_add("write", _message_changed)
         entry = ttk.Entry(body, textvariable=message_var, width=34)
         entry.grid(row=index, column=1, sticky="w", padx=4, pady=2)
-        exclude_var = tk.BooleanVar(value=False)
+        staged, unstaged = change_counts.get(name, (0, 0))
+        # Repos with nothing to commit are excluded (and their entry disabled)
+        # by default; the user can still tick them back in.
+        exclude_var = tk.BooleanVar(value=(staged == 0 and unstaged == 0))
+        if exclude_var.get():
+            entry.configure(state="disabled")
 
         def _toggle(repo=name, field=entry):
             field.configure(
@@ -387,10 +398,95 @@ def ask_commit_message(parent, repos, branch_warning=None):
 
         GlyphCheck(body, variable=exclude_var, mark="cross",
                    command=_toggle).grid(row=index, column=2, padx=4, pady=2)
+        has_changes = staged or unstaged
+        changes_label = tk.Label(
+            body,
+            text=f"{staged} staged, {unstaged} unstaged",
+            foreground=theme.LINK if has_changes else theme.FG_MUTED,
+            cursor="hand2" if has_changes else "",
+        )
+        changes_label.grid(row=index, column=3, sticky="w", padx=4, pady=2)
+        if has_changes:
+            changes_label.bind(
+                "<Button-1>",
+                lambda _e, n=name, p=_path: _toggle_changes(n, p),
+            )
         message_vars[name] = message_var
         exclude_vars[name] = exclude_var
 
     shared_var.trace_add("write", _apply_shared)
+    _refresh_shared()
+
+    # Expandable per-repo diff view, revealed by clicking a "Changes" cell.
+    detail_host = ttk.Frame(dialog)
+    detail_host.pack(padx=16, fill="x")
+    expanded = {"repo": None}
+
+    def _toggle_changes(name, path):
+        for child in detail_host.winfo_children():
+            child.destroy()
+        if expanded["repo"] == name:
+            expanded["repo"] = None
+        else:
+            expanded["repo"] = name
+            _build_changes_view(detail_host, name, path)
+        _center_over_parent(dialog, parent)
+
+    def _build_changes_view(host, name, path):
+        data = git_file_changes(path)
+        outer = tk.Frame(host, background=theme.BORDER)
+        outer.pack(fill="x", pady=(4, 0))
+        canvas = tk.Canvas(outer, background=theme.BG_INPUT, height=200,
+                           highlightthickness=1,
+                           highlightbackground=theme.BORDER, bd=0)
+        vsb = ttk.Scrollbar(outer, orient="vertical", command=canvas.yview)
+        canvas.configure(yscrollcommand=vsb.set)
+        vsb.pack(side="right", fill="y")
+        canvas.pack(side="left", fill="both", expand=True)
+
+        inner = tk.Frame(canvas, background=theme.BG_INPUT)
+        window = canvas.create_window((0, 0), window=inner, anchor="nw")
+        inner.columnconfigure(0, weight=1)
+
+        def _on_config(_e=None):
+            canvas.configure(scrollregion=canvas.bbox("all"))
+            canvas.itemconfigure(window, width=canvas.winfo_width())
+
+        inner.bind("<Configure>", _on_config)
+        canvas.bind("<Configure>", _on_config)
+
+        def _wheel(event):
+            canvas.yview_scroll(-1 if event.delta > 0 else 1, "units")
+
+        canvas.bind("<Enter>", lambda _e: canvas.bind_all("<MouseWheel>", _wheel))
+        canvas.bind("<Leave>", lambda _e: canvas.unbind_all("<MouseWheel>"))
+
+        row = 0
+        for title, entries in (("Staged", data["staged"]),
+                               ("Unstaged", data["unstaged"])):
+            tk.Label(inner, text=title, background=theme.BG_INPUT,
+                     foreground=theme.FG_MUTED, font=("", 9, "bold")).grid(
+                row=row, column=0, columnspan=3, sticky="w", padx=6, pady=(6, 2))
+            row += 1
+            if not entries:
+                tk.Label(inner, text="(none)", background=theme.BG_INPUT,
+                         foreground=theme.FG_MUTED).grid(
+                    row=row, column=0, sticky="w", padx=18, pady=1)
+                row += 1
+                continue
+            for rel, additions, deletions in entries:
+                tk.Label(inner, text=rel, background=theme.BG_INPUT,
+                         foreground=theme.FG, anchor="w").grid(
+                    row=row, column=0, sticky="w", padx=(18, 8), pady=1)
+                add_text = f"+{additions}" if additions is not None else "bin"
+                tk.Label(inner, text=add_text, background=theme.BG_INPUT,
+                         foreground=theme.SUCCESS).grid(
+                    row=row, column=1, sticky="e", padx=(0, 6))
+                del_text = f"-{deletions}" if deletions is not None else ""
+                tk.Label(inner, text=del_text, background=theme.BG_INPUT,
+                         foreground=theme.ERROR).grid(
+                    row=row, column=2, sticky="e", padx=(0, 10))
+                row += 1
 
     error_label = tk.Label(dialog, text="", foreground=theme.ERROR)
     error_label.pack(padx=16, anchor="w")
@@ -1661,58 +1757,6 @@ def ask_redeploy_selection(parent, names):
     ttk.Button(bar, text="Cancel", command=_cancel).pack(side="left", padx=4)
 
     dialog.protocol("WM_DELETE_WINDOW", _cancel)
-    _center_over_parent(dialog, parent)
-    dialog.grab_set()
-    parent.wait_window(dialog)
-    return result["value"]
-
-
-def ask_acc_autoapprove(parent):
-    """Modal asking whether ACC pipeline acceptance approvals should auto-approve.
-
-    Returns True for auto-approve, False for manual approval.
-    """
-    dialog = tk.Toplevel(parent)
-    dialog.title("Acceptance approval")
-    dialog.transient(parent.winfo_toplevel())
-    dialog.resizable(False, False)
-
-    tk.Label(
-        dialog,
-        text=(
-            "Do you want Feature Manager to auto-approve Acceptance when the "
-            "ACC pipeline reaches the approval gate?"
-        ),
-        justify="left", wraplength=440,
-    ).pack(padx=16, pady=(16, 8), anchor="w")
-    tk.Label(
-        dialog,
-        text=(
-            "If you choose No, approval remains manual in Azure DevOps."
-        ),
-        justify="left", wraplength=440, foreground=theme.FG_MUTED,
-    ).pack(padx=16, pady=(0, 8), anchor="w")
-
-    result = {"value": False}
-
-    def _yes():
-        result["value"] = True
-        dialog.destroy()
-
-    def _no():
-        result["value"] = False
-        dialog.destroy()
-
-    bar = ttk.Frame(dialog)
-    bar.pack(padx=16, pady=12)
-    ttk.Button(bar, text="Yes, auto-approve", command=_yes).pack(
-        side="left", padx=4
-    )
-    ttk.Button(bar, text="No, I will approve manually", command=_no).pack(
-        side="left", padx=4
-    )
-
-    dialog.protocol("WM_DELETE_WINDOW", _no)
     _center_over_parent(dialog, parent)
     dialog.grab_set()
     parent.wait_window(dialog)

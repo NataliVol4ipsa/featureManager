@@ -561,19 +561,62 @@ def git_change_counts(repo_path):
     Untracked files count as unstaged. A file that is both staged and modified
     counts in each total. Returns (0, 0) if the status cannot be read.
     """
-    ok, out = run_git(repo_path, ["status", "--porcelain"])
-    if not ok:
-        return 0, 0
-    staged = unstaged = 0
-    for line in out.splitlines():
-        if len(line) < 2:
-            continue
-        index_status, worktree_status = line[0], line[1]
-        if index_status not in (" ", "?"):
-            staged += 1
-        if worktree_status != " ":
-            unstaged += 1
+    # Name-only listings are used instead of 'status --porcelain' because
+    # run_git strips leading whitespace, which would corrupt the porcelain
+    # index/worktree status columns (a leading-space " M" line would look
+    # staged). One file per line, so counting lines is safe.
+    def _count(args):
+        ok, out = run_git(repo_path, args)
+        return len(out.splitlines()) if ok and out else 0
+
+    staged = _count(["diff", "--cached", "--name-only"])
+    unstaged = _count(["diff", "--name-only"])
+    unstaged += _count(["ls-files", "--others", "--exclude-standard"])
     return staged, unstaged
+
+
+def _count_file_lines(file_path):
+    """Return the number of lines in *file_path*, or None if it can't be read."""
+    try:
+        with open(file_path, "rb") as handle:
+            return sum(1 for _ in handle)
+    except OSError:
+        return None
+
+
+def git_file_changes(repo_path):
+    """Return {'staged': [...], 'unstaged': [...]} of per-file diff stats.
+
+    Each entry is ``(relative_path, additions, deletions)``; additions and
+    deletions are None for binary files. Untracked files are listed under
+    'unstaged' with their line count as additions.
+    """
+    def _numstat(args):
+        ok, out = run_git(repo_path, args)
+        entries = []
+        if ok and out:
+            for line in out.splitlines():
+                parts = line.split("\t")
+                if len(parts) != 3:
+                    continue
+                add, dele, path = parts
+                additions = None if add == "-" else int(add)
+                deletions = None if dele == "-" else int(dele)
+                entries.append((path, additions, deletions))
+        return entries
+
+    staged = _numstat(["diff", "--cached", "--numstat"])
+    unstaged = _numstat(["diff", "--numstat"])
+    # Untracked files are not part of 'diff'; list them with their line count.
+    ok, out = run_git(repo_path, ["ls-files", "--others", "--exclude-standard"])
+    if ok and out:
+        for rel in out.splitlines():
+            rel = rel.strip()
+            if not rel:
+                continue
+            additions = _count_file_lines(os.path.join(repo_path, rel))
+            unstaged.append((rel, additions, 0))
+    return {"staged": staged, "unstaged": unstaged}
 
 
 def abort_interrupted_operation(repo_path):
