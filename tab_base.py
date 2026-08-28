@@ -35,6 +35,7 @@ from pipelines import (
     get_latest_master_pipeline_run_details,
 )
 import packages
+import pipeline_history
 from parallel import run_in_parallel
 from pipeline_monitor import PipelineMonitorWindow
 
@@ -848,6 +849,7 @@ class ActionTabBase(ttk.Frame):
         # (with a "previous run" marker) or a skipped placeholder.
         for name, path, branch in to_skip:
             info = deploy_info.get(name) or {}
+            commit_short, commit_subject = commit_info.get(name) or ("", "")
             if info.get("already_deployed") and info.get("build_id") is not None:
                 run_infos[name] = {
                     "url": info.get("url", ""),
@@ -865,6 +867,8 @@ class ActionTabBase(ttk.Frame):
                     "environment": environment,
                     "autoapprove_acc": bool(autoapprove_acc),
                     "is_previous_run": True,
+                    "commit_id": commit_short,
+                    "commit_message": commit_subject,
                 }
                 urls[name] = info.get("url", "")
             else:
@@ -872,6 +876,9 @@ class ActionTabBase(ttk.Frame):
                     "skipped": True,
                     "environment": environment,
                     "repo": name,
+                    "branch": branch,
+                    "commit_id": commit_short,
+                    "commit_message": commit_subject,
                 }
 
         if not to_run:
@@ -895,6 +902,9 @@ class ActionTabBase(ttk.Frame):
                 urls[name] = result.get("url", "")
                 result["environment"] = environment
                 result["autoapprove_acc"] = bool(autoapprove_acc)
+                commit_short, commit_subject = commit_info.get(name) or ("", "")
+                result["commit_id"] = commit_short
+                result["commit_message"] = commit_subject
                 run_infos[name] = result
                 return True, ""
             return False, result
@@ -934,8 +944,25 @@ class ActionTabBase(ttk.Frame):
 
     def _open_pipeline_monitor(self, run_infos, show_autoapprove_controls=False,
                                pbi_title="", test_reports=None,
-                               show_prod_control=True, release_message=True):
+                               show_prod_control=True, release_message=True,
+                               record_history=True, history_session_id=None,
+                               restore_geometry=None):
         """Create a floating always-on-top window tracking started pipeline runs."""
+        # Record this monitor as a history session (unless we are reopening an
+        # already-recorded one after a theme relaunch). "Run new" actions inside
+        # the monitor append child runs to this same session id.
+        if record_history and history_session_id is None:
+            history_session_id = pipeline_history.record_session(
+                run_infos, workspace=self._history_workspace_name(),
+                monitor_kwargs={
+                    "show_autoapprove_controls": show_autoapprove_controls,
+                    "show_prod_control": show_prod_control,
+                    "release_message": release_message,
+                    "pbi_title": pbi_title,
+                    "test_reports": test_reports,
+                },
+            )
+
         monitor = PipelineMonitorWindow(
             self,
             run_infos,
@@ -944,13 +971,19 @@ class ActionTabBase(ttk.Frame):
             test_reports=test_reports,
             show_prod_control=show_prod_control,
             release_message=release_message,
+            restore_geometry=restore_geometry,
         )
+        monitor.history_session_id = history_session_id
         # Drop dead references before storing the new monitor.
         self._pipeline_monitors = [
             win for win in self._pipeline_monitors
             if getattr(win, "winfo_exists", lambda: False)()
         ]
         self._pipeline_monitors.append(monitor)
+
+    def _history_workspace_name(self):
+        """Workspace name for history (None unless a tab overrides this)."""
+        return None
 
     def reopen_monitor_session(self, session):
         """Reopen a pipeline monitor from a saved snapshot (see session_state)."""
@@ -965,6 +998,9 @@ class ActionTabBase(ttk.Frame):
             test_reports=test_reports,
             show_prod_control=bool(session.get("show_prod_control", True)),
             release_message=bool(session.get("release_message", True)),
+            record_history=False,
+            history_session_id=session.get("history_session_id"),
+            restore_geometry=session.get("geometry"),
         )
 
     def show_master_pipeline_monitor_for_merged_prs(self, active):

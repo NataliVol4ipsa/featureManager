@@ -13,6 +13,7 @@ from tkinter import ttk
 import theme
 import icons
 from widgets import Tooltip
+import pipeline_history
 from pipelines import (
     get_pipeline_stage_statuses,
     rerun_failed_stage,
@@ -121,12 +122,18 @@ class PipelineMonitorWindow(tk.Toplevel):
 
     def __init__(self, parent, run_infos, show_autoapprove_controls=False,
                  pbi_title="", test_reports=None, show_prod_control=True,
-                 release_message=True):
+                 release_message=True, restore_geometry=None):
         super().__init__(parent.winfo_toplevel())
         self.title("Pipeline monitor")
         # Actual size is fitted to the content once the UI is built; this is only
         # a placeholder to avoid a visible flash before that runs.
         self.geometry("760x250")
+        # When reopened after a relaunch, restore the previous position/size so
+        # the window does not jump to a random spot; applied early to avoid a
+        # flash and re-asserted after the content fit.
+        self._restore_geometry = restore_geometry or None
+        if self._restore_geometry:
+            self.geometry(self._restore_geometry)
         self.minsize(200, 80)
         self.attributes("-topmost", True)
         self.configure(background=theme.BG)
@@ -137,6 +144,10 @@ class PipelineMonitorWindow(tk.Toplevel):
         self._poll_in_progress = False
         self._next_poll_token = None
         self._run_infos = dict(run_infos)
+        # Owning tab (has the Errors panel); used to report poll errors.
+        self._tab = parent
+        # Last reported poll error per repo, so the same error is not repeated.
+        self._reported_poll_errors = {}
         self._show_autoapprove_controls = bool(show_autoapprove_controls)
         self._show_prod_control = bool(show_prod_control)
         self._release_message = bool(release_message)
@@ -144,6 +155,9 @@ class PipelineMonitorWindow(tk.Toplevel):
         self._pbi_title = (pbi_title or "").strip()
         self._test_reports = list(test_reports or [])
         self._rows = {}
+        # History session id (set by the tab after construction) so a "Run new"
+        # can be grouped into the same recorded pipeline-history session.
+        self.history_session_id = None
         self._scrollbar_visible = True
         self._pan_anchor = None
         self._progress_tip = None
@@ -185,6 +199,11 @@ class PipelineMonitorWindow(tk.Toplevel):
         self.update_idletasks()
         self._update_scrollregion_and_scrollbar()
         self.update_idletasks()
+        # A restored geometry keeps the user's previous position/size as-is.
+        if self._restore_geometry:
+            self.geometry(self._restore_geometry)
+            self._restore_geometry = None
+            return
         # Never open larger than the screen; overflow falls back to scroll/pan.
         width = min(self.winfo_reqwidth(), self.winfo_screenwidth() - 80)
         height = min(self.winfo_reqheight(), self.winfo_screenheight() - 120)
@@ -407,6 +426,14 @@ class PipelineMonitorWindow(tk.Toplevel):
                 "estimate_label": estimate_label,
                 "environment": info.get("environment"),
             }
+            # Seed the last recorded stage states (history reproduction) so the
+            # row shows how it looked before, prior to the first live poll.
+            restored_stages = info.get("restored_stages")
+            if restored_stages:
+                self._rows[repo]["stages"].update({
+                    key: value for key, value in restored_stages.items()
+                    if key in self._rows[repo]["stages"]
+                })
             self._draw_row(repo)
             self._update_estimate_label(repo)
 
@@ -509,10 +536,16 @@ class PipelineMonitorWindow(tk.Toplevel):
         """Return a JSON-serialisable snapshot for restoring after a relaunch."""
         infos = {}
         for repo, info in self._run_infos.items():
-            infos[repo] = {
+            serial = {
                 key: value for key, value in info.items()
                 if not str(key).startswith("_")
             }
+            # Keep the latest stage states so the history viewer can reproduce
+            # the monitor as it looked (before the reopened monitor re-polls).
+            stages = (self._rows.get(repo) or {}).get("stages")
+            if stages:
+                serial["restored_stages"] = dict(stages)
+            infos[repo] = serial
         return {
             "show_autoapprove_controls": self._show_autoapprove_controls,
             "show_prod_control": self._show_prod_control,
@@ -520,6 +553,8 @@ class PipelineMonitorWindow(tk.Toplevel):
             "pbi_title": self._pbi_title,
             "test_reports": [list(item) for item in self._test_reports],
             "run_infos": infos,
+            "history_session_id": self.history_session_id,
+            "geometry": self.geometry(),
         }
 
     def _copy_all_links(self):
@@ -931,6 +966,14 @@ class PipelineMonitorWindow(tk.Toplevel):
             return
 
         info = self._run_infos.get(repo)
+        # Record the fresh run as a child of this repo in the history session
+        # (a full "Run new"; failed-stage retries are deliberately not recorded).
+        if info is not None and self.history_session_id:
+            pipeline_history.add_child_run(
+                self.history_session_id,
+                repo,
+                pipeline_history.child_run_from_result(info, result),
+            )
         if info is not None:
             # Follow the new run: refresh identity, drop stale approval flags.
             info["url"] = result.get("url", "")
@@ -974,6 +1017,16 @@ class PipelineMonitorWindow(tk.Toplevel):
                           lambda _e, u=new_url: webbrowser.open(u, new=2))
             self._draw_row(repo)
         self.title(f"Pipeline monitor - new {repo} run queued")
+
+    def _report_error(self, message):
+        """Report a message to the owning tab's Errors panel (if available)."""
+        panel = getattr(self._tab, "errors", None)
+        if panel is None:
+            return
+        try:
+            panel.add(message)
+        except Exception:
+            pass
 
     def _poll_once(self):
         if self._closed:
@@ -1044,12 +1097,20 @@ class PipelineMonitorWindow(tk.Toplevel):
                     link.bind("<Button-1>", lambda _e, u=link_url: webbrowser.open(u, new=2))
                 self._draw_row(repo)
                 self._update_estimate_label(repo)
+                # Recovered: allow a future error for this repo to be reported.
+                self._reported_poll_errors.pop(repo, None)
             else:
                 any_error = True
                 self._rows[repo]["link"].configure(
                     text="poll error", foreground=theme.ERROR, cursor=""
                 )
                 self._rows[repo]["link"].unbind("<Button-1>")
+                # Surface the actual error in the tab's Errors panel (once per
+                # distinct message, so repeated polls do not spam it).
+                message = str(payload)
+                if self._reported_poll_errors.get(repo) != message:
+                    self._reported_poll_errors[repo] = message
+                    self._report_error(f"{repo}: pipeline poll failed - {message}")
 
             self._refresh_autoapprove_locks()
 
@@ -1084,6 +1145,15 @@ class PipelineMonitorWindow(tk.Toplevel):
     def _on_close(self):
         self._closed = True
         self._hide_progress_tip()
+        # Persist the latest run infos + window geometry so the history viewer
+        # can reopen this monitor looking as it did before.
+        if self.history_session_id:
+            try:
+                pipeline_history.update_snapshot(
+                    self.history_session_id, self.session_state()
+                )
+            except Exception:
+                pass
         if self._next_poll_token is not None:
             try:
                 self.after_cancel(self._next_poll_token)

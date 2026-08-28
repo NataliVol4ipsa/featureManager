@@ -32,9 +32,10 @@ SWITCH_SAVE_MSG = "savepos before workspace switch"
 REBASE_SAVE_MSG = "save changes before rebase"
 
 # All savepos base messages "Restore state before switch" can put back: the one
-# the switch action makes, plus the generic one used when creating feature
-# branches / committing savepos (create_feature_branch, "Commit changes (savepos)").
-RESTORABLE_SAVE_MSGS = (SWITCH_SAVE_MSG, SAVEPOS_MSG)
+# the switch action makes, the generic one used when creating feature branches /
+# committing savepos (create_feature_branch, "Commit changes (savepos)"), and the
+# one left at HEAD by "Rebase on master" when the user chose to commit changes.
+RESTORABLE_SAVE_MSGS = (SWITCH_SAVE_MSG, SAVEPOS_MSG, REBASE_SAVE_MSG)
 
 
 def _fmt_time(timestamp):
@@ -427,6 +428,10 @@ class WorkspacesTab(ActionTabBase):
         ]
 
     # -- Helpers ----------------------------------------------------------- #
+    def _history_workspace_name(self):
+        """Currently selected workspace name (for pipeline history records)."""
+        return self.workspace_list.get_selected() or None
+
     def _selected_repos(self):
         """Return (ok, workspace_name, repos_or_error_message)."""
         workspace = self.workspace_list.get_selected()
@@ -623,14 +628,18 @@ class WorkspacesTab(ActionTabBase):
 
         # Restore whichever app-made savepos commit is at HEAD: the switch one,
         # or the generic "savepos" left by creating a feature branch / committing
-        # savepos. Skip the repo if HEAD is not one of ours.
+        # savepos. If HEAD is not one of ours there is nothing to restore, so
+        # report a warning instead of a false "State restored." success.
         for base_msg in RESTORABLE_SAVE_MSGS:
             if has_savepos(path, base_msg):
                 ok, out = restore_uncommitted(path, base_msg)
                 if not ok:
                     return False, f"{name}: {out}"
                 return True, ""
-        return True, ""
+        return "warning", (
+            f"{name}: no app savepos at HEAD to restore (nothing was saved on "
+            f"the last switch, or the changes were already restored/committed)"
+        )
 
     # -- Rebase current branch on master ----------------------------------- #
     def _action_rebase_on_master(self):

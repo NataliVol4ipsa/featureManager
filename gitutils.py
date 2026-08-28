@@ -684,18 +684,20 @@ def git_last_commit(repo_path, ref):
     return short.strip(), subject.strip()
 
 
-def git_branch_is_empty(repo_path, target="master"):
-    """Return True if the current branch has no changes versus *target*.
+def git_branch_is_empty(name, path, target="master"):
+    """Return True if *path*'s current branch has no changes versus *target*.
 
+    Signature matches the ``skip_fn(name, path)`` convention so it can be passed
+    straight to ``run_repo_action`` as a skip predicate (*name* is unused).
     "Empty" means a pull request from this branch to *target* would show zero
     file changes (no diff against their merge-base, matching what a PR displays).
     Repos that are not git repos, are on a detached HEAD, are already on
     *target*, or whose target ref cannot be resolved are treated as not empty
     (False) so they are never silently skipped.
     """
-    if not is_git_repo(repo_path):
+    if not is_git_repo(path):
         return False
-    branch = git_current_branch(repo_path)
+    branch = git_current_branch(path)
     if not branch or branch == target:
         return False
     # Refresh *target* from origin first so the comparison mirrors the true
@@ -704,13 +706,13 @@ def git_branch_is_empty(repo_path, target="master"):
     # ahead of an out-of-date origin/<target> and is never skipped. Fall back to
     # the existing tracking/local ref when offline or the fetch fails.
     ref = None
-    ok, _ = run_git(repo_path, ["fetch", "--quiet", "origin", target])
+    ok, _ = run_git(path, ["fetch", "--quiet", "origin", target])
     if ok:
         ref = "FETCH_HEAD"
     else:
         for candidate in (f"origin/{target}", target):
             ok, _ = run_git(
-                repo_path, ["rev-parse", "--verify", "--quiet", candidate]
+                path, ["rev-parse", "--verify", "--quiet", candidate]
             )
             if ok:
                 ref = candidate
@@ -719,7 +721,7 @@ def git_branch_is_empty(repo_path, target="master"):
         return False
     # Three-dot diff compares against the merge-base, exactly like a PR. An exit
     # code of 0 (ok) means there is no diff, i.e. the branch is empty.
-    ok, _ = run_git(repo_path, ["diff", "--quiet", f"{ref}...HEAD"])
+    ok, _ = run_git(path, ["diff", "--quiet", f"{ref}...HEAD"])
     return ok
 
 

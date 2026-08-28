@@ -129,6 +129,79 @@ def pop_monitor_session():
     return data if isinstance(data, list) else []
 
 
+# Transient flag marking that the pipeline history window was open at relaunch,
+# so it can be reopened on the next startup (deleted once consumed).
+_HISTORY_FLAG_PATH = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "history_window.flag"
+)
+
+
+def save_history_window_open(is_open, geometry=""):
+    """Record whether the pipeline history window is open (and its geometry)."""
+    try:
+        if is_open:
+            with open(_HISTORY_FLAG_PATH, "w", encoding="utf-8") as handle:
+                handle.write(geometry or "")
+        elif os.path.exists(_HISTORY_FLAG_PATH):
+            os.remove(_HISTORY_FLAG_PATH)
+    except OSError:
+        pass
+
+
+def pop_history_window_open():
+    """Return the history window geometry ("" if none) if it was open, else None.
+
+    Deletes the flag file once consumed.
+    """
+    if not os.path.exists(_HISTORY_FLAG_PATH):
+        return None
+    geometry = ""
+    try:
+        with open(_HISTORY_FLAG_PATH, "r", encoding="utf-8") as handle:
+            geometry = handle.read().strip()
+    except OSError:
+        geometry = ""
+    try:
+        os.remove(_HISTORY_FLAG_PATH)
+    except OSError:
+        pass
+    return geometry
+
+
+# Transient snapshot of the main window geometry ("WxH+X+Y"), written just
+# before a relaunch and consumed (then deleted) on the next startup so the
+# restarted app reappears at the same position/size instead of a random spot.
+_RESTART_GEOMETRY_PATH = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "restart_geometry.json"
+)
+
+
+def save_restart_geometry(geometry):
+    """Persist the main window geometry so a relaunch restores its position."""
+    try:
+        with open(_RESTART_GEOMETRY_PATH, "w", encoding="utf-8") as handle:
+            json.dump({"geometry": geometry}, handle)
+    except (OSError, TypeError):
+        pass
+
+
+def pop_restart_geometry():
+    """Return the saved main-window geometry and delete the file; None if absent."""
+    try:
+        with open(_RESTART_GEOMETRY_PATH, "r", encoding="utf-8") as handle:
+            data = json.load(handle)
+    except (OSError, ValueError):
+        data = None
+    try:
+        os.remove(_RESTART_GEOMETRY_PATH)
+    except OSError:
+        pass
+    if isinstance(data, dict):
+        geometry = data.get("geometry")
+        return geometry if isinstance(geometry, str) else None
+    return None
+
+
 def load_dark_preference():
     """Return the persisted "use dark theme" preference (defaults to True)."""
     return bool(_load_prefs().get("dark_theme", True))

@@ -1553,6 +1553,7 @@ def get_latest_master_pipeline_run_details(name, path):
         "branch": "master",
         "pipeline_id": pipeline_id,
         "visible_stages": list(REDEPLOY_VISIBLE_STAGES),
+        "commit_id": (build.get("sourceVersion") or ""),
     }
 
 
@@ -1627,6 +1628,7 @@ def get_master_pipeline_run_for_merged_branch_details(name, path, branch):
         "repo": repo,
         "host": host,
         "branch": branch,
+        "commit_id": (build.get("sourceVersion") or merge_commit or ""),
     }
 
 

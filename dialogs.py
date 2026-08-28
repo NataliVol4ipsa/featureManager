@@ -556,10 +556,17 @@ def ask_branch_warning(parent, repo_count, title="Push all changes",
              foreground=theme.ERROR, justify="left", wraplength=360).pack(side="left")
 
     skip_empty = tk.BooleanVar(value=True)
-    ttk.Checkbutton(
-        dialog, variable=skip_empty,
-        text="Skip empty branches (no changes vs master)",
-    ).pack(padx=16, pady=(4, 0), anchor="w")
+    skip_row = ttk.Frame(dialog)
+    skip_row.pack(padx=16, pady=(4, 0), anchor="w")
+    GlyphCheck(skip_row, variable=skip_empty, mark="check").pack(side="left")
+    skip_label = tk.Label(
+        skip_row, text="Skip empty branches (no changes vs master)",
+        cursor="hand2",
+    )
+    skip_label.pack(side="left", padx=(4, 0))
+    skip_label.bind(
+        "<Button-1>", lambda _e: skip_empty.set(not skip_empty.get())
+    )
 
     result = {"ok": False}
 
@@ -637,16 +644,25 @@ def ask_pr_details(parent, repo_count):
     desc_text.pack(padx=16, pady=(0, 4), fill="x")
 
     skip_empty = tk.BooleanVar(value=True)
-    ttk.Checkbutton(
-        dialog, variable=skip_empty,
-        text="Skip empty branches (no changes vs master)",
-    ).pack(padx=16, pady=(4, 0), anchor="w")
+    skip_row = ttk.Frame(dialog)
+    skip_row.pack(padx=16, pady=(4, 0), anchor="w")
+    GlyphCheck(skip_row, variable=skip_empty, mark="check").pack(side="left")
+    skip_label = tk.Label(
+        skip_row, text="Skip empty branches (no changes vs master)",
+        cursor="hand2",
+    )
+    skip_label.pack(side="left", padx=(4, 0))
+    skip_label.bind(
+        "<Button-1>", lambda _e: skip_empty.set(not skip_empty.get())
+    )
 
     draft = tk.BooleanVar(value=False)
-    ttk.Checkbutton(
-        dialog, variable=draft,
-        text="Create as draft",
-    ).pack(padx=16, pady=(4, 0), anchor="w")
+    draft_row = ttk.Frame(dialog)
+    draft_row.pack(padx=16, pady=(4, 0), anchor="w")
+    GlyphCheck(draft_row, variable=draft, mark="check").pack(side="left")
+    draft_label = tk.Label(draft_row, text="Create as draft", cursor="hand2")
+    draft_label.pack(side="left", padx=(4, 0))
+    draft_label.bind("<Button-1>", lambda _e: draft.set(not draft.get()))
 
     error_label = tk.Label(dialog, text="", foreground=theme.ERROR)
     error_label.pack(padx=16, anchor="w")

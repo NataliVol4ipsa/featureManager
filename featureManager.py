@@ -25,6 +25,7 @@ from dialogs import edit_synonyms, ask_pipeline_poll_seconds, confirm_force_clos
 from toolbar import build_action_toolbar
 import packages
 import pipeline_estimates
+import pipeline_history
 import theme
 
 
@@ -56,6 +57,11 @@ def main():
     root = tk.Tk()
     root.title("Feature Manager")
     root.geometry("1160x740")
+    # After a relaunch, reopen at the previous position/size instead of a
+    # window-manager-chosen (random) spot.
+    _restart_geometry = theme.pop_restart_geometry()
+    if _restart_geometry:
+        root.geometry(_restart_geometry)
     theme.apply_window_icon(root)
 
     # Theme (dark or light). Persisted preference; must run before any widgets.
@@ -69,6 +75,11 @@ def main():
     settings_item = tk.Label(menubar, text="Settings", padx=10, pady=3,
                              background=theme.BG_PANEL, foreground=theme.FG)
     settings_item.pack(side="left")
+
+    # "Pipeline history" opens a read-only viewer of recorded monitor sessions.
+    history_item = tk.Label(menubar, text="Pipeline history", padx=10, pady=3,
+                            background=theme.BG_PANEL, foreground=theme.FG)
+    history_item.pack(side="left")
 
     # Text button on the far right that re-execs the process (picks up code
     # changes). Packed into the existing menu bar so nothing else shifts.
@@ -84,6 +95,14 @@ def main():
                 if win.winfo_exists():
                     sessions.append(win.session_state())
         theme.save_monitor_session(sessions)
+        # Remember where the window is so the restarted app reopens in place.
+        theme.save_restart_geometry(root.geometry())
+        # Reopen the pipeline history window too if it is currently open.
+        history_win = getattr(app, "_history_window", None)
+        history_open = bool(history_win is not None and history_win.winfo_exists())
+        theme.save_history_window_open(
+            history_open, history_win.geometry() if history_open else ""
+        )
         os.execv(sys.executable, [sys.executable, *sys.argv])
 
     def _toggle_theme():
@@ -178,6 +197,17 @@ def main():
         "<Leave>", lambda _e: settings_item.config(background=theme.BG_PANEL)
     )
 
+    history_item.bind(
+        "<Button-1>",
+        lambda _e: _open_history(),
+    )
+    history_item.bind(
+        "<Enter>", lambda _e: history_item.config(background=theme.BG_RAISED)
+    )
+    history_item.bind(
+        "<Leave>", lambda _e: history_item.config(background=theme.BG_PANEL)
+    )
+
     restart_item.bind("<Button-1>", lambda _e: _relaunch())
     restart_item.bind(
         "<Enter>", lambda _e: restart_item.config(background=theme.BG_RAISED)
@@ -194,6 +224,27 @@ def main():
     tk.Frame(root, height=1, background=theme.BORDER).pack(side="top", fill="x")
 
     app = FeatureManagerApp(root)
+
+    def _open_history(geometry=None):
+        """Open the single pipeline history window (focus it if already open)."""
+        existing = getattr(app, "_history_window", None)
+        if existing is not None and existing.winfo_exists():
+            win = existing
+        else:
+            win = pipeline_history.PipelineHistoryWindow(root, app)
+            app._history_window = win
+        # Restore the previous position/size after a restart.
+        if geometry:
+            win.geometry(geometry)
+        # Raise above the main window (which grabs focus on a restart).
+        win.deiconify()
+        win.lift()
+        win.attributes("-topmost", True)
+        win.after(
+            400,
+            lambda: win.winfo_exists() and win.attributes("-topmost", False),
+        )
+        win.focus_force()
 
     def _rebuild_toolbar(_event=None):
         active = app.nametowidget(app.select())
@@ -266,6 +317,12 @@ def main():
         app.workspaces_tab.reopen_monitor_session(session)
         for session in theme.pop_monitor_session()
     ])
+
+    # Reopen the pipeline history window too if it was open at relaunch. Delayed
+    # so it lands after the main window's focus grab and ends up on top.
+    _history_geometry = theme.pop_history_window_open()
+    if _history_geometry is not None:
+        root.after(350, lambda: _open_history(_history_geometry))
 
     root.mainloop()
 

@@ -74,7 +74,10 @@ secrets.json
 repo_synonyms.json
 ui_prefs.json
 monitor_session.json
+restart_geometry.json
 pipeline_estimates.json
+pipeline_history.json
+history_window.flag
 
 # Local-only Copilot working notes (not shared with the team).
 .github/copilot-instructions.md
