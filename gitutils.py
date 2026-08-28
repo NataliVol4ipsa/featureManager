@@ -698,16 +698,23 @@ def git_branch_is_empty(repo_path, target="master"):
     branch = git_current_branch(repo_path)
     if not branch or branch == target:
         return False
-    # Prefer the remote-tracking branch so the comparison mirrors what the PR
-    # would show; fall back to a local branch of the same name.
+    # Refresh *target* from origin first so the comparison mirrors the true
+    # remote state the PR will target, not a stale local tracking ref. Without
+    # this, a branch whose changes are already in the remote target still looks
+    # ahead of an out-of-date origin/<target> and is never skipped. Fall back to
+    # the existing tracking/local ref when offline or the fetch fails.
     ref = None
-    for candidate in (f"origin/{target}", target):
-        ok, _ = run_git(
-            repo_path, ["rev-parse", "--verify", "--quiet", candidate]
-        )
-        if ok:
-            ref = candidate
-            break
+    ok, _ = run_git(repo_path, ["fetch", "--quiet", "origin", target])
+    if ok:
+        ref = "FETCH_HEAD"
+    else:
+        for candidate in (f"origin/{target}", target):
+            ok, _ = run_git(
+                repo_path, ["rev-parse", "--verify", "--quiet", candidate]
+            )
+            if ok:
+                ref = candidate
+                break
     if ref is None:
         return False
     # Three-dot diff compares against the merge-base, exactly like a PR. An exit
