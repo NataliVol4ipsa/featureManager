@@ -165,7 +165,7 @@ class WorkspacesTab(ActionTabBase):
             ),
             (
                 "Restore NuGet packages",
-                self._action_restore,
+                self._action_restore_packages,
                 "For the selected workspace's repositories (excluding skipped "
                 "repos): runs 'dotnet restore' on each repo's solution to "
                 "refresh the restored packages (e.g. after a bump). An Azure CLI "
@@ -794,7 +794,7 @@ class WorkspacesTab(ActionTabBase):
         self.bump_packages(repos, include_public, include_private, label)
 
     # -- Restore NuGet packages -------------------------------------------- #
-    def _action_restore(self):
+    def _action_restore_packages(self):
         self.errors.clear()
         ok, workspace, repos = self._selected_active_repos()
         if not ok:
