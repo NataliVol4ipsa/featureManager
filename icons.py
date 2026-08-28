@@ -152,6 +152,16 @@ ACTION_ICON_DARK = {
         "luc/mRcqdPyeCearagBhEYBWgOFHMGdMby60ZvODr0Iwx/BAnuGbukoLrbWQ8eib0CaE9PBzqOra"
         "A20wbyXQ/ekYigqVZM8GhbbfhBkJob/wDjL15ROE2a1LAAAAAElFTkSuQmCC"
     ),
+    'Delete remote branches': (
+        "iVBORw0KGgoAAAANSUhEUgAAABIAAAASCAYAAABWzo5XAAABaUlEQVR4nO2UTUoDQRCFqyoiAQOa"
+        "hTLZuXCdzBEMieAyN1BPYA4gOIIH0BMYb5ClkAT1BE6yFnSXwY1ZRAhiunzT2qODcSTgMh809aaa"
+        "fl39N0wZPO34PhOvQlrWO3e3CDNhtB8M6/42q14Q6SalGYlIdaMThtApZhvVyi1U0kDbN0wjpCww"
+        "b8O85fUGTXymsEbPDX/t7YUryrTFrJGZ6inSJCypAUbNGQJJjo9U2WOl+6UV7Rfb4cgaDevlAMlj"
+        "yLnB5Cel7iCwRnFFkzH5rOZahS6Zc1dIkxqNEBJY2EMg1ekuG9pTlmq+QGFSkSOqldXNQBm4FWCv"
+        "kvGJiPluFFf5OjaHywU5Rxc5Hc8+l9HHFcBSUT66yOlSN7xZGP2zUXxqk7Fp5gtib7PTc58aZfCn"
+        "0bBWeUTiIScSUAZTYwIiKnq9vo9owbgvorrfxP0P8AiSf9BvqMhBqRO26JOUkSPeaMrAvS/IhHdg"
+        "zRoiy4P3EQAAAABJRU5ErkJggg=="
+    ),
     'Bump NuGet packages (public)': (
         "iVBORw0KGgoAAAANSUhEUgAAABIAAAASCAYAAABWzo5XAAACGElEQVR4nLWUsW/TQBTG37MDSaSS"
         "pKFIZWr/AQQTYsOssLDVwBKTZoVWYmIgDjMS6cSQRvYCuBsTEhNhYwTxD4SJSpS0iSqSiDiP7y5y"
@@ -606,6 +616,16 @@ ACTION_ICON_LIGHT = {
         "UOfE8lxTLDOtYMxZCIlHfswHqNNXZ7oy3UNOk3fZps0WcpwTGtJjBBCcJUQVwBbPRa6Zpl0qJJ+7"
         "TWNMVQGUD2CbAVaQvDF3C9MmyRlfhfCJ8Mi9hIpvlpnWXkj36BvTpoX0x6OopHugG8xUiuR+EvmY"
         "6IZzau1uFVNSQn/hA4EByBPBK0rEAAAAAElFTkSuQmCC"
+    ),
+    'Delete remote branches': (
+        "iVBORw0KGgoAAAANSUhEUgAAABIAAAASCAYAAABWzo5XAAABaUlEQVR4nO2UvUoDQRSFz8yqBBu1"
+        "S2khiWDhjmVikXSWvoH6BOYBBEfwAfQJjG9gaWdE3TaxEGIQtEyZSoK4M579G1yMi4plPlju3cuZ"
+        "s3f+VqCAbm3Nt164wDRm46Z/zTARwecL3c3VBow9A+wyPiMwgp1tquChx7cck43qlTYstuFhF1aO"
+        "WEow5oJD2ip4bPEtR2zUbfiLNhyve0asGIkhTHjMMj1kboAw5oQBkN6BNCiH0j4Jr3SvOr1RYlSr"
+        "aACHfP7CkQoGOjFiR3gf+2z9CgLnUnqXLHOZ7JDBIYUoM1AWbnHqO5CyiZlSz3WUwc4sQ/wFFECd"
+        "BmdAnRvvkggKnFHc5dvrPubmT1lDlkdfp07jx0bxEeBUo/Yj0lzd9jvUaUyN/tEo2bUWdyo5zWn+"
+        "611DAdRpFBtVX1h5tlJoFCCM1byJS+pu4CMlb1SvtmAjEdw/6Hvkngr6baTkjDLihS4ivV/MHB+I"
+        "vvcTRHkS0AAAAABJRU5ErkJggg=="
     ),
     'Bump NuGet packages (public)': (
         "iVBORw0KGgoAAAANSUhEUgAAABIAAAASCAYAAABWzo5XAAACEklEQVR4nLWTQWsTURDH/7NkQxFJ"

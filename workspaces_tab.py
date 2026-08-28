@@ -14,6 +14,7 @@ from gitutils import (
     git_current_branch, create_feature_branch, rebase_on_master,
     open_in_vscode, list_solutions, open_solutions, get_nuget_folders,
     workspace_branch_entries, save_branch_overrides,
+    remote_branch_exists, delete_remote_branch,
     SAVEPOS_MSG,
 )
 from parallel import run_in_parallel
@@ -21,7 +22,7 @@ from widgets import WorkspaceList, Tooltip
 from tab_base import ActionTabBase
 from dialogs import (
     ask_branch_name, ask_pbi_number, resolve_pbi_repos, edit_branch_overrides,
-    ask_include_skipped, ask_solutions_to_open,
+    ask_include_skipped, ask_solutions_to_open, ask_branches_to_delete,
 )
 import pbi
 
@@ -281,6 +282,17 @@ class WorkspacesTab(ActionTabBase):
                 "(current branch \u2192 master) and copies all 'repo name - pr "
                 "link' lines to the clipboard. Repos without an open PR are "
                 "listed in the Errors panel.",
+            ),
+            (
+                "Delete remote branches",
+                self._action_delete_remote_branches,
+                "For the selected workspace's repositories (excluding skipped "
+                "repos): lists every repo whose feature branch actually exists "
+                "on origin and lets you tick which ones to delete from the "
+                "remote (red-cross checkboxes, all off by default). Selected "
+                "branches are deleted with 'git push origin --delete'. This is "
+                "destructive and cannot be undone; nothing is deleted unless you "
+                "explicitly tick it.",
             ),
         ]
 
@@ -734,6 +746,66 @@ class WorkspacesTab(ActionTabBase):
                 self.errors.add(repos)
             return
         self.complete_prs(repos)
+
+    # -- Delete remote branches -------------------------------------------- #
+    def _action_delete_remote_branches(self):
+        ok, workspace, entries = self._selected_entries()
+        self.errors.clear()
+        if not ok:
+            if workspace is not None:
+                self.errors.add(entries)
+            return
+
+        # Only non-skipped repos, each with the feature branch configured for it.
+        active = [
+            (e["name"], e["path"], e["branch"])
+            for e in entries if not e["ignoreGit"]
+        ]
+        if not active:
+            self.errors.add(
+                "this workspace has no repositories to delete branches for"
+            )
+            return
+
+        # Checking origin hits the network, so filter to existing remote branches
+        # off the UI thread, then resume on the UI thread to show the picker.
+        self.progress.show_repos([])
+        self.progress.show_completion("Checking remote branches\u2026")
+
+        def _work():
+            flags = run_in_parallel(
+                active, lambda item: remote_branch_exists(item[1], item[2])
+            )
+            existing = [
+                (name, branch, path)
+                for (name, path, branch), present in zip(active, flags)
+                if present
+            ]
+            self.after(0, self._on_remote_branches_checked, existing)
+
+        threading.Thread(target=_work, daemon=True).start()
+
+    def _on_remote_branches_checked(self, existing):
+        """Show the branch picker once existing remote branches are known."""
+        self.progress.clear_completion()
+        if not existing:
+            self.errors.add(
+                "none of this workspace's feature branches exist on origin"
+            )
+            return
+
+        selected = ask_branches_to_delete(self, existing)
+        if not selected:
+            return
+
+        repos = [(name, path) for name, _branch, path in selected]
+        branches = {name: branch for name, branch, path in selected}
+        self.run_repo_action(
+            repos,
+            lambda n, p: delete_remote_branch(n, p, branches[n]),
+            "Remote branches deleted.",
+            parallel=True,
+        )
 
     # -- Run pipelines ----------------------------------------------------- #
     def _action_run_dev_pipeline(self):

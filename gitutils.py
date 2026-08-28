@@ -835,6 +835,20 @@ def git_push(name, path):
     return True, ""
 
 
+def delete_remote_branch(name, path, branch):
+    """Delete *branch* from origin for one repo. Returns (ok, error).
+
+    Uses ``push origin --delete`` so no local checkout is needed. Hits the
+    network, so call it off the UI thread.
+    """
+    if not is_git_repo(path):
+        return False, f"{name}: not a git repository"
+    ok, out = run_git(path, ["push", "origin", "--delete", branch])
+    if not ok:
+        return False, f"{name}: {out}"
+    return True, ""
+
+
 def git_remote_url(repo_path, remote="origin"):
     """Return the configured URL for *remote* (e.g. origin), or "" if none."""
     ok, out = run_git(repo_path, ["remote", "get-url", remote])

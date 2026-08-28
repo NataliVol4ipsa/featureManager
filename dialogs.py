@@ -1406,6 +1406,79 @@ def ask_include_skipped(parent, action_label, names):
     return result["value"]
 
 
+def ask_branches_to_delete(parent, entries):
+    """Modal to pick which remote branches to delete (red cross, all off).
+
+    *entries* is a list of ``(repo_name, branch, path)`` triples - only the
+    repositories that actually have the branch on origin. Every branch gets a
+    red-cross checkbox, all unticked by default (deleting a remote branch is
+    destructive, so nothing is selected without an explicit tick). Returns the
+    list of selected ``(repo_name, branch, path)`` triples on confirm, or None
+    if the dialog is cancelled.
+    """
+    dialog = tk.Toplevel(parent)
+    dialog.title("Delete remote branches")
+    dialog.transient(parent.winfo_toplevel())
+    dialog.resizable(False, False)
+
+    tk.Label(
+        dialog,
+        text="Tick the remote branches to delete from origin. This is "
+             "destructive and cannot be undone. Nothing is selected by default.",
+        justify="left", wraplength=460,
+    ).pack(padx=16, pady=(16, 8), anchor="w")
+
+    box = ttk.Frame(dialog)
+    box.pack(padx=16, fill="x")
+
+    checks = []  # (repo_name, branch, path, var)
+    for repo_name, branch, path in entries:
+        var = tk.BooleanVar(value=False)
+        row = ttk.Frame(box)
+        row.pack(anchor="w", fill="x", pady=1)
+        GlyphCheck(row, variable=var, mark="cross").pack(side="left")
+        label = tk.Label(
+            row, text=f"{repo_name}  \u2192  {branch}", cursor="hand2"
+        )
+        label.pack(side="left", padx=(4, 0))
+        label.bind("<Button-1>", lambda _e, v=var: v.set(not v.get()))
+        checks.append((repo_name, branch, path, var))
+
+    def _set_all(value):
+        for _n, _b, _p, var in checks:
+            var.set(value)
+
+    toggle_bar = ttk.Frame(dialog)
+    toggle_bar.pack(padx=16, pady=(8, 0), anchor="w")
+    ttk.Button(toggle_bar, text="Select all",
+               command=lambda: _set_all(True)).pack(side="left", padx=(0, 4))
+    ttk.Button(toggle_bar, text="Select none",
+               command=lambda: _set_all(False)).pack(side="left", padx=4)
+
+    result = {"value": None}
+
+    def _ok():
+        result["value"] = [
+            (n, b, p) for n, b, p, var in checks if var.get()
+        ]
+        dialog.destroy()
+
+    def _cancel():
+        result["value"] = None
+        dialog.destroy()
+
+    bar = ttk.Frame(dialog)
+    bar.pack(padx=16, pady=12)
+    ttk.Button(bar, text="Delete", command=_ok).pack(side="left", padx=4)
+    ttk.Button(bar, text="Cancel", command=_cancel).pack(side="left", padx=4)
+
+    dialog.protocol("WM_DELETE_WINDOW", _cancel)
+    _center_over_parent(dialog, parent)
+    dialog.grab_set()
+    parent.wait_window(dialog)
+    return result["value"]
+
+
 def ask_solutions_to_open(parent, entries):
     """Modal to choose which solutions to open in Visual Studio.
 
