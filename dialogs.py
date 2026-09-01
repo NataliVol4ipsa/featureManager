@@ -1719,7 +1719,8 @@ def ask_redeploy_selection(parent, names):
       * **Dev** - queue a master run deploying to Development.
       * **Acc** - queue a master run deploying to Acceptance.
       * **View latest** - just follow the repo's latest master run (any status);
-        ticking it disables that row's Dev/Acc (the run is not restarted).
+        ticking it auto-unticks that row's Dev/Acc (the run is not restarted),
+        and ticking Dev/Acc auto-unticks View latest.
 
     Each column also has a header "all" checkbox that toggles every row at once.
     Returns ``{repo: {"dev": bool, "acc": bool, "view": bool}}`` on confirm, or
@@ -1739,8 +1740,8 @@ def ask_redeploy_selection(parent, names):
         dialog,
         text="Tick Dev and/or Acc to queue a new master run from the latest "
              "commit. Tick 'View latest' to only follow the newest master run "
-             "(any status) without starting a new one - this disables Dev/Acc "
-             "for that repository. Production is never deployed.",
+             "(any status) without starting a new one - this unticks Dev/Acc "
+             "for that repository (and vice versa). Production is never deployed.",
         foreground=theme.FG_MUTED, justify="left", wraplength=520,
     ).pack(padx=16, pady=(0, 8), anchor="w")
 
@@ -1766,12 +1767,30 @@ def ask_redeploy_selection(parent, names):
 
     rows = []  # (name, dev_var, acc_var, view_var, dev_cb, acc_cb)
 
-    def _apply_row_lock(row):
-        """Disable Dev/Acc when a row's View latest is ticked."""
-        _name, dev_var, acc_var, view_var, dev_cb, acc_cb = row
-        state = "disabled" if view_var.get() else "normal"
-        dev_cb.configure(state=state)
-        acc_cb.configure(state=state)
+    # Guards the reciprocal auto-untick traces from re-triggering each other
+    # (unticking Dev must not make Acc re-untick View, and vice versa).
+    syncing = {"busy": False}
+
+    def _on_deploy_ticked(dev_var, acc_var, view_var):
+        """Ticking Dev or Acc auto-unticks that row's View latest."""
+        if syncing["busy"]:
+            return
+        if (dev_var.get() or acc_var.get()) and view_var.get():
+            syncing["busy"] = True
+            view_var.set(False)
+            syncing["busy"] = False
+
+    def _on_view_ticked(dev_var, acc_var, view_var):
+        """Ticking View latest auto-unticks that row's Dev and Acc."""
+        if syncing["busy"]:
+            return
+        if view_var.get():
+            syncing["busy"] = True
+            if dev_var.get():
+                dev_var.set(False)
+            if acc_var.get():
+                acc_var.set(False)
+            syncing["busy"] = False
 
     for index, name in enumerate(names, start=2):
         dev_var = tk.BooleanVar(value=False)
@@ -1788,22 +1807,38 @@ def ask_redeploy_selection(parent, names):
         )
         row = (name, dev_var, acc_var, view_var, dev_cb, acc_cb)
         rows.append(row)
-        view_var.trace_add("write", lambda *_a, r=row: _apply_row_lock(r))
+        dev_var.trace_add(
+            "write",
+            lambda *_a, d=dev_var, a=acc_var, v=view_var: _on_deploy_ticked(d, a, v),
+        )
+        acc_var.trace_add(
+            "write",
+            lambda *_a, d=dev_var, a=acc_var, v=view_var: _on_deploy_ticked(d, a, v),
+        )
+        view_var.trace_add(
+            "write",
+            lambda *_a, d=dev_var, a=acc_var, v=view_var: _on_view_ticked(d, a, v),
+        )
 
     def _toggle_all_dev():
         value = dev_all.get()
-        for _n, dev_var, _a, view_var, _dc, _ac in rows:
-            if not view_var.get():
-                dev_var.set(value)
+        if value:
+            view_all.set(False)
+        for _n, dev_var, _a, _v, _dc, _ac in rows:
+            dev_var.set(value)
 
     def _toggle_all_acc():
         value = acc_all.get()
-        for _n, _d, acc_var, view_var, _dc, _ac in rows:
-            if not view_var.get():
-                acc_var.set(value)
+        if value:
+            view_all.set(False)
+        for _n, _d, acc_var, _v, _dc, _ac in rows:
+            acc_var.set(value)
 
     def _toggle_all_view():
         value = view_all.get()
+        if value:
+            dev_all.set(False)
+            acc_all.set(False)
         for _n, _d, _a, view_var, _dc, _ac in rows:
             view_var.set(value)
 

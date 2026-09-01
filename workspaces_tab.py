@@ -340,8 +340,9 @@ class WorkspacesTab(ActionTabBase):
                 "dialog to pick, per repository, whether to redeploy the latest "
                 "master commit to Development and/or Acceptance (never "
                 "Production), or to only follow the newest master run (any "
-                "status) via 'View latest'. Ticking 'View latest' disables that "
-                "row's Dev/Acc. It then queues the chosen master runs and opens "
+                "status) via 'View latest'. Ticking 'View latest' auto-unticks "
+                "that row's Dev/Acc (and vice versa). It then queues the chosen "
+                "master runs and opens "
                 "a live monitor with an Auto-approve ACC button. Needs an "
                 "ADO_PAT with Build (Read & execute) permission.",
             ),
