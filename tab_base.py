@@ -1025,7 +1025,7 @@ class ActionTabBase(ttk.Frame):
         repos = [(name, path) for name, path, _ in active]
         branch_of = {name: branch for name, _, branch in active}
 
-        self.show_repos_async(repos, with_status=False)
+        self.show_repos_async(repos, with_status=True)
         self.progress.show_completion(
             "Resolving merged-PR master pipeline runs for monitor..."
         )
@@ -1046,10 +1046,17 @@ class ActionTabBase(ttk.Frame):
                     {}, [conn_err], "", [],
                 )
                 return
-            for name, path, _ in active:
+            def _resolve(entry):
+                name, path, _ = entry
+                self.after(0, self.progress.status, name, "in-progress")
                 ok, result = get_master_pipeline_run_for_merged_branch_details(
                     name, path, branch_of[name]
                 )
+                self.after(0, self.progress.status, name,
+                           "done" if ok else "error")
+                return name, ok, result
+
+            for name, ok, result in run_in_parallel(active, _resolve):
                 if ok:
                     run_infos[name] = result
                 else:
@@ -1084,8 +1091,12 @@ class ActionTabBase(ttk.Frame):
         test_reports = []
         seen_report_urls = set()
         errors = []
-        for wid, (name, path) in seen_wid.items():
-            ok, result = get_work_item_report_details_for_repo(name, path, wid)
+
+        def _resolve_wi(item):
+            wid, (name, path) = item
+            return get_work_item_report_details_for_repo(name, path, wid)
+
+        for ok, result in run_in_parallel(list(seen_wid.items()), _resolve_wi):
             if not ok:
                 errors.append(result)
                 continue
@@ -1161,7 +1172,7 @@ class ActionTabBase(ttk.Frame):
             return
 
         repos = [(name, path) for name, path, _m, _d, _a in tasks]
-        self.show_repos_async(repos, with_status=False)
+        self.show_repos_async(repos, with_status=True)
         self.progress.show_completion(
             "Resolving latest master pipeline runs for monitor..."
         )
@@ -1179,12 +1190,15 @@ class ActionTabBase(ttk.Frame):
 
             def _resolve(task):
                 name, path, mode, dev, acc = task
+                self.after(0, self.progress.status, name, "in-progress")
                 if mode == "view":
                     ok, result = get_latest_master_pipeline_run_details(name, path)
                 else:
                     ok, result = redeploy_master_for_repo_details(
                         name, path, dev, acc
                     )
+                self.after(0, self.progress.status, name,
+                           "done" if ok else "error")
                 return name, mode, ok, result
 
             results = run_in_parallel(tasks, _resolve)

@@ -14,6 +14,7 @@ import theme
 import icons
 from widgets import Tooltip
 import pipeline_history
+from parallel import run_in_parallel
 from pipelines import (
     get_pipeline_stage_statuses,
     rerun_failed_stage,
@@ -143,6 +144,15 @@ class PipelineMonitorWindow(tk.Toplevel):
         self._closed = False
         self._poll_in_progress = False
         self._next_poll_token = None
+        # Time-left estimates are hidden until the first live poll has run, so a
+        # freshly opened monitor never shows a guess before real stage data.
+        self._first_poll_done = False
+        # Per-poll aggregation, filled as each repo's result arrives so the
+        # window title/summary can be finalised once all repos are done.
+        self._poll_any_error = False
+        self._poll_latest_timestamp = ""
+        self._poll_autoapproved = []
+        self._poll_autoapprove_errors = []
         self._run_infos = dict(run_infos)
         # Owning tab (has the Errors panel); used to report poll errors.
         self._tab = parent
@@ -687,23 +697,33 @@ class PipelineMonitorWindow(tk.Toplevel):
             (key, title)
             for key, title in _STAGE_ORDER
             if key in row.get("configured_stages", [])
-            and stages.get(key) != "skipped"
         ]
         if not stage_order:
             stage_order = [("build", "Build")]
+
+        # Every configured stage keeps a fixed column; a skipped stage leaves its
+        # slot empty and the connector spans it (Build --- Acceptance keeps
+        # Acceptance under the Acceptance column instead of sliding left).
+        drawn = [
+            (slot, key, title)
+            for slot, (key, title) in enumerate(stage_order)
+            if stages.get(key) != "skipped"
+        ]
+        if not drawn:
+            drawn = [(0, stage_order[0][0], stage_order[0][1])]
 
         start_x = 34
         gap = 88
         y = 25
 
-        # Connector line between stages.
-        for idx in range(len(stage_order) - 1):
-            x1 = start_x + idx * gap + 20
-            x2 = start_x + (idx + 1) * gap - 20
+        # Connector line between consecutive drawn stages (spans skipped columns).
+        for i in range(len(drawn) - 1):
+            x1 = start_x + drawn[i][0] * gap + 20
+            x2 = start_x + drawn[i + 1][0] * gap - 20
             canvas.create_line(x1, y, x2, y, fill=theme.BORDER, width=2)
 
-        for idx, (key, title) in enumerate(stage_order):
-            x = start_x + idx * gap
+        for slot, key, title in drawn:
+            x = start_x + slot * gap
             state = stages.get(key, "waiting")
             style = _STAGE_STYLE.get(state, _STAGE_STYLE["waiting"])
             # A running stage with known progress is drawn as a circular bar: a
@@ -770,6 +790,10 @@ class PipelineMonitorWindow(tk.Toplevel):
             return
         label = row.get("estimate_label")
         if label is None or not label.winfo_exists():
+            return
+        # Nothing to estimate before the first live poll has fetched real data.
+        if not self._first_poll_done:
+            label.configure(text="")
             return
         estimate = row.get("estimate")
         if not estimate:
@@ -1038,93 +1062,111 @@ class PipelineMonitorWindow(tk.Toplevel):
         self._poll_in_progress = True
         self.title("Pipeline monitor - polling...")
 
+        # Reset the per-poll aggregation used by _apply_single_poll_result.
+        self._poll_any_error = False
+        self._poll_latest_timestamp = ""
+        self._poll_autoapproved = []
+        self._poll_autoapprove_errors = []
+
+        # Skipped placeholder rows have nothing to poll.
+        pollable = [
+            (repo, info) for repo, info in self._run_infos.items()
+            if not (info.get("skipped") or info.get("build_id") is None)
+        ]
+
+        def _fetch(item):
+            repo, info = item
+            ok, payload = get_pipeline_stage_statuses(info)
+            # Push each repo's result to the UI as soon as it is fetched, so
+            # rows update progressively instead of all at the very end.
+            self.after(0, self._apply_single_poll_result, repo, ok, payload)
+
         def _work():
-            results = {}
-            for repo, info in self._run_infos.items():
-                # Skipped placeholder rows have nothing to poll.
-                if info.get("skipped") or info.get("build_id") is None:
-                    continue
-                ok, payload = get_pipeline_stage_statuses(info)
-                results[repo] = (ok, payload)
-            self.after(0, self._apply_poll_results, results)
+            # Fan the per-repo status calls out over a thread pool - each is an
+            # independent network round-trip, so many repos no longer poll
+            # one-by-one.
+            run_in_parallel(pollable, _fetch)
+            self.after(0, self._finish_poll)
 
         threading.Thread(target=_work, daemon=True).start()
 
-    def _apply_poll_results(self, results):
+    def _apply_single_poll_result(self, repo, ok, payload):
+        if self._closed or repo not in self._rows:
+            return
+
+        if ok:
+            self._rows[repo]["stages"].update(payload.get("stages") or {})
+            self._rows[repo]["stage_identifiers"] = (
+                payload.get("stage_identifiers") or {}
+            )
+            self._rows[repo]["stage_progress"] = (
+                payload.get("stage_progress") or {}
+            )
+            self._rows[repo]["stage_times"] = (
+                payload.get("stage_times") or {}
+            )
+            self._poll_latest_timestamp = payload.get(
+                "updated_at", self._poll_latest_timestamp
+            )
+            if payload.get("autoapproved"):
+                target = payload.get("autoapproved_target")
+                if target:
+                    self._poll_autoapproved.append(f"{repo}({target})")
+                else:
+                    self._poll_autoapproved.append(repo)
+            if payload.get("autoapprove_error"):
+                self._poll_autoapprove_errors.append(
+                    f"{repo}: {payload.get('autoapprove_error')}"
+                )
+            build_id = self._rows[repo].get("build_id")
+            link_url = self._rows[repo].get("link_url")
+            link = self._rows[repo]["link"]
+            link.configure(
+                text=f"Build {build_id if build_id is not None else '?'}",
+                foreground=theme.LINK,
+                cursor="hand2" if link_url else "",
+                font=("", 9, "underline") if link_url else ("", 9),
+            )
+            link.unbind("<Button-1>")
+            if link_url:
+                link.bind("<Button-1>", lambda _e, u=link_url: webbrowser.open(u, new=2))
+            self._draw_row(repo)
+            self._update_estimate_label(repo)
+            # Recovered: allow a future error for this repo to be reported.
+            self._reported_poll_errors.pop(repo, None)
+        else:
+            self._poll_any_error = True
+            self._rows[repo]["link"].configure(
+                text="poll error", foreground=theme.ERROR, cursor=""
+            )
+            self._rows[repo]["link"].unbind("<Button-1>")
+            # Surface the actual error in the tab's Errors panel (once per
+            # distinct message, so repeated polls do not spam it).
+            message = str(payload)
+            if self._reported_poll_errors.get(repo) != message:
+                self._reported_poll_errors[repo] = message
+                self._report_error(f"{repo}: pipeline poll failed - {message}")
+
+        self._refresh_autoapprove_locks()
+
+    def _finish_poll(self):
         if self._closed:
             return
 
         self._poll_in_progress = False
-        any_error = False
-        latest_timestamp = ""
-        autoapproved_repos = []
-        autoapprove_errors = []
-
-        for repo, (ok, payload) in results.items():
-            if repo not in self._rows:
-                continue
-            if ok:
-                self._rows[repo]["stages"].update(payload.get("stages") or {})
-                self._rows[repo]["stage_identifiers"] = (
-                    payload.get("stage_identifiers") or {}
-                )
-                self._rows[repo]["stage_progress"] = (
-                    payload.get("stage_progress") or {}
-                )
-                self._rows[repo]["stage_times"] = (
-                    payload.get("stage_times") or {}
-                )
-                latest_timestamp = payload.get("updated_at", latest_timestamp)
-                if payload.get("autoapproved"):
-                    target = payload.get("autoapproved_target")
-                    if target:
-                        autoapproved_repos.append(f"{repo}({target})")
-                    else:
-                        autoapproved_repos.append(repo)
-                if payload.get("autoapprove_error"):
-                    autoapprove_errors.append(f"{repo}: {payload.get('autoapprove_error')}")
-                build_id = self._rows[repo].get("build_id")
-                link_url = self._rows[repo].get("link_url")
-                link = self._rows[repo]["link"]
-                link.configure(
-                    text=f"Build {build_id if build_id is not None else '?'}",
-                    foreground=theme.LINK,
-                    cursor="hand2" if link_url else "",
-                    font=("", 9, "underline") if link_url else ("", 9),
-                )
-                link.unbind("<Button-1>")
-                if link_url:
-                    link.bind("<Button-1>", lambda _e, u=link_url: webbrowser.open(u, new=2))
-                self._draw_row(repo)
-                self._update_estimate_label(repo)
-                # Recovered: allow a future error for this repo to be reported.
-                self._reported_poll_errors.pop(repo, None)
-            else:
-                any_error = True
-                self._rows[repo]["link"].configure(
-                    text="poll error", foreground=theme.ERROR, cursor=""
-                )
-                self._rows[repo]["link"].unbind("<Button-1>")
-                # Surface the actual error in the tab's Errors panel (once per
-                # distinct message, so repeated polls do not spam it).
-                message = str(payload)
-                if self._reported_poll_errors.get(repo) != message:
-                    self._reported_poll_errors[repo] = message
-                    self._report_error(f"{repo}: pipeline poll failed - {message}")
-
-            self._refresh_autoapprove_locks()
-
+        self._first_poll_done = True
+        latest_timestamp = self._poll_latest_timestamp
         if latest_timestamp:
             latest_time = _format_local_time(latest_timestamp)
             title = f"Pipeline monitor - last updated: {latest_timestamp}"
             if latest_time:
                 title = f"Pipeline monitor - last updated: {latest_time}"
-            if autoapproved_repos:
-                title += " | auto-approved: " + ",".join(autoapproved_repos)
-            if autoapprove_errors:
+            if self._poll_autoapproved:
+                title += " | auto-approved: " + ",".join(self._poll_autoapproved)
+            if self._poll_autoapprove_errors:
                 title += " | approval error"
             self.title(title)
-        elif any_error:
+        elif self._poll_any_error:
             self.title("Pipeline monitor - last updated: error while polling")
         else:
             self.title("Pipeline monitor")

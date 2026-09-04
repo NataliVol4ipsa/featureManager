@@ -1199,6 +1199,18 @@ def get_pipeline_stage_statuses(run_info):
         for key, record in stage_records.items()
     }
 
+    # A stage that never appears in this run's timeline is not part of its
+    # pipeline (e.g. a master run with no Development deployment). Once Build
+    # has finished, treat any still-absent stage as skipped so the monitor
+    # drops it - a long line between the neighbours - instead of showing a
+    # phantom "waiting" gate, and stops counting it toward the time-left estimate.
+    present_keys = set(stage_records)
+    build_finished = stages.get("build") not in ("waiting", "running")
+    if present_keys and build_finished:
+        for key in list(stages):
+            if key not in present_keys:
+                stages[key] = "skipped"
+
     # For running stages, derive the current step + step-count completion %
     # from the same timeline (no extra API calls).
     stage_progress = {}

@@ -32,6 +32,76 @@ def _center_over_parent(dialog, parent):
     dialog.geometry(f"+{x}+{y}")
 
 
+class _ScrollableList(ttk.Frame):
+    """A vertically scrollable container for a long list of dialog rows.
+
+    Rows are added to ``self.inner`` (via pack or grid, exactly as they would be
+    on a plain frame). After the rows are built, call ``finalize(row_count)``:
+    when *row_count* exceeds *threshold* a scrollbar appears and the visible
+    height is capped to roughly *threshold* rows; otherwise the container simply
+    sizes to its content and no scrollbar is shown. This keeps the dialog's
+    action buttons on screen even when a workspace has many repositories.
+    """
+
+    def __init__(self, master, threshold=10, **kwargs):
+        super().__init__(master, **kwargs)
+        self._threshold = threshold
+        self._canvas = tk.Canvas(self, highlightthickness=0, background=theme.BG)
+        self._scrollbar = ttk.Scrollbar(
+            self, orient="vertical", command=self._canvas.yview
+        )
+        self.inner = ttk.Frame(self._canvas)
+        self._window = self._canvas.create_window(
+            (0, 0), window=self.inner, anchor="nw"
+        )
+        self._canvas.configure(yscrollcommand=self._scrollbar.set)
+        self._canvas.pack(side="left", fill="both", expand=True)
+        # Keep the scroll region in step with the content and let rows using
+        # fill="x" stretch to the full canvas width.
+        self.inner.bind(
+            "<Configure>",
+            lambda _e: self._canvas.configure(
+                scrollregion=self._canvas.bbox("all")
+            ),
+        )
+        self._canvas.bind(
+            "<Configure>",
+            lambda e: self._canvas.itemconfigure(self._window, width=e.width),
+        )
+
+    def finalize(self, row_count):
+        """Size the container and show a scrollbar only for long lists."""
+        self.inner.update_idletasks()
+        req_h = self.inner.winfo_reqheight()
+        req_w = self.inner.winfo_reqwidth()
+        self._canvas.configure(width=req_w)
+        if row_count > self._threshold:
+            # Show about *threshold* rows; the rest scroll into view.
+            self._canvas.configure(
+                height=int(req_h * self._threshold / row_count)
+            )
+            self._scrollbar.pack(side="right", fill="y")
+            self._canvas.bind("<Enter>", self._bind_wheel)
+            self._canvas.bind("<Leave>", self._unbind_wheel)
+        else:
+            self._canvas.configure(height=req_h)
+
+    def scroll_to_bottom(self):
+        """Reveal the last row (used after a row is appended interactively)."""
+        self.inner.update_idletasks()
+        self._canvas.configure(scrollregion=self._canvas.bbox("all"))
+        self._canvas.yview_moveto(1.0)
+
+    def _bind_wheel(self, _event):
+        self._canvas.bind_all("<MouseWheel>", self._on_wheel)
+
+    def _unbind_wheel(self, _event):
+        self._canvas.unbind_all("<MouseWheel>")
+
+    def _on_wheel(self, event):
+        self._canvas.yview_scroll(int(-event.delta / 120), "units")
+
+
 def _addable_repositories():
     """Return (ordered_names, name_to_path) of repos that can be added.
 
@@ -348,8 +418,9 @@ def ask_commit_message(parent, repos, branch_warning=None, change_counts=None):
     shared_entry.pack(padx=16, pady=(0, 8), fill="x")
     shared_entry.focus_set()
 
-    body = ttk.Frame(dialog)
-    body.pack(padx=16, fill="x")
+    scroll = _ScrollableList(dialog)
+    scroll.pack(padx=16, fill="x")
+    body = scroll.inner
     body.columnconfigure(0, minsize=260)
     ttk.Label(body, text="Repository", font=("", 9, "bold")).grid(
         row=0, column=0, sticky="w", padx=4, pady=(0, 4)
@@ -438,6 +509,7 @@ def ask_commit_message(parent, repos, branch_warning=None, change_counts=None):
 
     shared_var.trace_add("write", _apply_shared)
     _refresh_shared()
+    scroll.finalize(len(repos))
 
     # Expandable per-repo diff view, revealed by clicking a "Changes" cell.
     detail_host = ttk.Frame(dialog)
@@ -1032,25 +1104,31 @@ def ask_workspace_branches(parent, repo_names, initial="", current_branches=None
         justify="left", wraplength=460,
     ).pack(padx=16, pady=(16, 8), anchor="w")
 
-    body = ttk.Frame(dialog)
-    body.pack(padx=16, fill="x")
+    name_frame = ttk.Frame(dialog)
+    name_frame.pack(padx=16, fill="x")
 
-    ttk.Label(body, text="Workspace name", font=("", 9, "bold")).grid(
+    ttk.Label(name_frame, text="Workspace name", font=("", 9, "bold")).grid(
         row=0, column=0, sticky="w", padx=4, pady=(0, 6)
     )
     name_var = tk.StringVar(value=initial)
-    name_entry = ttk.Entry(body, textvariable=name_var, width=40)
+    name_entry = ttk.Entry(name_frame, textvariable=name_var, width=40)
     name_entry.grid(row=0, column=1, columnspan=2, sticky="w", padx=4, pady=(0, 6))
     name_entry.focus_set()
 
+    # Repo rows scroll independently so the workspace name field and the action
+    # buttons stay visible even when the workspace has many repositories.
+    scroll = _ScrollableList(dialog)
+    scroll.pack(padx=16, fill="x")
+    body = scroll.inner
+
     ttk.Label(body, text="Repository", font=("", 9, "bold")).grid(
-        row=1, column=0, sticky="w", padx=4, pady=(4, 4)
+        row=0, column=0, sticky="w", padx=4, pady=(4, 4)
     )
     ttk.Label(body, text="Feature branch", font=("", 9, "bold")).grid(
-        row=1, column=1, sticky="w", padx=4, pady=(4, 4)
+        row=0, column=1, sticky="w", padx=4, pady=(4, 4)
     )
     ttk.Label(body, text="Ignore git", font=("", 9, "bold")).grid(
-        row=1, column=2, sticky="w", padx=4, pady=(4, 4)
+        row=0, column=2, sticky="w", padx=4, pady=(4, 4)
     )
 
     repo_list = list(repo_names)  # mutable: grows as repos are added
@@ -1065,7 +1143,7 @@ def ask_workspace_branches(parent, repo_names, initial="", current_branches=None
     overridden = {}
     syncing = {"on": False}
     current_branches = dict(current_branches or {})
-    row_counter = {"next": 2}
+    row_counter = {"next": 1}
 
     def _add_row(repo, is_new):
         index = row_counter["next"]
@@ -1132,6 +1210,7 @@ def ask_workspace_branches(parent, repo_names, initial="", current_branches=None
 
     for repo in repo_list:
         _add_row(repo, is_new=False)
+    scroll.finalize(len(repo_list))
 
     # Live-sync every non-overridden, non-ignored branch field to the workspace
     # name as it is typed (matches the pre-filled create-from-PBI behaviour).
@@ -1175,6 +1254,9 @@ def ask_workspace_branches(parent, repo_names, initial="", current_branches=None
         _add_row(name, is_new=True)
         add_combo.set("")
         add_combo.config(values=_available_repos())
+        # Re-cap the height for the new count and reveal the just-added row.
+        scroll.finalize(len(repo_list))
+        scroll.scroll_to_bottom()
 
     ttk.Button(add_bar, text="Add", command=_add_selected).pack(side="left")
 
@@ -1370,8 +1452,9 @@ def edit_branch_overrides(parent, workspace_name, entries):
         "trash button. Only differences are saved.",
     )
 
-    table = ttk.Frame(dialog)
-    table.pack(padx=16, fill="x")
+    scroll = _ScrollableList(dialog)
+    scroll.pack(padx=16, fill="x")
+    table = scroll.inner
     ttk.Label(table, text="Repository", font=("", 9, "bold")).grid(
         row=0, column=0, sticky="w", padx=4, pady=(0, 4)
     )
@@ -1470,6 +1553,7 @@ def edit_branch_overrides(parent, workspace_name, entries):
     for entry in entries:
         _add_row(entry["name"], entry["path"], entry["branch"],
                  entry["ignoreGit"], is_new=False)
+    scroll.finalize(len(rows))
 
     error_label = tk.Label(dialog, text="", foreground=theme.ERROR,
                            justify="left", wraplength=460)
@@ -1498,6 +1582,9 @@ def edit_branch_overrides(parent, workspace_name, entries):
                  default, False, is_new=True)
         add_combo.set("")
         add_combo.config(values=_available_repos())
+        # Re-cap the height for the new count and reveal the just-added row.
+        scroll.finalize(len(rows))
+        scroll.scroll_to_bottom()
 
     ttk.Button(add_bar, text="Add", command=_add_selected).pack(side="left")
 
@@ -1577,8 +1664,9 @@ def ask_include_skipped(parent, action_label, names):
         justify="left", wraplength=420,
     ).pack(padx=16, pady=(16, 8), anchor="w")
 
-    box = ttk.Frame(dialog)
-    box.pack(padx=16, fill="x")
+    scroll = _ScrollableList(dialog)
+    scroll.pack(padx=16, fill="x")
+    box = scroll.inner
     checks = {}
     for name in names:
         var = tk.BooleanVar(value=False)
@@ -1589,6 +1677,7 @@ def ask_include_skipped(parent, action_label, names):
         label.pack(side="left", padx=(4, 0))
         label.bind("<Button-1>", lambda _e, v=var: v.set(not v.get()))
         checks[name] = var
+    scroll.finalize(len(names))
 
     result = {"value": None}
 
@@ -1634,8 +1723,9 @@ def ask_branches_to_delete(parent, entries):
         justify="left", wraplength=460,
     ).pack(padx=16, pady=(16, 8), anchor="w")
 
-    box = ttk.Frame(dialog)
-    box.pack(padx=16, fill="x")
+    scroll = _ScrollableList(dialog)
+    scroll.pack(padx=16, fill="x")
+    box = scroll.inner
 
     checks = []  # (repo_name, branch, path, var)
     for repo_name, branch, path in entries:
@@ -1649,6 +1739,7 @@ def ask_branches_to_delete(parent, entries):
         label.pack(side="left", padx=(4, 0))
         label.bind("<Button-1>", lambda _e, v=var: v.set(not v.get()))
         checks.append((repo_name, branch, path, var))
+    scroll.finalize(len(entries))
 
     def _set_all(value):
         for _n, _b, _p, var in checks:
@@ -1707,8 +1798,9 @@ def ask_solutions_to_open(parent, entries):
         justify="left", wraplength=460,
     ).pack(padx=16, pady=(16, 8), anchor="w")
 
-    box = ttk.Frame(dialog)
-    box.pack(padx=16, fill="x")
+    scroll = _ScrollableList(dialog)
+    scroll.pack(padx=16, fill="x")
+    box = scroll.inner
 
     checks = []  # (sln_path, var)
     last_repo = None
@@ -1726,6 +1818,7 @@ def ask_solutions_to_open(parent, entries):
         label.pack(side="left", padx=(4, 0))
         label.bind("<Button-1>", lambda _e, v=var: v.set(not v.get()))
         checks.append((sln, var))
+    scroll.finalize(len(scroll.inner.winfo_children()))
 
     def _set_all(value):
         for _sln, var in checks:
@@ -1844,8 +1937,9 @@ def ask_deploy_selection(parent, entries, environment_label):
         foreground=theme.FG_MUTED, justify="left", wraplength=480,
     ).pack(padx=16, pady=(0, 8), anchor="w")
 
-    table = ttk.Frame(dialog)
-    table.pack(padx=16, fill="x")
+    scroll = _ScrollableList(dialog)
+    scroll.pack(padx=16, fill="x")
+    table = scroll.inner
     ttk.Label(table, text="Deploy", font=("", 9, "bold")).grid(
         row=0, column=0, sticky="w", padx=4, pady=(0, 4)
     )
@@ -1866,6 +1960,7 @@ def ask_deploy_selection(parent, entries, environment_label):
         note = tk.Label(table, text="", justify="left", wraplength=260)
         note.grid(row=index, column=2, sticky="w", padx=6, pady=2)
         rows.append((name, already, var, note, short, subject))
+    scroll.finalize(len(entries))
 
     def _commit_text(short, subject):
         if not short and not subject:
@@ -1951,8 +2046,9 @@ def ask_redeploy_selection(parent, names):
         foreground=theme.FG_MUTED, justify="left", wraplength=520,
     ).pack(padx=16, pady=(0, 8), anchor="w")
 
-    table = ttk.Frame(dialog)
-    table.pack(padx=16, fill="x")
+    scroll = _ScrollableList(dialog)
+    scroll.pack(padx=16, fill="x")
+    table = scroll.inner
 
     dev_all = tk.BooleanVar(value=False)
     acc_all = tk.BooleanVar(value=False)
@@ -2063,6 +2159,7 @@ def ask_redeploy_selection(parent, names):
     ttk.Label(table, text="all", foreground=theme.FG_MUTED).grid(
         row=1, column=4, sticky="w", padx=(10, 4), pady=(2, 4)
     )
+    scroll.finalize(len(names))
 
     result = {"value": None}
 
