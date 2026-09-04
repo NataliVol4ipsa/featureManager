@@ -44,6 +44,16 @@ _STAGE_ORDER = [
     ("production", "Production"),
 ]
 
+# Row geometry for the two view modes. Compact drops the per-circle status and
+# environment labels and packs the rows closer together while keeping columns
+# (and therefore circle x-positions) unchanged.
+_GRAPH_HEIGHT_FULL = 62
+_GRAPH_HEIGHT_COMPACT = 26
+_ROW_MINSIZE_FULL = 58
+_ROW_MINSIZE_COMPACT = 24
+_CIRCLE_Y_FULL = 25
+_CIRCLE_Y_COMPACT = 13
+
 _STAGE_STYLE = {
     "waiting": {
         "fill": theme.BG_INPUT,
@@ -162,6 +172,7 @@ class PipelineMonitorWindow(tk.Toplevel):
         self._show_prod_control = bool(show_prod_control)
         self._release_message = bool(release_message)
         self._estimates_enabled = bool(theme.load_pipeline_estimates_enabled())
+        self._compact = bool(theme.load_pipeline_monitor_compact())
         self._pbi_title = (pbi_title or "").strip()
         self._test_reports = list(test_reports or [])
         self._rows = {}
@@ -286,6 +297,21 @@ class PipelineMonitorWindow(tk.Toplevel):
             )
         self._copy_links_button.pack(side="left", padx=(12, 0))
 
+        # Compact/full view toggle, right-aligned so it never crowds the
+        # left-hand action buttons.
+        self._compact_button = ttk.Button(
+            controls,
+            text="Full view" if self._compact else "Compact view",
+            command=self._toggle_compact,
+        )
+        self._compact_button.pack(side="right")
+        Tooltip(
+            self._compact_button,
+            "Switch between the full view (each stage circle labelled with its "
+            "status and environment) and the compact view (labels hidden, rows "
+            "packed closer together).",
+        )
+
         self._sync_control_labels()
 
         table_shell = ttk.Frame(self)
@@ -309,7 +335,7 @@ class PipelineMonitorWindow(tk.Toplevel):
         self._bind_pan_widget(self._inner)
 
         for index, (repo, info) in enumerate(sorted(self._run_infos.items())):
-            self._inner.grid_rowconfigure(index, minsize=58)
+            self._inner.grid_rowconfigure(index, minsize=self._row_minsize())
 
             # Column 0 (left of the name): amber "previous run" marker on a row
             # that shows an existing run instead of a freshly started one.
@@ -335,16 +361,16 @@ class PipelineMonitorWindow(tk.Toplevel):
                 )
                 skipped.grid(row=index, column=2, sticky="w", padx=6, pady=0)
                 self._bind_pan_widget(skipped)
-                self._rows[repo] = {"skipped": True}
+                self._rows[repo] = {"skipped": True, "index": index}
                 continue
-
             configured_stages = list(info.get("visible_stages") or [
                 "build", "development", "acceptance", "production"
             ])
             stage_count = max(1, len(configured_stages))
             graph_width = max(120, 68 + (stage_count - 1) * 88)
 
-            graph = tk.Canvas(self._inner, width=graph_width, height=62,
+            graph = tk.Canvas(self._inner, width=graph_width,
+                              height=self._graph_height(),
                               background=theme.BG, highlightthickness=0)
             graph.grid(row=index, column=2, sticky="w", padx=6, pady=0)
             self._bind_pan_widget(graph)
@@ -435,6 +461,7 @@ class PipelineMonitorWindow(tk.Toplevel):
                 "estimate": estimate,
                 "estimate_label": estimate_label,
                 "environment": info.get("environment"),
+                "index": index,
             }
             # Seed the last recorded stage states (history reproduction) so the
             # row shows how it looked before, prior to the first live poll.
@@ -685,6 +712,37 @@ class PipelineMonitorWindow(tk.Toplevel):
         canvas.xview_scroll(int(-dx / 2), "units")
         canvas.yview_scroll(int(-dy / 2), "units")
 
+    def _graph_height(self):
+        return _GRAPH_HEIGHT_COMPACT if self._compact else _GRAPH_HEIGHT_FULL
+
+    def _row_minsize(self):
+        return _ROW_MINSIZE_COMPACT if self._compact else _ROW_MINSIZE_FULL
+
+    def _toggle_compact(self):
+        """Switch between the full and compact view and re-layout every row."""
+        self._compact = not self._compact
+        self._apply_view_mode()
+
+    def _apply_view_mode(self):
+        """Apply the current view mode to row heights, canvases and the window."""
+        if self._closed:
+            return
+        self._compact_button.configure(
+            text="Full view" if self._compact else "Compact view"
+        )
+        minsize = self._row_minsize()
+        height = self._graph_height()
+        for repo, row in self._rows.items():
+            index = row.get("index")
+            if index is not None:
+                self._inner.grid_rowconfigure(index, minsize=minsize)
+            graph = row.get("graph")
+            if graph is not None and graph.winfo_exists():
+                graph.configure(height=height)
+            if not row.get("skipped"):
+                self._draw_row(repo)
+        self.after_idle(self._fit_to_content)
+
     def _draw_row(self, repo):
         row = self._rows[repo]
         canvas = row["graph"]
@@ -714,7 +772,7 @@ class PipelineMonitorWindow(tk.Toplevel):
 
         start_x = 34
         gap = 88
-        y = 25
+        y = _CIRCLE_Y_COMPACT if self._compact else _CIRCLE_Y_FULL
 
         # Connector line between consecutive drawn stages (spans skipped columns).
         for i in range(len(drawn) - 1):
@@ -755,13 +813,18 @@ class PipelineMonitorWindow(tk.Toplevel):
                     x - 10, y - 10, x + 10, y + 10,
                     fill=style["fill"], outline=style["outline"], width=2,
                 )
-            canvas.create_text(x, y + 24, text=title, fill=theme.FG, font=("", 8))
-            # Live theme colour so the state label stays visible in the light theme.
-            label_color = (theme.FG_MUTED if state in ("waiting", "skipped")
-                           else theme.FG)
-            canvas.create_text(
-                x, y - 18, text=style["label"], fill=label_color, font=("", 8)
-            )
+            # In compact view the per-circle environment/status labels are
+            # hidden; circle x-positions (columns) stay identical either way.
+            if not self._compact:
+                canvas.create_text(
+                    x, y + 24, text=title, fill=theme.FG, font=("", 8)
+                )
+                # Live theme colour so the state label stays visible in light theme.
+                label_color = (theme.FG_MUTED if state in ("waiting", "skipped")
+                               else theme.FG)
+                canvas.create_text(
+                    x, y - 18, text=style["label"], fill=label_color, font=("", 8)
+                )
             # A failed stage is retryable: remember its circle and, while it is
             # hovered, draw a white rerun icon on top of the red circle.
             if state == "failed":

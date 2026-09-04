@@ -136,6 +136,11 @@ def main():
         else:
             _log_estimate(pipeline_estimates.status_message())
 
+    def _toggle_pipeline_monitor_compact():
+        theme.save_pipeline_monitor_compact(
+            not theme.load_pipeline_monitor_compact()
+        )
+
     def _settings_entries():
         return [
             ("Repository synonyms\u2026", lambda: edit_synonyms(root), False),
@@ -148,6 +153,11 @@ def main():
                 "Estimate pipeline time left",
                 _toggle_pipeline_estimates,
                 theme.load_pipeline_estimates_enabled(),
+            ),
+            (
+                "Compact pipeline monitor by default",
+                _toggle_pipeline_monitor_compact,
+                theme.load_pipeline_monitor_compact(),
             ),
             ("Dark theme", _toggle_theme, theme.load_dark_preference()),
         ]

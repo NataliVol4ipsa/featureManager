@@ -253,6 +253,18 @@ def save_pipeline_estimates_enabled(enabled):
     _save_prefs(data)
 
 
+def load_pipeline_monitor_compact():
+    """Return the default pipeline-monitor view mode (True = compact)."""
+    return bool(_load_prefs().get("pipeline_monitor_compact", False))
+
+
+def save_pipeline_monitor_compact(compact):
+    """Persist the default pipeline-monitor view mode (compact vs full)."""
+    data = _load_prefs()
+    data["pipeline_monitor_compact"] = bool(compact)
+    _save_prefs(data)
+
+
 def apply_theme(root, dark=None):
     """Apply the chosen palette to *root* and every widget created under it.
 
