@@ -15,6 +15,7 @@ from gitutils import (
     open_in_vscode, list_solutions, open_solutions, get_nuget_folders,
     workspace_branch_entries, save_branch_overrides,
     remote_branch_exists, delete_remote_branch,
+    set_workspace_folders,
     SAVEPOS_MSG,
 )
 from parallel import run_in_parallel
@@ -495,14 +496,67 @@ class WorkspacesTab(ActionTabBase):
             self.errors.add("this workspace has no folders to configure")
             return
 
-        overrides = edit_branch_overrides(self, workspace, entries)
-        if overrides is None:
+        plan = edit_branch_overrides(self, workspace, entries)
+        if plan is None:
             return
+
+        overrides = plan["overrides"]
+        added = plan["added"]        # list of (name, path, branch, ignore)
+        removed = set(plan["removed"])
+
+        # New repos that keep a feature branch get the same treatment as a
+        # brand-new one: decide what to do with any uncommitted changes, then
+        # check out master, pull and branch off. Do this BEFORE touching the
+        # workspace file so that if the user aborts, nothing (not even the
+        # removals) is applied. "Ignore git" new repos keep their own branch.
+        branch_new = [(n, p, b) for n, p, b, ignore in added if not ignore and b]
+        decisions = {}
+        suffix_of = {}
+        if branch_new:
+            add_repos = [(n, p) for n, p, _ in branch_new]
+            for name, _p, branch in branch_new:
+                # create_feature_branch prepends "feature/", so pass the suffix.
+                suffix_of[name] = (
+                    branch[len("feature/"):] if branch.startswith("feature/")
+                    else branch
+                )
+            decisions = self.collect_change_decisions(
+                add_repos, allow_move=True,
+                skip_branch=lambda n: f"feature/{suffix_of.get(n)}",
+            )
+            if decisions is None:
+                return
+
+        # Every validation passed and the user approved the new-repo actions, so
+        # now apply the workspace file changes: rewrite the folder list (add new,
+        # drop removed) and persist the branch overrides.
+        if added or removed:
+            current = [(e["name"], e["path"]) for e in entries]
+            kept = [(n, p) for n, p in current if n not in removed]
+            final_repos = kept + [(n, p) for n, p, _b, _ig in added]
+            ok_folders, msg_folders = set_workspace_folders(workspace, final_repos)
+            if not ok_folders:
+                self.errors.add(msg_folders)
+                return
 
         ok_save, message = save_branch_overrides(workspace, overrides)
         if not ok_save:
             self.errors.add(message)
             return
+
+        if branch_new:
+            add_repos = [(n, p) for n, p, _ in branch_new]
+            self.run_repo_action(
+                add_repos,
+                lambda n, p: create_feature_branch(
+                    n, p, suffix_of[n], decisions.get(n)
+                ),
+                "Repositories added and feature branches created.",
+                on_complete=lambda _ok: self._on_workspace_selected(workspace),
+                parallel=True,
+            )
+            return
+
         # Reflect any change in the Details table.
         self._on_workspace_selected(workspace)
 

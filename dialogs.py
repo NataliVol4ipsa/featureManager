@@ -5,11 +5,16 @@ parent widget so they can be centred on the main window.
 """
 
 import json
+import os
 import tkinter as tk
 from tkinter import ttk
 
-from gitutils import is_valid_branch_name, git_file_changes
+from gitutils import (
+    is_valid_branch_name, git_file_changes, get_service_folders,
+    get_nuget_folders, REPOS_ROOT, NUGETS_ROOT,
+)
 from widgets import Tooltip, GlyphCheck
+import icons
 import pbi
 import theme
 
@@ -25,6 +30,23 @@ def _center_over_parent(dialog, parent):
     x = px + (pw - dw) // 2
     y = py + (ph - dh) // 2
     dialog.geometry(f"+{x}+{y}")
+
+
+def _addable_repositories():
+    """Return (ordered_names, name_to_path) of repos that can be added.
+
+    Main service folders (under REPOS_ROOT) come first, then the shared NuGet
+    folders (under NUGETS_ROOT) at the end - mirroring the order of the folder
+    dropdown in the create-from-PBI mapping screen. A service folder wins when a
+    name exists in both roots.
+    """
+    services = {name: os.path.join(REPOS_ROOT, name)
+                for name in get_service_folders()}
+    nugets = {name: os.path.join(NUGETS_ROOT, name)
+              for name in get_nuget_folders()}
+    ordered = sorted(services) + [n for n in sorted(nugets) if n not in services]
+    paths = {**nugets, **services}
+    return ordered, paths
 
 
 # Human-readable button labels for each uncommitted-changes decision key.
@@ -987,9 +1009,15 @@ def ask_workspace_branches(parent, repo_names, initial="", current_branches=None
     the now-disabled field; that branch is returned so it can be recorded in the
     workspace file. Unticking restores the value the field held before ticking.
 
+    Extra repos not in *repo_names* can be added from the "Add repository"
+    dropdown (main service folders first, then the shared NuGet folders); each
+    added row has a trash button to drop it again before creating.
+
     Returns ``{"name": str, "branches": {repo: suffix},
-    "ignore_git": {repo: bool}, "ignore_branches": {repo: current_branch}}``
-    (branch suffixes exclude the "feature/" prefix), or None if cancelled.
+    "ignore_git": {repo: bool}, "ignore_branches": {repo: current_branch},
+    "added": [(repo, path), ...]}`` (branch suffixes exclude the "feature/"
+    prefix; ``added`` lists the repos added via the dropdown with their absolute
+    paths), or None if cancelled.
     """
     dialog = tk.Toplevel(parent)
     dialog.title("Name the feature workspace")
@@ -1025,6 +1053,8 @@ def ask_workspace_branches(parent, repo_names, initial="", current_branches=None
         row=1, column=2, sticky="w", padx=4, pady=(4, 4)
     )
 
+    repo_list = list(repo_names)  # mutable: grows as repos are added
+    added = {}                    # {name: path} for repos added via the add-bar
     branch_vars, ignore_vars = {}, {}
     # The value each field held just before "Ignore git" was ticked, so
     # unticking can restore it instead of resetting to the workspace name.
@@ -1034,17 +1064,20 @@ def ask_workspace_branches(parent, repo_names, initial="", current_branches=None
     # not mistaken for a manual override.
     overridden = {}
     syncing = {"on": False}
-    current_branches = current_branches or {}
+    current_branches = dict(current_branches or {})
+    row_counter = {"next": 2}
 
-    for index, repo in enumerate(repo_names, start=2):
-        ttk.Label(body, text=repo, justify="left", wraplength=180).grid(
-            row=index, column=0, sticky="w", padx=4, pady=2
-        )
+    def _add_row(repo, is_new):
+        index = row_counter["next"]
+        row_counter["next"] += 1
+
+        name_label = ttk.Label(body, text=repo, justify="left", wraplength=180)
+        name_label.grid(row=index, column=0, sticky="w", padx=4, pady=2)
         cell = ttk.Frame(body)
         cell.grid(row=index, column=1, sticky="w", padx=4, pady=2)
         prefix = ttk.Label(cell, text="feature/")
         prefix.pack(side="left")
-        branch_var = tk.StringVar(value=initial)
+        branch_var = tk.StringVar(value=name_var.get().strip())
         branch_entry = ttk.Entry(cell, textvariable=branch_var, width=28)
         branch_entry.pack(side="left")
         ignore_var = tk.BooleanVar(value=False)
@@ -1073,18 +1106,39 @@ def ask_workspace_branches(parent, repo_names, initial="", current_branches=None
             if not syncing["on"] and not ignore_vars[r].get():
                 overridden[r] = True
 
-        GlyphCheck(body, variable=ignore_var, mark="cross",
-                   command=_toggle).grid(row=index, column=2, padx=4, pady=2)
+        check = GlyphCheck(body, variable=ignore_var, mark="cross", command=_toggle)
+        check.grid(row=index, column=2, padx=4, pady=2)
         branch_var.trace_add("write", _mark_override)
         branch_vars[repo] = branch_var
         ignore_vars[repo] = ignore_var
+
+        if is_new:
+            # Added repos can be dropped again before creating.
+            def _remove(r=repo, widgets=(name_label, cell, check)):
+                repo_list.remove(r)
+                added.pop(r, None)
+                for store in (branch_vars, ignore_vars, pre_tick, overridden):
+                    store.pop(r, None)
+                for widget in widgets:
+                    widget.destroy()
+                remove_btn.destroy()
+                add_combo.config(values=_available_repos())
+
+            remove_btn = tk.Label(body, text="\U0001f5d1", cursor="hand2",
+                                 foreground=theme.ERROR, font=("Segoe UI Emoji", 11))
+            remove_btn.grid(row=index, column=3, padx=(6, 4), pady=2)
+            remove_btn.bind("<Button-1>", lambda _e: _remove())
+            Tooltip(remove_btn, "Remove this repository from the workspace")
+
+    for repo in repo_list:
+        _add_row(repo, is_new=False)
 
     # Live-sync every non-overridden, non-ignored branch field to the workspace
     # name as it is typed (matches the pre-filled create-from-PBI behaviour).
     def _sync_branches_to_name(*_a):
         new = name_var.get().strip()
         syncing["on"] = True
-        for repo_name in repo_names:
+        for repo_name in repo_list:
             if ignore_vars[repo_name].get() or overridden.get(repo_name):
                 continue
             branch_vars[repo_name].set(new)
@@ -1095,6 +1149,34 @@ def ask_workspace_branches(parent, repo_names, initial="", current_branches=None
     error_label = tk.Label(dialog, text="", foreground=theme.ERROR,
                            justify="left", wraplength=460)
     error_label.pack(padx=16, anchor="w")
+
+    add_bar = ttk.Frame(dialog)
+    add_bar.pack(padx=16, pady=(4, 0), anchor="w")
+
+    add_candidates, add_paths = _addable_repositories()
+
+    def _available_repos():
+        present = {r.lower() for r in repo_list}
+        return [n for n in add_candidates if n.lower() not in present]
+
+    ttk.Label(add_bar, text="Add repository").pack(side="left")
+    add_combo = ttk.Combobox(add_bar, values=_available_repos(), width=34,
+                            state="readonly")
+    add_combo.pack(side="left", padx=(6, 4))
+
+    def _add_selected():
+        name = add_combo.get()
+        if not name:
+            return
+        error_label.config(text="")
+        path = add_paths.get(name, os.path.join(REPOS_ROOT, name))
+        repo_list.append(name)
+        added[name] = path
+        _add_row(name, is_new=True)
+        add_combo.set("")
+        add_combo.config(values=_available_repos())
+
+    ttk.Button(add_bar, text="Add", command=_add_selected).pack(side="left")
 
     result = {"value": None}
 
@@ -1110,7 +1192,7 @@ def ask_workspace_branches(parent, repo_names, initial="", current_branches=None
             )
             return
         branches, ignore_git, ignore_branches = {}, {}, {}
-        for repo in repo_names:
+        for repo in repo_list:
             ignore = ignore_vars[repo].get()
             ignore_git[repo] = ignore
             if ignore:
@@ -1131,6 +1213,7 @@ def ask_workspace_branches(parent, repo_names, initial="", current_branches=None
         result["value"] = {
             "name": name, "branches": branches, "ignore_git": ignore_git,
             "ignore_branches": ignore_branches,
+            "added": [(n, added[n]) for n in repo_list if n in added],
         }
         dialog.destroy()
 
@@ -1227,9 +1310,20 @@ def edit_branch_overrides(parent, workspace_name, entries):
     every git folder, even when it equals the default 'feature/<workspace>'.
     Non-git folders are listed but not editable.
 
-    Returns the ``{folder: {...}}`` override map to persist - only repos that
-    ignore git or whose branch differs from the default are included - or None
-    if the dialog is cancelled.
+    New repositories can be added with the "+ Add repository" button (a dropdown
+    of the repos not already in the workspace); the branch is pre-filled with the
+    default. Existing rows carry a trash button that marks the repo for removal
+    (shown struck through in italic with an Undo button) - nothing is removed
+    until the caller applies the plan and every validation passes.
+
+    Returns a dict with:
+      * ``overrides`` - the ``{folder: {...}}`` override map to persist (only
+        repos that ignore git or whose branch differs from the default),
+      * ``added`` - a list of ``(name, path, branch, ignore)`` for repos to add
+        (``branch`` is the full feature branch typed for the new repo, or None
+        when it keeps its own branch / is not a git repo), and
+      * ``removed`` - the list of existing folder names to drop.
+    Returns None if the dialog is cancelled.
     """
     from gitutils import is_git_repo, default_workspace_branch, IGNORE_GIT_KEY
 
@@ -1239,6 +1333,19 @@ def edit_branch_overrides(parent, workspace_name, entries):
     dialog.title(f"Manage workspace branches - {workspace_name}")
     dialog.transient(parent.winfo_toplevel())
     dialog.resizable(False, False)
+
+    # A red trash glyph reused from the "Delete remote branches" action icon so
+    # the button matches the rest of the app; falls back to a unicode wastebasket.
+    icon_set = (icons.ACTION_ICON_DARK if theme.load_dark_preference()
+                else icons.ACTION_ICON_LIGHT)
+    trash_b64 = icon_set.get("Delete remote branches")
+    trash_image = None
+    if trash_b64:
+        try:
+            trash_image = tk.PhotoImage(data=trash_b64)
+        except tk.TclError:
+            trash_image = None
+    _keep_refs = [trash_image]  # hold PhotoImage refs so Tk does not GC them
 
     header = ttk.Frame(dialog)
     header.pack(padx=16, pady=(16, 8), fill="x")
@@ -1259,7 +1366,8 @@ def edit_branch_overrides(parent, workspace_name, entries):
         f"The default branch is \"{default}\". Change it for any repo whose "
         "feature branch has a different name. Tick \"Ignore git\" for a repo "
         "that keeps its own branch and should be left out of the git "
-        "commands. Only differences are saved.",
+        "commands. Add repos with \"+ Add repository\" or remove one with the "
+        "trash button. Only differences are saved.",
     )
 
     table = ttk.Frame(dialog)
@@ -1274,53 +1382,147 @@ def edit_branch_overrides(parent, workspace_name, entries):
         row=0, column=2, sticky="w", padx=4, pady=(0, 4)
     )
 
-    rows = []  # (name, is_git, branch_var, ignore_var)
+    rows = []  # list of per-row state dicts
+    row_counter = {"next": 1}
 
-    for index, entry in enumerate(entries, start=1):
-        name = entry["name"]
-        is_git = is_git_repo(entry["path"])
-        ignore_var = tk.BooleanVar(value=bool(entry["ignoreGit"]) and is_git)
+    def _present_names():
+        """Names currently in the table (existing + added, removed or not)."""
+        return {r["name"] for r in rows}
+
+    def _add_row(name, path, branch_value, ignore_value, is_new):
+        index = row_counter["next"]
+        row_counter["next"] += 1
+        is_git = is_git_repo(path)
+
+        ignore_var = tk.BooleanVar(value=bool(ignore_value) and is_git)
         branch_var = tk.StringVar(
-            value=entry["branch"] if is_git else "(not a git repository)"
+            value=branch_value if is_git else "(not a git repository)"
         )
 
-        tk.Label(table, text=name, justify="left", wraplength=220).grid(
-            row=index, column=0, sticky="w", padx=4, pady=2
-        )
+        name_label = tk.Label(table, text=name, justify="left", wraplength=200,
+                              font=("", 9))
+        name_label.grid(row=index, column=0, sticky="w", padx=4, pady=2)
         branch_entry = ttk.Entry(table, textvariable=branch_var, width=34)
         branch_entry.grid(row=index, column=1, sticky="w", padx=4, pady=2)
         ignore_check = GlyphCheck(table, variable=ignore_var, mark="cross")
         ignore_check.grid(row=index, column=2, padx=4, pady=2)
 
+        # Column 3 holds the trash button and (when removed) the Undo link.
+        action = ttk.Frame(table)
+        action.grid(row=index, column=3, sticky="w", padx=(6, 4), pady=2)
+
+        row = {
+            "name": name, "path": path, "is_git": is_git, "is_new": is_new,
+            "branch_var": branch_var, "ignore_var": ignore_var,
+            "name_label": name_label, "branch_entry": branch_entry,
+            "ignore_check": ignore_check, "removed": False,
+        }
+
+        def _apply_ignore():
+            # Ignored repos keep their own branch, so the branch field is off.
+            if row["removed"]:
+                return
+            branch_entry.config(state="disabled" if ignore_var.get() else "normal")
+
         if not is_git:
             branch_entry.config(state="disabled")
             ignore_check.config(state="disabled")
         else:
-            # Ignored repos keep their own branch, so disable the branch field
-            # while "Ignore git" is ticked.
-            def _toggle(e=branch_entry, v=ignore_var):
-                e.config(state="disabled" if v.get() else "normal")
+            ignore_check.config(command=_apply_ignore)
+            _apply_ignore()
 
-            ignore_check.config(command=_toggle)
-            _toggle()
+        def _set_removed(removed):
+            row["removed"] = removed
+            for child in action.winfo_children():
+                child.destroy()
+            if removed:
+                name_label.config(font=("", 9, "italic", "overstrike"),
+                                  foreground=theme.FG_MUTED)
+                branch_entry.config(state="disabled")
+                if is_git:
+                    ignore_check.config(state="disabled")
+                undo = tk.Label(action, text="Undo", cursor="hand2",
+                               foreground=theme.ACCENT_HOVER, font=("", 9, "underline"))
+                undo.pack(side="left")
+                undo.bind("<Button-1>", lambda _e: _set_removed(False))
+            else:
+                name_label.config(font=("", 9), foreground=theme.FG)
+                if is_git:
+                    ignore_check.config(state="normal")
+                _apply_ignore()
+                _build_trash()
 
-        rows.append((name, is_git, branch_var, ignore_var))
+        def _build_trash():
+            if trash_image is not None:
+                btn = tk.Label(action, image=trash_image, cursor="hand2",
+                              background=theme.BG)
+            else:
+                btn = tk.Label(action, text="\U0001f5d1", cursor="hand2",
+                              foreground=theme.ERROR, font=("Segoe UI Emoji", 11))
+            btn.pack(side="left")
+            btn.bind("<Button-1>", lambda _e: _set_removed(True))
+            Tooltip(btn, "Remove this repository from the workspace")
+
+        _build_trash()
+        rows.append(row)
+        return row
+
+    for entry in entries:
+        _add_row(entry["name"], entry["path"], entry["branch"],
+                 entry["ignoreGit"], is_new=False)
 
     error_label = tk.Label(dialog, text="", foreground=theme.ERROR,
                            justify="left", wraplength=460)
     error_label.pack(padx=16, anchor="w")
 
+    add_bar = ttk.Frame(dialog)
+    add_bar.pack(padx=16, pady=(4, 0), anchor="w")
+
+    add_candidates, add_paths = _addable_repositories()
+
+    def _available_repos():
+        present = {n.lower() for n in _present_names()}
+        return [n for n in add_candidates if n.lower() not in present]
+
+    ttk.Label(add_bar, text="Add repository").pack(side="left")
+    add_combo = ttk.Combobox(add_bar, values=_available_repos(), width=34,
+                            state="readonly")
+    add_combo.pack(side="left", padx=(6, 4))
+
+    def _add_selected():
+        name = add_combo.get()
+        if not name:
+            return
+        error_label.config(text="")
+        _add_row(name, add_paths.get(name, os.path.join(REPOS_ROOT, name)),
+                 default, False, is_new=True)
+        add_combo.set("")
+        add_combo.config(values=_available_repos())
+
+    ttk.Button(add_bar, text="Add", command=_add_selected).pack(side="left")
+
     result = {"value": None}
 
     def _save():
         overrides = {}
-        for name, is_git, branch_var, ignore_var in rows:
-            if not is_git:
+        added = []
+        removed = []
+        for row in rows:
+            name = row["name"]
+            if row["removed"]:
+                if not row["is_new"]:
+                    removed.append(name)
                 continue
-            if ignore_var.get():
+            if not row["is_git"]:
+                if row["is_new"]:
+                    added.append((name, row["path"], None, False))
+                continue
+            if row["ignore_var"].get():
                 overrides[name] = {IGNORE_GIT_KEY: True}
+                if row["is_new"]:
+                    added.append((name, row["path"], None, True))
                 continue
-            branch = branch_var.get().strip()
+            branch = row["branch_var"].get().strip()
             if not branch:
                 error_label.config(text=f"{name}: a branch name is required.")
                 return
@@ -1330,9 +1532,13 @@ def edit_branch_overrides(parent, workspace_name, entries):
                          "digits, . _ / -)."
                 )
                 return
+            if row["is_new"]:
+                added.append((name, row["path"], branch, False))
             if branch != default:
                 overrides[name] = {"branch": branch}
-        result["value"] = overrides
+        result["value"] = {
+            "overrides": overrides, "added": added, "removed": removed,
+        }
         dialog.destroy()
 
     def _cancel():

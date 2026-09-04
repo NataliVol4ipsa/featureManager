@@ -338,6 +338,7 @@ class ActionTabBase(ttk.Frame):
 
         self.errors.clear()
 
+        repos = list(repos)  # local copy: added repos are appended below
         current_branches = {n: git_current_branch(p) for n, p in repos}
         info = ask_workspace_branches(
             self, [n for n, _ in repos], initial=initial,
@@ -346,6 +347,15 @@ class ActionTabBase(ttk.Frame):
         if info is None:
             return
         name = info["name"]
+
+        # Repos added via the dialog's add-repository dropdown join the list so
+        # the workspace file and branch creation below cover them too (each comes
+        # with its resolved path - a main service or a shared NuGet folder).
+        known = {n for n, _ in repos}
+        for added_name, added_path in info.get("added", []):
+            if added_name not in known:
+                repos.append((added_name, added_path))
+                known.add(added_name)
 
         # Turn the per-repo choices into branch overrides: an "Ignore git" repo
         # gets a skip override (and its current branch); a repo whose branch

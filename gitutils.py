@@ -278,6 +278,36 @@ def save_branch_overrides(workspace_name, overrides):
         return False, f"could not save branch overrides: {exc}"
 
 
+def set_workspace_folders(workspace_name, repos):
+    """Replace a workspace's folder list, preserving every other block.
+
+    Unlike ``write_workspace`` (which rewrites the whole file from scratch),
+    this reads the existing .code-workspace, swaps only its ``folders`` array
+    and writes it back, so the ``featureManagerSettings`` block and any VS Code
+    ``settings`` survive. *repos* is a list of ``(name, path)``; paths are stored
+    relative to WORKSPACES_ROOT to match the existing files. Returns (ok, msg).
+    """
+    ok, data = _read_workspace_json(workspace_name)
+    if not ok:
+        return False, data
+    if not isinstance(data, dict):
+        data = {}
+
+    folders = []
+    for _, path in repos:
+        rel = os.path.relpath(path, WORKSPACES_ROOT).replace("\\", "/")
+        folders.append({"path": rel})
+    data["folders"] = folders
+
+    target = os.path.join(WORKSPACES_ROOT, f"{workspace_name}.code-workspace")
+    try:
+        with open(target, "w", encoding="utf-8") as handle:
+            json.dump(data, handle, indent=4)
+        return True, "Workspace folders saved."
+    except OSError as exc:
+        return False, f"could not save workspace folders: {exc}"
+
+
 # --------------------------------------------------------------------------- #
 # Git Bash terminal launching
 # --------------------------------------------------------------------------- #
