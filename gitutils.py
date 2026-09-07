@@ -1114,12 +1114,13 @@ def get_git_credential(host, url=None):
     return creds.get("username"), creds.get("password")
 
 
-def create_ado_pr(name, path, title, description="", target="master", draft=False):
+def create_ado_pr(name, path, title, description="", target="master", draft=False,
+                  branch=None):
     """Create an Azure DevOps pull request for one repo.
 
-    Returns (ok, url_or_err, warning). The PR goes from the repo's current
-    branch to *target* (master). When *draft* is true the PR is created as a
-    draft. The remote branch must already be pushed.
+    Returns (ok, url_or_err, warning). The PR goes from *branch* (the repo's
+    current branch when not given) to *target* (master). When *draft* is true
+    the PR is created as a draft. The remote branch must already be pushed.
     Authentication reuses the Git credential already stored for the host, so no
     extra credentials are requested. When the branch name embeds a work-item id
     (e.g. ``feature/514231_...``) that work item is linked to the new PR; a link
@@ -1127,7 +1128,7 @@ def create_ado_pr(name, path, title, description="", target="master", draft=Fals
     """
     if not is_git_repo(path):
         return False, f"{name}: not a git repository", ""
-    branch = git_current_branch(path)
+    branch = branch or git_current_branch(path)
     if not branch:
         return False, f"{name}: not on a branch (detached HEAD)", ""
     if branch == target:
@@ -1216,19 +1217,19 @@ def create_ado_pr(name, path, title, description="", target="master", draft=Fals
     return True, web_url, ""
 
 
-def get_ado_pr_url(name, path, target="master"):
+def get_ado_pr_url(name, path, target="master", branch=None):
     """Return (ok, url_or_err) for an existing open PR of the repo's branch.
 
-    Looks up the active Azure DevOps pull request that goes from the repo's
-    current branch to *target* (master) and returns a browser link to it.
-    Authentication reuses the Git credential already stored for the host (no
-    prompts). ok is False - with an explanatory message - when the repo is not
-    an ADO repo, has no stored credential, or has no open pull request for its
-    current branch.
+    Looks up the active Azure DevOps pull request that goes from *branch* (the
+    repo's current branch when not given) to *target* (master) and returns a
+    browser link to it. Authentication reuses the Git credential already stored
+    for the host (no prompts). ok is False - with an explanatory message - when
+    the repo is not an ADO repo, has no stored credential, or has no open pull
+    request for its branch.
     """
     if not is_git_repo(path):
         return False, f"{name}: not a git repository"
-    branch = git_current_branch(path)
+    branch = branch or git_current_branch(path)
     if not branch:
         return False, f"{name}: not on a branch (detached HEAD)"
 

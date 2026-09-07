@@ -793,23 +793,33 @@ class WorkspacesTab(ActionTabBase):
 
     # -- Create pull request ----------------------------------------------- #
     def _action_create_pr(self):
-        ok, workspace, repos = self._selected_active_repos()
+        ok, workspace, entries = self._selected_entries()
         self.errors.clear()
         if not ok:
             if workspace is not None:
-                self.errors.add(repos)
+                self.errors.add(entries)
             return
-        self.create_prs(repos)
+        # Open each PR from the workspace's feature branch for the repo, not
+        # whatever branch happens to be checked out locally right now.
+        active = [e for e in entries if not e["ignoreGit"]]
+        repos = [(e["name"], e["path"]) for e in active]
+        branches = {e["name"]: e["branch"] for e in active if e.get("branch")}
+        self.create_prs(repos, branches=branches)
 
     # -- Copy PR links ----------------------------------------------------- #
     def _action_copy_pr_links(self):
-        ok, workspace, repos = self._selected_active_repos()
+        ok, workspace, entries = self._selected_entries()
         self.errors.clear()
         if not ok:
             if workspace is not None:
-                self.errors.add(repos)
+                self.errors.add(entries)
             return
-        self.copy_pr_links(repos)
+        # Look up each PR by the workspace's feature branch for the repo, not
+        # whatever branch happens to be checked out locally right now.
+        active = [e for e in entries if not e["ignoreGit"]]
+        repos = [(e["name"], e["path"]) for e in active]
+        branches = {e["name"]: e["branch"] for e in active if e.get("branch")}
+        self.copy_pr_links(repos, branches=branches)
 
     # -- Complete pull request --------------------------------------------- #
     def _action_complete_pr(self):
@@ -1022,13 +1032,18 @@ class WorkspacesTab(ActionTabBase):
 
     # -- Open pull requests in the browser --------------------------------- #
     def _action_open_prs(self):
-        ok, workspace, repos = self._selected_active_repos()
+        ok, workspace, entries = self._selected_entries()
         self.errors.clear()
         if not ok:
             if workspace is not None:
-                self.errors.add(repos)
+                self.errors.add(entries)
             return
-        self.open_prs(repos)
+        # Look up each PR by the workspace's feature branch for the repo, not
+        # whatever branch happens to be checked out locally right now.
+        active = [e for e in entries if not e["ignoreGit"]]
+        repos = [(e["name"], e["path"]) for e in active]
+        branches = {e["name"]: e["branch"] for e in active if e.get("branch")}
+        self.open_prs(repos, branches=branches)
 
     # -- Create workspace from a PBI --------------------------------------- #
     def _action_create_from_pbi(self):

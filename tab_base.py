@@ -415,12 +415,15 @@ class ActionTabBase(ttk.Frame):
             parallel=True,
         )
 
-    def create_prs(self, repos):
+    def create_prs(self, repos, branches=None):
         """Create an Azure DevOps pull request for every selected repo.
 
         Asks once whether to auto-generate each PR title from its branch name or
         use one custom title, then creates the PRs on a background thread. Each
         successful PR adds a clickable link to it in the Details table.
+        *branches* optionally maps repo name to the branch to open the PR from
+        (the workspace feature branch); without it the repo's current git branch
+        is used.
         """
         self.errors.clear()
         if not repos:
@@ -432,6 +435,8 @@ class ActionTabBase(ttk.Frame):
         if options is None:
             return
 
+        branch_map = dict(branches or {})
+
         # PR URLs are produced by the action itself; stash them so the link
         # column can show them without creating the PR a second time. The same
         # dict is kept on the instance so "Copy PR links" can reuse it later.
@@ -439,13 +444,14 @@ class ActionTabBase(ttk.Frame):
         self._last_pr_urls = pr_urls
 
         def _create(name, path):
+            branch = branch_map.get(name) or git_current_branch(path)
             if options["mode"] == "auto":
-                title = ado_pr_title_from_branch(git_current_branch(path))
+                title = ado_pr_title_from_branch(branch)
             else:
                 title = options["title"]
             ok, result, warning = create_ado_pr(
                 name, path, title, options["description"],
-                draft=options["draft"],
+                draft=options["draft"], branch=branch,
             )
             if ok:
                 pr_urls[name] = result
@@ -477,13 +483,16 @@ class ActionTabBase(ttk.Frame):
         )
 
 
-    def copy_pr_links(self, repos):
+    def copy_pr_links(self, repos, branches=None):
         """Look up each selected repo's open pull request and copy the links.
 
-        Queries Azure DevOps for the active PR of every repo's current branch
-        (no reliance on PRs created in this session), lists a clickable link per
+        Queries Azure DevOps for the active PR of every repo's branch (no
+        reliance on PRs created in this session), lists a clickable link per
         repo in the Details table, and copies all "repo name - pr link" lines to
         the clipboard. Repos without an open PR are reported in the Errors panel.
+        *branches* optionally maps repo name to the branch whose PR to look up
+        (the workspace feature branch); without it the repo's current git branch
+        is used.
         """
         self.errors.clear()
         if not repos:
@@ -491,11 +500,12 @@ class ActionTabBase(ttk.Frame):
 
         self.show_repos_async(repos, with_status=False)
 
+        branch_map = dict(branches or {})
         pr_urls = {}
         self._last_pr_urls = pr_urls
 
         def _lookup(name, path):
-            ok, result = get_ado_pr_url(name, path)
+            ok, result = get_ado_pr_url(name, path, branch=branch_map.get(name))
             if ok:
                 pr_urls[name] = result
                 return True, ""
@@ -1264,13 +1274,23 @@ class ActionTabBase(ttk.Frame):
             repos, self._branch_url, "branch link", "Resolving branch links\u2026"
         )
 
-    def open_prs(self, repos):
-        """Open each repo's open pull request on the remote host in the browser."""
+    def open_prs(self, repos, branches=None):
+        """Open each repo's open pull request on the remote host in the browser.
+
+        *branches* optionally maps repo name to the branch whose PR to look up
+        (the workspace feature branch); without it the repo's current git branch
+        is used.
+        """
         self.errors.clear()
         if not repos:
             return
+        branch_map = dict(branches or {})
+
+        def _pr_url_for(name, path):
+            return self._pr_url(name, path, branch_map.get(name))
+
         self._open_browser_async(
-            repos, self._pr_url, "pull request", "Looking up pull requests\u2026"
+            repos, _pr_url_for, "pull request", "Looking up pull requests\u2026"
         )
 
     @staticmethod
@@ -1299,9 +1319,9 @@ class ActionTabBase(ttk.Frame):
         return url, ""
 
     @staticmethod
-    def _pr_url(name, path):
+    def _pr_url(name, path, branch=None):
         """Return (url, error) for *path*'s open pull request (network lookup)."""
-        ok, result = get_ado_pr_url(name, path)
+        ok, result = get_ado_pr_url(name, path, branch=branch)
         return (result, "") if ok else ("", result)
 
     def _open_browser_async(self, repos, url_fn, what, busy_msg):

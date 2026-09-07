@@ -174,6 +174,13 @@ class PipelineMonitorWindow(tk.Toplevel):
         self._release_message = bool(release_message)
         self._estimates_enabled = bool(theme.load_pipeline_estimates_enabled())
         self._compact = bool(theme.load_pipeline_monitor_compact())
+        # When on, rows whose every stage has finished successfully are hidden so
+        # only the runs still worth watching remain on screen.
+        self._hide_completed = False
+        self._confetti_visible = False
+        # Repos currently hidden by the toggle; used to auto-fit the window only
+        # when the hidden set actually changes (not on every poll).
+        self._hidden_repos = set()
         self._pbi_title = (pbi_title or "").strip()
         self._test_reports = list(test_reports or [])
         self._rows = {}
@@ -207,22 +214,46 @@ class PipelineMonitorWindow(tk.Toplevel):
         if self._estimates_enabled:
             self.after(1000, self._tick_estimates)
 
+    def _screen_bounds(self):
+        """Return (left, top, width, height) of the whole virtual desktop.
+
+        winfo_screenwidth/height report only the primary monitor, so a window
+        saved on a second display would be clamped onto the primary one. On
+        Windows the virtual-screen metrics span all monitors; fall back to the
+        primary size elsewhere.
+        """
+        try:
+            import ctypes
+            user32 = ctypes.windll.user32
+            left = user32.GetSystemMetrics(76)    # SM_XVIRTUALSCREEN
+            top = user32.GetSystemMetrics(77)     # SM_YVIRTUALSCREEN
+            width = user32.GetSystemMetrics(78)   # SM_CXVIRTUALSCREEN
+            height = user32.GetSystemMetrics(79)  # SM_CYVIRTUALSCREEN
+            if width > 0 and height > 0:
+                return left, top, width, height
+        except Exception:
+            pass
+        return 0, 0, self.winfo_screenwidth(), self.winfo_screenheight()
+
     def _clamp_geometry(self, geometry):
         """Keep a restored 'WxH+X+Y' geometry within the visible screen.
 
         A saved position can land off-screen (e.g. the window was on a second
         display that is now gone); clamp the offset so it always opens on-screen.
+        Uses the whole virtual desktop, so a window on a secondary monitor keeps
+        its position instead of being pulled onto the primary display. Tk writes
+        negative coordinates as '+-1366', hence the '-?' in the offset groups.
         """
-        match = re.match(r"^(\d+)x(\d+)([+-]\d+)([+-]\d+)$", geometry.strip())
+        match = re.match(r"^(\d+)x(\d+)\+(-?\d+)\+(-?\d+)$", geometry.strip())
         if not match:
             return geometry
         width, height = int(match.group(1)), int(match.group(2))
         x, y = int(match.group(3)), int(match.group(4))
-        screen_w, screen_h = self.winfo_screenwidth(), self.winfo_screenheight()
+        left, top, screen_w, screen_h = self._screen_bounds()
         width = min(width, screen_w - 80)
         height = min(height, screen_h - 120)
-        x = max(0, min(x, screen_w - width))
-        y = max(0, min(y, screen_h - height))
+        x = max(left, min(x, left + screen_w - width))
+        y = max(top, min(y, top + screen_h - height))
         return f"{width}x{height}+{x}+{y}"
 
     def _fit_to_content(self):
@@ -238,15 +269,30 @@ class PipelineMonitorWindow(tk.Toplevel):
         self.update_idletasks()
         self._update_scrollregion_and_scrollbar()
         self.update_idletasks()
-        # A restored geometry keeps the user's previous position/size as-is.
-        if self._restore_geometry:
-            self.geometry(self._clamp_geometry(self._restore_geometry))
-            self._restore_geometry = None
-            return
         # Never open larger than the screen; overflow falls back to scroll/pan.
         width = min(self.winfo_reqwidth(), self.winfo_screenwidth() - 80)
         height = min(self.winfo_reqheight(), self.winfo_screenheight() - 120)
+        # A restored geometry keeps the user's previous position, but the size is
+        # re-fitted to the current content (the saved size can be stale, e.g. it
+        # was captured with completed rows hidden). The position is clamped from
+        # the *saved* geometry so it lands exactly where the old restore put it
+        # (on-screen, unchanged by the re-fitted size).
+        if self._restore_geometry:
+            offset = self._restore_offset(self._clamp_geometry(self._restore_geometry))
+            self._restore_geometry = None
+            if offset:
+                self.geometry(f"{width}x{height}{offset}")
+                return
         self.geometry(f"{width}x{height}")
+
+    def _restore_offset(self, geometry):
+        """Return the '+X+Y' position part of a 'WxH+X+Y' geometry, or ''.
+
+        Tk writes a negative coordinate as '+-1366', so the digits carry an
+        optional leading '-'.
+        """
+        match = re.search(r"(\+-?\d+\+-?\d+)$", (geometry or "").strip())
+        return match.group(1) if match else ""
 
     def _build_ui(self):
         # Master monitors show the PBI title centered above the controls row.
@@ -330,10 +376,40 @@ class PipelineMonitorWindow(tk.Toplevel):
             "packed closer together).",
         )
 
+        # Hide/show the runs that have already finished successfully, so the
+        # window only lists the pipelines still worth watching.
+        self._hide_completed_button = ttk.Button(
+            controls,
+            text="Hide completed",
+            command=self._toggle_hide_completed,
+        )
+        self._hide_completed_button.pack(side="right", padx=(0, 6))
+        Tooltip(
+            self._hide_completed_button,
+            "Hide the rows whose every stage has finished successfully so only "
+            "the pipelines still running (or failed) remain visible. Toggle "
+            "again to show all rows.",
+        )
+
         self._sync_control_labels()
 
         table_shell = ttk.Frame(self)
         table_shell.pack(side="top", fill="both", expand=True, padx=10, pady=(8, 10))
+        self._table_shell = table_shell
+
+        # Celebration banner shown above the table once every tracked run has
+        # finished successfully; hidden the rest of the time.
+        confetti = ttk.Frame(self)
+        tk.Label(
+            confetti, text="\U0001F389", font=("Segoe UI Emoji", 30),
+            background=theme.BG, foreground=theme.FG,
+        ).pack()
+        ttk.Label(
+            confetti, text="All pipelines completed successfully!",
+            anchor="center", font=("", 11, "bold"),
+        ).pack(fill="x")
+        self._confetti_frame = confetti
+
 
         canvas = tk.Canvas(table_shell, highlightthickness=0)
         canvas.pack(side="left", fill="both", expand=True)
@@ -355,6 +431,10 @@ class PipelineMonitorWindow(tk.Toplevel):
         for index, (repo, info) in enumerate(sorted(self._run_infos.items())):
             self._inner.grid_rowconfigure(index, minsize=self._row_minsize())
 
+            # Every widget on this grid row, so the row can be hidden/shown as a
+            # unit by the "Hide completed" toggle.
+            row_widgets = []
+
             # Column 0 (left of the name): amber "previous run" marker on a row
             # that shows an existing run instead of a freshly started one.
             rewind_icon = None
@@ -366,10 +446,12 @@ class PipelineMonitorWindow(tk.Toplevel):
                                  padx=(4, 0), pady=0)
                 Tooltip(rewind_icon, "previous run")
                 self._bind_pan_widget(rewind_icon)
+                row_widgets.append(rewind_icon)
 
             repo_label = ttk.Label(self._inner, text=repo)
             repo_label.grid(row=index, column=1, sticky="w", padx=(4, 6), pady=0)
             self._bind_pan_widget(repo_label)
+            row_widgets.append(repo_label)
 
             # Skipped repositories have no run to track: show a placeholder and
             # keep the row out of polling/drawing.
@@ -379,7 +461,10 @@ class PipelineMonitorWindow(tk.Toplevel):
                 )
                 skipped.grid(row=index, column=2, sticky="w", padx=6, pady=0)
                 self._bind_pan_widget(skipped)
-                self._rows[repo] = {"skipped": True, "index": index}
+                row_widgets.append(skipped)
+                self._rows[repo] = {
+                    "skipped": True, "index": index, "widgets": row_widgets,
+                }
                 continue
             configured_stages = list(info.get("visible_stages") or [
                 "build", "development", "acceptance", "production"
@@ -392,6 +477,7 @@ class PipelineMonitorWindow(tk.Toplevel):
                               background=theme.BG, highlightthickness=0)
             graph.grid(row=index, column=2, sticky="w", padx=6, pady=0)
             self._bind_pan_widget(graph)
+            row_widgets.append(graph)
             # Hover/click on a failed stage circle to rerun its failed jobs.
             graph.bind("<Motion>", lambda e, r=repo: self._on_stage_motion(e, r),
                        add="+")
@@ -409,6 +495,7 @@ class PipelineMonitorWindow(tk.Toplevel):
                 font=("", 9, "underline"),
             )
             link.grid(row=index, column=3, sticky="w", padx=6, pady=0)
+            row_widgets.append(link)
             url = info.get("url")
             if url:
                 link.bind("<Button-1>", lambda _e, u=url: webbrowser.open(u, new=2))
@@ -428,6 +515,7 @@ class PipelineMonitorWindow(tk.Toplevel):
                 )
                 rerun_button.grid(row=index, column=4, sticky="w",
                                   padx=(6, 4), pady=0)
+                row_widgets.append(rerun_button)
                 Tooltip(
                     rerun_button,
                     "Queue a brand-new pipeline run from the latest commit of "
@@ -446,6 +534,7 @@ class PipelineMonitorWindow(tk.Toplevel):
                 )
                 estimate_label.grid(row=index, column=5, sticky="w",
                                     padx=(10, 6), pady=0)
+                row_widgets.append(estimate_label)
                 Tooltip(
                     estimate_label,
                     "Estimated total time left for this run, based on the "
@@ -480,6 +569,7 @@ class PipelineMonitorWindow(tk.Toplevel):
                 "estimate_label": estimate_label,
                 "environment": info.get("environment"),
                 "index": index,
+                "widgets": row_widgets,
             }
             # Seed the last recorded stage states (history reproduction) so the
             # row shows how it looked before, prior to the first live poll.
@@ -759,7 +849,85 @@ class PipelineMonitorWindow(tk.Toplevel):
                 graph.configure(height=height)
             if not row.get("skipped"):
                 self._draw_row(repo)
+        self._refresh_completed_visibility()
         self.after_idle(self._fit_to_content)
+
+    def _row_is_complete(self, repo):
+        """True when every configured stage of a row finished successfully."""
+        row = self._rows.get(repo) or {}
+        if row.get("skipped"):
+            return False
+        stages = row.get("stages") or {}
+        keys = list(row.get("configured_stages") or stages.keys())
+        if not keys:
+            return False
+        return all(stages.get(key) in ("done", "skipped") for key in keys)
+
+    def _toggle_hide_completed(self):
+        """Toggle hiding of the rows that have already finished successfully."""
+        self._hide_completed = not self._hide_completed
+        self._hide_completed_button.configure(
+            text="Show completed" if self._hide_completed else "Hide completed"
+        )
+        self._refresh_completed_visibility()
+
+    def _refresh_completed_visibility(self):
+        """Hide/show completed rows and toggle the all-done celebration banner.
+
+        Applies identically in both full and compact view. Called after every
+        poll so newly finished runs disappear (when hiding is on) and the
+        confetti banner appears once nothing is left to watch.
+        """
+        if self._closed:
+            return
+        pollable = [
+            repo for repo, row in self._rows.items() if not row.get("skipped")
+        ]
+        all_complete = bool(pollable) and all(
+            self._row_is_complete(repo) for repo in pollable
+        )
+        hidden_now = set()
+        for repo, row in self._rows.items():
+            # Completed runs and skipped placeholders are both hidden; collapse
+            # the empty grid row to 0 so remaining rows pack together (no gaps).
+            hide = self._hide_completed and (
+                row.get("skipped") or self._row_is_complete(repo)
+            )
+            if hide:
+                hidden_now.add(repo)
+            index = row.get("index")
+            if index is not None:
+                self._inner.grid_rowconfigure(
+                    index, minsize=(0 if hide else self._row_minsize())
+                )
+            for widget in row.get("widgets") or []:
+                if not widget.winfo_exists():
+                    continue
+                if hide:
+                    widget.grid_remove()
+                else:
+                    widget.grid()
+        confetti_before = self._confetti_visible
+        self._show_confetti(all_complete)
+        self.after_idle(self._update_scrollregion_and_scrollbar)
+        # Re-fit the window when the visible content changes (hidden rows or the
+        # confetti banner appearing/disappearing), so the height tracks it
+        # without fighting manual resizes on unchanged polls.
+        if hidden_now != self._hidden_repos or self._confetti_visible != confetti_before:
+            self._hidden_repos = hidden_now
+            self.after_idle(self._fit_to_content)
+
+    def _show_confetti(self, show):
+        """Show or hide the 'all pipelines completed' celebration banner."""
+        if show and not self._confetti_visible:
+            self._confetti_frame.pack(
+                side="top", fill="x", padx=10, pady=(4, 0),
+                before=self._table_shell,
+            )
+            self._confetti_visible = True
+        elif not show and self._confetti_visible:
+            self._confetti_frame.pack_forget()
+            self._confetti_visible = False
 
     def _draw_row(self, repo):
         row = self._rows[repo]
@@ -1251,6 +1419,7 @@ class PipelineMonitorWindow(tk.Toplevel):
             self.title("Pipeline monitor - last updated: error while polling")
         else:
             self.title("Pipeline monitor")
+        self._refresh_completed_visibility()
         self._update_scrollregion_and_scrollbar()
         self._schedule_next_poll()
 
