@@ -124,7 +124,7 @@ _DECISION_LABELS = {
     "commit": "Commit changes",
     "commit_restore": "Commit & restore",
     "delete": "Delete changes",
-    "move": "Move to new feature branch",
+    "move": "Move changes to branch",
     "abort": "Abort operation",
 }
 

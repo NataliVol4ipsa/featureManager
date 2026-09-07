@@ -617,9 +617,10 @@ class WorkspacesTab(ActionTabBase):
 
         # Pre-check: decide what to do with uncommitted changes in each repo
         # we're actually going to switch. Repos already on their target branch
-        # are skipped entirely (no prompt, no checkout).
+        # are skipped entirely (no prompt, no checkout). "move" carries the
+        # uncommitted changes onto the target branch (via a stash).
         decisions = self.collect_change_decisions(
-            switchable, skip_branch=lambda n: branch_of.get(n)
+            switchable, allow_move=True, skip_branch=lambda n: branch_of.get(n)
         )
         if decisions is None:
             self.progress.show_repos([])
@@ -638,6 +639,24 @@ class WorkspacesTab(ActionTabBase):
         """Apply the change decision then check out the target branch."""
         # Already on the target branch: nothing to do, leave the repo untouched.
         if git_current_branch(path) == target:
+            return True, ""
+
+        # Move: stash everything (including untracked), switch branch, re-apply.
+        if decision == "move":
+            ok, out = run_git(
+                path, ["stash", "push", "-u", "-m", "move to workspace branch"]
+            )
+            if not ok:
+                return False, f"{name}: {out}"
+            ok, out = run_git(path, ["checkout", target])
+            if not ok:
+                return False, f"{name}: {out}"
+            ok, out = run_git(path, ["stash", "pop"])
+            if not ok:
+                return False, (
+                    f"{name}: changes were moved but applying them caused "
+                    f"conflicts. manual resolution needed.\n{out}"
+                )
             return True, ""
 
         if decision == "delete":
