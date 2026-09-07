@@ -6,6 +6,7 @@ statuses on a configurable interval.
 
 import threading
 import datetime
+import re
 import tkinter as tk
 import webbrowser
 from tkinter import ttk
@@ -144,7 +145,7 @@ class PipelineMonitorWindow(tk.Toplevel):
         # flash and re-asserted after the content fit.
         self._restore_geometry = restore_geometry or None
         if self._restore_geometry:
-            self.geometry(self._restore_geometry)
+            self.geometry(self._clamp_geometry(self._restore_geometry))
         self.minsize(200, 80)
         self.attributes("-topmost", True)
         self.configure(background=theme.BG)
@@ -206,8 +207,25 @@ class PipelineMonitorWindow(tk.Toplevel):
         if self._estimates_enabled:
             self.after(1000, self._tick_estimates)
 
+    def _clamp_geometry(self, geometry):
+        """Keep a restored 'WxH+X+Y' geometry within the visible screen.
+
+        A saved position can land off-screen (e.g. the window was on a second
+        display that is now gone); clamp the offset so it always opens on-screen.
+        """
+        match = re.match(r"^(\d+)x(\d+)([+-]\d+)([+-]\d+)$", geometry.strip())
+        if not match:
+            return geometry
+        width, height = int(match.group(1)), int(match.group(2))
+        x, y = int(match.group(3)), int(match.group(4))
+        screen_w, screen_h = self.winfo_screenwidth(), self.winfo_screenheight()
+        width = min(width, screen_w - 80)
+        height = min(height, screen_h - 120)
+        x = max(0, min(x, screen_w - width))
+        y = max(0, min(y, screen_h - height))
+        return f"{width}x{height}+{x}+{y}"
+
     def _fit_to_content(self):
-        """Resize the window to exactly fit its content (capped to the screen)."""
         if self._closed:
             return
         self.update_idletasks()
@@ -222,7 +240,7 @@ class PipelineMonitorWindow(tk.Toplevel):
         self.update_idletasks()
         # A restored geometry keeps the user's previous position/size as-is.
         if self._restore_geometry:
-            self.geometry(self._restore_geometry)
+            self.geometry(self._clamp_geometry(self._restore_geometry))
             self._restore_geometry = None
             return
         # Never open larger than the screen; overflow falls back to scroll/pan.
