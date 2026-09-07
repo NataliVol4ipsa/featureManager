@@ -1960,7 +1960,6 @@ def ask_deploy_selection(parent, entries, environment_label):
         note = tk.Label(table, text="", justify="left", wraplength=260)
         note.grid(row=index, column=2, sticky="w", padx=6, pady=2)
         rows.append((name, already, var, note, short, subject))
-    scroll.finalize(len(entries))
 
     def _commit_text(short, subject):
         if not short and not subject:
@@ -1986,6 +1985,12 @@ def ask_deploy_selection(parent, entries, environment_label):
             else:
                 note.config(text=commit, foreground=theme.FG_MUTED)
 
+    # Populate the commit/status notes before sizing the scroll area so its
+    # height measurement includes the (possibly two-line) notes; otherwise the
+    # canvas is capped too short and the list clips with no working scroll.
+    _refresh()
+    scroll.finalize(len(entries))
+
     for _name, _already, var, _note, _short, _subject in rows:
         var.trace_add("write", _refresh)
 
@@ -2004,7 +2009,6 @@ def ask_deploy_selection(parent, entries, environment_label):
     ttk.Button(bar, text="Run deployments", command=_ok).pack(side="left", padx=4)
     ttk.Button(bar, text="Cancel", command=_cancel).pack(side="left", padx=4)
 
-    _refresh()
     dialog.protocol("WM_DELETE_WINDOW", _cancel)
     _center_over_parent(dialog, parent)
     dialog.grab_set()
