@@ -2016,6 +2016,97 @@ def ask_deploy_selection(parent, entries, environment_label):
     return result["value"]
 
 
+def ask_pipeline_parameters(parent, service_name, params, context_label=""):
+    """Modal to configure a pipeline's run parameters before it is queued.
+
+    Shown for a service whose pipeline declares custom (non-standard) flags. It
+    lists every run parameter except the environment deployment toggles
+    (Development / Acceptance / Production), which are driven by the environment
+    selection. *params* is a list of ``{name, display, type, default, value,
+    is_custom}`` dicts where ``value`` is the pre-filled value (the template
+    default, or the previous run's value for a re-run). Boolean parameters get a
+    checkbox; anything else a text field. Returns a ``{name: value}`` dict on
+    confirm (booleans as bool, other types as their string), or ``None`` if
+    cancelled.
+    """
+    dialog = tk.Toplevel(parent)
+    dialog.title(f"Run pipeline - {service_name}")
+    dialog.transient(parent.winfo_toplevel())
+    dialog.resizable(False, False)
+
+    heading = f"Configure the run parameters for {service_name}."
+    if context_label:
+        heading = f"Configure the {context_label} parameters for {service_name}."
+    tk.Label(
+        dialog, text=heading, justify="left", wraplength=460,
+    ).pack(padx=16, pady=(16, 4), anchor="w")
+    tk.Label(
+        dialog,
+        text="Values are pre-filled from the pipeline template. Environment "
+             "deployment toggles are set by the deployment selection and are "
+             "not shown here.",
+        foreground=theme.FG_MUTED, justify="left", wraplength=460,
+    ).pack(padx=16, pady=(0, 8), anchor="w")
+
+    scroll = _ScrollableList(dialog)
+    scroll.pack(padx=16, fill="x")
+    table = scroll.inner
+
+    rows = []  # (name, type, var)
+    for index, param in enumerate(params):
+        name = param["name"]
+        ptype = (param.get("type") or "string").lower()
+        display = param.get("display") or name
+        value = param.get("value", param.get("default"))
+        suffix = "   (custom)" if param.get("is_custom") else ""
+        label_kwargs = {"justify": "left"}
+        if param.get("is_custom"):
+            label_kwargs["foreground"] = theme.WARNING
+        if ptype == "boolean":
+            var = tk.BooleanVar(value=bool(value))
+            GlyphCheck(table, variable=var, mark="check").grid(
+                row=index, column=0, sticky="w", padx=4, pady=3
+            )
+            tk.Label(
+                table, text=f"{display}{suffix}", wraplength=380, **label_kwargs
+            ).grid(row=index, column=1, sticky="w", padx=4, pady=3)
+        else:
+            tk.Label(
+                table, text=f"{display}{suffix}", wraplength=200, **label_kwargs
+            ).grid(row=index, column=0, sticky="w", padx=4, pady=3)
+            var = tk.StringVar(value="" if value is None else str(value))
+            ttk.Entry(table, textvariable=var, width=28).grid(
+                row=index, column=1, sticky="w", padx=4, pady=3
+            )
+        rows.append((name, ptype, var))
+
+    scroll.finalize(len(params))
+
+    result = {"value": None}
+
+    def _ok():
+        collected = {}
+        for name, ptype, var in rows:
+            collected[name] = bool(var.get()) if ptype == "boolean" else var.get()
+        result["value"] = collected
+        dialog.destroy()
+
+    def _cancel():
+        result["value"] = None
+        dialog.destroy()
+
+    bar = ttk.Frame(dialog)
+    bar.pack(padx=16, pady=12)
+    ttk.Button(bar, text="Run pipeline", command=_ok).pack(side="left", padx=4)
+    ttk.Button(bar, text="Cancel", command=_cancel).pack(side="left", padx=4)
+
+    dialog.protocol("WM_DELETE_WINDOW", _cancel)
+    _center_over_parent(dialog, parent)
+    dialog.grab_set()
+    parent.wait_window(dialog)
+    return result["value"]
+
+
 def ask_redeploy_selection(parent, names):
     """Modal to choose per-repo Development/Acceptance/View for a master redeploy.
 

@@ -23,7 +23,7 @@ from dialogs import (
     ask_change_decision, ask_commit_message, ask_branch_warning, ask_pr_details,
     ask_missing_remote_branches, ask_deploy_selection,
     ask_complete_pr_details, ask_interrupted_operation_decision,
-    ask_redeploy_selection, ask_workspace_branches,
+    ask_redeploy_selection, ask_workspace_branches, ask_pipeline_parameters,
 )
 from pipelines import (
     run_pipeline_for_repo_details,
@@ -33,6 +33,8 @@ from pipelines import (
     build_template_parameters,
     redeploy_master_for_repo_details,
     get_latest_master_pipeline_run_details,
+    has_custom_pipeline_parameters,
+    configurable_pipeline_parameters,
 )
 import packages
 import pipeline_history
@@ -861,6 +863,25 @@ class ActionTabBase(ttk.Frame):
         to_run = [(n, p, b) for n, p, b in existing if decisions.get(n)]
         to_skip = [(n, p, b) for n, p, b in existing if not decisions.get(n)]
 
+        # For each service selected to run whose pipeline declares custom flags,
+        # let the user configure the run parameters (all but the environment
+        # deployment toggles), pre-filled from the template. Cancelling any of
+        # these dialogs aborts the whole batch.
+        extra_params_by_name = {}
+        for name, path, _branch in to_run:
+            if not has_custom_pipeline_parameters(path):
+                continue
+            params = configurable_pipeline_parameters(path)
+            for param in params:
+                param["value"] = param["default"]
+            configured = ask_pipeline_parameters(
+                self, name, params, context_label=env_label
+            )
+            if configured is None:
+                self.progress.show_repos([])
+                return
+            extra_params_by_name[name] = configured
+
         urls = {}
         run_infos = {}
         self._pipeline_urls = urls
@@ -878,6 +899,7 @@ class ActionTabBase(ttk.Frame):
                     "project": info.get("project"),
                     "host": info.get("host"),
                     "repo": info.get("repo"),
+                    "repo_path": path,
                     "branch": branch,
                     "pipeline_id": info.get("pipeline_id"),
                     "visible_stages": info.get("visible_stages") or [],
@@ -916,7 +938,8 @@ class ActionTabBase(ttk.Frame):
 
         def _run(name, path):
             ok, result = run_pipeline_for_repo_details(
-                name, path, branch_of[name], environment
+                name, path, branch_of[name], environment,
+                extra_parameters=extra_params_by_name.get(name),
             )
             if ok:
                 urls[name] = result.get("url", "")

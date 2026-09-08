@@ -20,7 +20,10 @@ from pipelines import (
     get_pipeline_stage_statuses,
     rerun_failed_stage,
     rerun_pipeline_from_latest_commit,
+    has_custom_pipeline_parameters,
+    configurable_pipeline_parameters,
 )
+from dialogs import ask_pipeline_parameters
 import pipeline_estimates
 
 
@@ -1213,6 +1216,22 @@ class PipelineMonitorWindow(tk.Toplevel):
         info = self._run_infos.get(repo)
         if not row or not info or row.get("rerun_launch_in_progress"):
             return
+
+        # If the pipeline declares custom flags, let the user review/override the
+        # run parameters first, pre-filled from the previous run's values.
+        override = None
+        path = info.get("repo_path")
+        if path and has_custom_pipeline_parameters(path):
+            params = configurable_pipeline_parameters(path)
+            previous = info.get("template_parameters") or {}
+            for param in params:
+                param["value"] = previous.get(param["name"], param["default"])
+            override = ask_pipeline_parameters(
+                self, repo, params, context_label="new run"
+            )
+            if override is None:
+                return
+
         row["rerun_launch_in_progress"] = True
         button = row.get("rerun_button")
         if button is not None:
@@ -1220,7 +1239,7 @@ class PipelineMonitorWindow(tk.Toplevel):
         self.title(f"Pipeline monitor - starting new {repo} run...")
 
         def _work():
-            ok, result = rerun_pipeline_from_latest_commit(info)
+            ok, result = rerun_pipeline_from_latest_commit(info, override)
             self.after(0, self._on_rerun_launched, repo, ok, result)
 
         threading.Thread(target=_work, daemon=True).start()

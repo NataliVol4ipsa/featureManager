@@ -35,6 +35,11 @@ from gitutils import (
     remote_branch_head,
 )
 from parallel import run_in_parallel
+from config import (
+    PIPELINE_YAML_LOCATION,
+    PIPELINE_ENVIRONMENT_KEYWORDS,
+    PIPELINE_STANDARD_KEYWORDS,
+)
 
 
 # Standard EVC deployment-template parameter names, used when a repo's pipeline
@@ -148,22 +153,161 @@ def _parse_yaml_parameters(text):
     return result
 
 
+def _read_pipeline_yaml(repo_path):
+    """Return the text of the repo's pipeline YAML, or '' if absent.
+
+    Looks in the configured pipeline YAML location (a repo-relative subfolder,
+    e.g. ``deployment``) first, then the repository root, so both layouts are
+    handled regardless of where a service keeps its azure-pipelines.yml.
+    """
+    locations = []
+    for loc in (PIPELINE_YAML_LOCATION, ""):
+        if loc not in locations:
+            locations.append(loc)
+    for loc in locations:
+        base = os.path.join(repo_path, loc) if loc else repo_path
+        for fname in _PIPELINE_YAML_NAMES:
+            candidate = os.path.join(base, fname)
+            if os.path.isfile(candidate):
+                try:
+                    with open(candidate, encoding="utf-8") as handle:
+                        return handle.read()
+                except OSError:
+                    return ""
+    return ""
+
+
+def _parse_yaml_parameters_full(text):
+    """Return [{name, display, type, default}, ...] from the parameters: block.
+
+    A superset of :func:`_parse_yaml_parameters` that also captures each
+    parameter's ``type`` and ``default`` so the run dialog can render the right
+    control (checkbox / text field) pre-filled with the template's default. Uses
+    the same light, dependency-free scan of the top-level ``parameters:`` block.
+    """
+    lines = text.splitlines()
+    start = None
+    for index, line in enumerate(lines):
+        if re.match(r"^parameters:\s*(#.*)?$", line):
+            start = index + 1
+            break
+    if start is None:
+        return []
+
+    result = []
+    cur = None
+    for line in lines[start:]:
+        # An unindented, non-comment line is the next top-level key: block ends.
+        if line and not line[0].isspace() and not line.lstrip().startswith("#"):
+            break
+        name_match = re.match(r"\s*-\s*name:\s*(.+?)\s*$", line)
+        if name_match:
+            if cur is not None:
+                result.append(cur)
+            cur = {
+                "name": name_match.group(1).strip().strip("\"'"),
+                "display": None, "type": None, "default": None,
+            }
+            continue
+        if cur is None:
+            continue
+        display_match = re.match(r"\s*displayName:\s*(.+?)\s*$", line)
+        if display_match:
+            cur["display"] = display_match.group(1).strip().strip("\"'")
+            continue
+        type_match = re.match(r"\s*type:\s*(.+?)\s*$", line)
+        if type_match:
+            cur["type"] = type_match.group(1).strip().strip("\"'").lower()
+            continue
+        default_match = re.match(r"\s*default:\s*(.+?)\s*$", line)
+        if default_match:
+            cur["default"] = default_match.group(1).strip()
+            continue
+    if cur is not None:
+        result.append(cur)
+    return result
+
+
+def _param_role(param):
+    """Classify a YAML parameter as ``env``, ``standard`` or None (custom).
+
+    Matches configured keywords (config.json ``pipeline_parameters``) against the
+    parameter's display name and name. ``env`` marks a deployment target toggle
+    chosen by the environment selection; ``standard`` marks a recognised template
+    flag; anything matching neither is a custom parameter the user is prompted
+    for.
+    """
+    text = (
+        (param.get("display") or "") + " " + (param.get("name") or "")
+    ).lower()
+    if any(keyword in text for keyword in PIPELINE_ENVIRONMENT_KEYWORDS):
+        return "env"
+    if any(keyword in text for keyword in PIPELINE_STANDARD_KEYWORDS):
+        return "standard"
+    return None
+
+
+def _coerce_param_default(param_type, raw):
+    """Return a Python default value for a YAML parameter's raw default text."""
+    is_bool = (param_type or "").lower() == "boolean"
+    if raw is None:
+        return False if is_bool else ""
+    value = raw.strip().strip("\"'")
+    if is_bool:
+        return value.lower() == "true"
+    return value
+
+
+def get_pipeline_parameters(repo_path):
+    """Return the repo's runtime pipeline parameters classified for the UI.
+
+    Each item is ``{name, display, type, default, role, is_env, is_custom}``
+    where *role* is ``env`` / ``standard`` / None, *is_env* marks the environment
+    deployment toggles that are driven by the environment selection, and
+    *is_custom* marks a parameter that is not part of the standard EVC template.
+    Returns [] when the repo has no readable pipeline YAML.
+    """
+    text = _read_pipeline_yaml(repo_path)
+    if not text:
+        return []
+    params = []
+    for raw in _parse_yaml_parameters_full(text):
+        role = _param_role(raw)
+        params.append({
+            "name": raw["name"],
+            "display": raw.get("display") or raw["name"],
+            "type": (raw.get("type") or "string").lower(),
+            "default": _coerce_param_default(raw.get("type"), raw.get("default")),
+            "role": role,
+            "is_env": role == "env",
+            "is_custom": role is None,
+        })
+    return params
+
+
+def has_custom_pipeline_parameters(repo_path):
+    """Return True when the repo declares a non-standard (custom) parameter."""
+    return any(p["is_custom"] for p in get_pipeline_parameters(repo_path))
+
+
+def configurable_pipeline_parameters(repo_path):
+    """Return the parameters to show in the run dialog (all but env deployments).
+
+    Environment deployment toggles (Development / Acceptance / Production) are
+    left out because they are already chosen by the environment/redeploy
+    selection; everything else - Skip build, Force build, Deploy infrastructure,
+    Docker caching and any custom flags - is configurable.
+    """
+    return [p for p in get_pipeline_parameters(repo_path) if not p["is_env"]]
+
+
 def _discover_role_params(repo_path):
     """Return {role: param_name} discovered from the repo's pipeline YAML.
 
     Only roles actually found are returned (so undeclared parameters are never
     sent to Azure DevOps). Returns {} when no pipeline YAML is present.
     """
-    text = None
-    for fname in _PIPELINE_YAML_NAMES:
-        candidate = os.path.join(repo_path, fname)
-        if os.path.isfile(candidate):
-            try:
-                with open(candidate, encoding="utf-8") as handle:
-                    text = handle.read()
-            except OSError:
-                text = None
-            break
+    text = _read_pipeline_yaml(repo_path)
     if not text:
         return {}
 
@@ -1364,8 +1508,16 @@ def rerun_failed_stage(run_info, stage_ref_name):
         return False, f"rerun failed: {exc}"
 
 
-def run_pipeline_for_repo_details(name, path, branch, environment):
-    """Queue a run and return structured metadata used by the monitor."""
+def run_pipeline_for_repo_details(name, path, branch, environment,
+                                  extra_parameters=None):
+    """Queue a run and return structured metadata used by the monitor.
+
+    *extra_parameters* is an optional ``{parameter_name: value}`` dict for the
+    non-environment run parameters (Skip build, Force build, Deploy
+    infrastructure, Docker caching and any custom flags) as configured by the
+    user; it overrides the standard defaults while the environment deployment
+    toggles stay driven by *environment*.
+    """
     if not is_git_repo(path):
         return False, f"{name}: not a git repository"
 
@@ -1386,6 +1538,8 @@ def run_pipeline_for_repo_details(name, path, branch, environment):
         if not pipeline_id:
             return False, f"{name}: no pipeline is configured for this repository"
         params = build_template_parameters(path, environment)
+        if extra_parameters:
+            params.update(extra_parameters)
         visible_stages = _visible_stages_for_run(path, params)
         data = _queue_run(org, project, pipeline_id, branch, params, auth)
     except urllib.error.HTTPError as exc:
@@ -1406,6 +1560,7 @@ def run_pipeline_for_repo_details(name, path, branch, environment):
         "org": org,
         "project": project,
         "repo": repo,
+        "repo_path": path,
         "host": host,
         "branch": branch,
         "pipeline_id": pipeline_id,
@@ -1414,20 +1569,23 @@ def run_pipeline_for_repo_details(name, path, branch, environment):
     }
 
 
-def rerun_pipeline_from_latest_commit(run_info):
-    """Queue the pipeline again on the branch tip with the same parameters.
+def rerun_pipeline_from_latest_commit(run_info, override_parameters=None):
+    """Queue the pipeline again on the branch tip. Returns (ok, details_or_error).
 
-    Returns (ok, details_or_error). Reuses the org/project/host/pipeline_id/
-    branch/template_parameters captured when the run was first started, so the
-    new run uses exactly the same parameters but from the latest commit of the
-    branch (Azure DevOps always queues from the tip of the branch ref).
+    Reuses the org/project/host/pipeline_id/branch captured when the run was
+    first started, so the new run uses the same identity but from the latest
+    commit of the branch (Azure DevOps always queues from the tip of the branch
+    ref). *override_parameters* is an optional ``{name: value}`` dict merged over
+    the previous run's template parameters so the user can change the run flags.
     """
     org = run_info.get("org")
     project = run_info.get("project")
     host = run_info.get("host")
     pipeline_id = run_info.get("pipeline_id")
     branch = run_info.get("branch")
-    params = run_info.get("template_parameters") or {}
+    params = dict(run_info.get("template_parameters") or {})
+    if override_parameters:
+        params.update(override_parameters)
     if not (org and project and host and pipeline_id and branch):
         return False, "run info is missing org/project/host/pipeline_id/branch"
 
@@ -1455,6 +1613,7 @@ def rerun_pipeline_from_latest_commit(run_info):
         "org": org,
         "project": project,
         "repo": run_info.get("repo"),
+        "repo_path": run_info.get("repo_path"),
         "host": host,
         "branch": branch,
         "pipeline_id": pipeline_id,
@@ -1511,6 +1670,7 @@ def redeploy_master_for_repo_details(name, path, deploy_dev, deploy_acc):
         "org": org,
         "project": project,
         "repo": repo,
+        "repo_path": path,
         "host": host,
         "branch": "master",
         "pipeline_id": pipeline_id,
@@ -1561,6 +1721,7 @@ def get_latest_master_pipeline_run_details(name, path):
         "org": org,
         "project": project,
         "repo": repo,
+        "repo_path": path,
         "host": host,
         "branch": "master",
         "pipeline_id": pipeline_id,
