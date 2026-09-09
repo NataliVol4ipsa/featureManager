@@ -17,23 +17,27 @@ _DEFAULTS = {
     # Repo-relative folder holding each service's azure-pipelines.yml. Empty
     # means the repository root.
     "pipeline_yaml_location": "deployment",
-    # Keywords (matched in a parameter's displayName/name) that classify a
-    # pipeline run parameter. "environment" = deployment target toggles chosen
-    # by the environment selection (hidden from the run dialog); "standard" =
-    # recognised template flags shown but not treated as custom. Anything that
-    # matches neither is a custom flag the user is prompted to configure.
+    # Whole stage phrases that classify a pipeline run parameter - each entry
+    # must equal the parameter's name (camelCase) or its full display phrase
+    # exactly, never a substring (which would produce false positives).
+    # "environment" = deployment target toggles chosen by the environment
+    # selection (hidden from the run dialog); "standard" = recognised template
+    # flags shown but not treated as custom. Anything that matches neither is a
+    # custom flag the user is prompted to configure. List both the camelCase
+    # name form and the human display phrase.
     "pipeline_parameters": {
-        "environment_keywords": [
-            "development", "deploydev",
-            "acceptance", "deployacc",
-            "production", "deployprod",
+        "environment_stages": [
+            "deploy development environment", "deploydevelopment", "deploydev",
+            "deploy acceptance environment", "deployacceptance", "deployacc",
+            "deploy production environment", "deployproduction", "deployprod",
         ],
-        "standard_keywords": [
-            "infrastructure", "infra",
-            "skip build", "skipbuild", "skip solution",
-            "force build", "forcebuild",
-            "docker",
-            "keyvault", "key vault",
+        "standard_stages": [
+            "skip build solutions", "skipbuildsolutions",
+            "force build solution", "forcebuildsolution", "forcebuild",
+            "enable docker pipeline caching", "enabledockerpipelinecaching",
+            "enforce veracode scan", "enforceveracodescan",
+            "delete and purge obsolete secrets from keyvault", "cleankeyvault",
+            "deploy infrastructure", "deployinfrastructure",
         ],
     },
     "exclusions": {
@@ -89,7 +93,7 @@ def _load_config():
     if not isinstance(pipeline_params, dict):
         pipeline_params = {}
 
-    def _keywords(kind):
+    def _stages(kind):
         values = pipeline_params.get(kind, _DEFAULTS["pipeline_parameters"][kind])
         if not isinstance(values, list):
             values = _DEFAULTS["pipeline_parameters"][kind]
@@ -100,8 +104,8 @@ def _load_config():
         "nugets_root": nugets_root,
         "workspaces_root": workspaces_root,
         "pipeline_yaml_location": pipeline_yaml_location,
-        "pipeline_environment_keywords": _keywords("environment_keywords"),
-        "pipeline_standard_keywords": _keywords("standard_keywords"),
+        "pipeline_environment_stages": _stages("environment_stages"),
+        "pipeline_standard_stages": _stages("standard_stages"),
         "excluded_repos": _excluded("repos"),
         "excluded_nugets": _excluded("nugets"),
         "excluded_workspaces": _excluded("workspaces"),
@@ -122,9 +126,9 @@ WORKSPACES_ROOT = _settings["workspaces_root"]
 # Repo-relative folder that holds each service's azure-pipelines.yml (empty = root).
 PIPELINE_YAML_LOCATION = _settings["pipeline_yaml_location"]
 
-# Keywords used to recognise environment / standard pipeline run parameters.
-PIPELINE_ENVIRONMENT_KEYWORDS = _settings["pipeline_environment_keywords"]
-PIPELINE_STANDARD_KEYWORDS = _settings["pipeline_standard_keywords"]
+# Whole stage phrases used to recognise environment / standard pipeline run parameters.
+PIPELINE_ENVIRONMENT_STAGES = _settings["pipeline_environment_stages"]
+PIPELINE_STANDARD_STAGES = _settings["pipeline_standard_stages"]
 
 # Folder names to hide from each list (case-insensitive).
 EXCLUDED_FOLDERS = _settings["excluded_repos"]   # repos / "Services" tab

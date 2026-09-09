@@ -4,17 +4,18 @@
     "workspaces_root": "D:/Workspaces/features",
     "pipeline_yaml_location": "deployment",
     "pipeline_parameters": {
-        "environment_keywords": [
-            "development", "deploydev",
-            "acceptance", "deployacc",
-            "production", "deployprod"
+        "environment_stages": [
+            "deploy development environment", "deploydevelopment", "deploydev",
+            "deploy acceptance environment", "deployacceptance", "deployacc",
+            "deploy production environment", "deployproduction", "deployprod"
         ],
-        "standard_keywords": [
-            "infrastructure", "infra",
-            "skip build", "skipbuild", "skip solution",
-            "force build", "forcebuild",
-            "docker",
-            "keyvault", "key vault"
+        "standard_stages": [
+            "skip build solutions", "skipbuildsolutions",
+            "force build solution", "forcebuildsolution", "forcebuild",
+            "enable docker pipeline caching", "enabledockerpipelinecaching",
+            "enforce veracode scan", "enforceveracodescan",
+            "delete and purge obsolete secrets from keyvault", "cleankeyvault",
+            "deploy infrastructure", "deployinfrastructure"
         ]
     },
     "exclusions": {

@@ -174,6 +174,10 @@ class ProgressPanel(ttk.Frame):
                                        command=self._do_open)
         # The URLs opened in the browser when the open button is clicked.
         self._open_payload = []
+        self._view_button = ttk.Button(self._banner_frame, text="View report",
+                                       command=self._do_view_report)
+        # The report text shown in the modal when the view button is clicked.
+        self._report_payload = ""
 
         # Scrollable table area for repo rows.
         self._canvas = tk.Canvas(self, highlightthickness=0)
@@ -319,14 +323,18 @@ class ProgressPanel(ttk.Frame):
         label.bind("<Button-1>", lambda _e, u=url: webbrowser.open(u))
 
     def show_completion(self, text, copy_text=None, open_urls=None,
-                        open_label="Open all", copy_label="Copy all"):
+                        open_label="Open all", copy_label="Copy all",
+                        report_text=None, report_label="View report",
+                        report_title="Report"):
         """Reveal the green completion banner above the repo list.
 
         When *copy_text* is given, a *copy_label* button is shown next to the
         banner that copies that text to the clipboard (used to copy every repo's
         PR link as "repo name - pr link" lines). When *open_urls* is given, an
         *open_label* button is shown that opens every URL in the browser (used to
-        open every started pipeline run).
+        open every started pipeline run). When *report_text* is given, a
+        *report_label* button opens a wide, scrollable modal (titled
+        *report_title*) rendering the report with its own copy button.
         """
         self._banner.config(text=text)
         if copy_text:
@@ -343,6 +351,14 @@ class ProgressPanel(ttk.Frame):
         else:
             self._open_payload = []
             self._open_button.pack_forget()
+        if report_text:
+            self._report_payload = report_text
+            self._report_title = report_title
+            self._view_button.config(text=report_label)
+            self._view_button.pack(side="left", padx=(10, 0))
+        else:
+            self._report_payload = ""
+            self._view_button.pack_forget()
         self._banner_frame.pack(fill="x", padx=6, pady=(4, 6), before=self._canvas)
 
     def _do_copy(self, _event=None):
@@ -357,6 +373,12 @@ class ProgressPanel(ttk.Frame):
             if url:
                 webbrowser.open(url)
 
+    def _do_view_report(self, _event=None):
+        """Open the report modal for the stored report payload."""
+        import dialogs  # local import avoids a widgets <-> dialogs cycle
+        dialogs.show_report(self, self._report_payload,
+                            title=getattr(self, "_report_title", "Report"))
+
     def clear_completion(self):
         """Hide the completion banner (e.g. when a new action starts)."""
         self._banner.config(text="")
@@ -364,6 +386,8 @@ class ProgressPanel(ttk.Frame):
         self._copy_button.pack_forget()
         self._open_payload = []
         self._open_button.pack_forget()
+        self._report_payload = ""
+        self._view_button.pack_forget()
         self._banner_frame.pack_forget()
 
 

@@ -37,8 +37,8 @@ from gitutils import (
 from parallel import run_in_parallel
 from config import (
     PIPELINE_YAML_LOCATION,
-    PIPELINE_ENVIRONMENT_KEYWORDS,
-    PIPELINE_STANDARD_KEYWORDS,
+    PIPELINE_ENVIRONMENT_STAGES,
+    PIPELINE_STANDARD_STAGES,
 )
 
 
@@ -228,21 +228,31 @@ def _parse_yaml_parameters_full(text):
     return result
 
 
+def _param_matches_stage(param, stage):
+    """Return True when *stage* is the whole name or display phrase of *param*.
+
+    The stage phrase must equal the parameter's name or its full display phrase
+    exactly - never a substring - so a custom flag is not misclassified just
+    because it happens to contain a stage word (e.g. "Enforce Veracode scan"
+    contains "force").
+    """
+    name = (param.get("name") or "").strip().lower()
+    display = (param.get("display") or "").strip().lower()
+    return stage == name or stage == display
+
+
 def _param_role(param):
     """Classify a YAML parameter as ``env``, ``standard`` or None (custom).
 
-    Matches configured keywords (config.json ``pipeline_parameters``) against the
-    parameter's display name and name. ``env`` marks a deployment target toggle
-    chosen by the environment selection; ``standard`` marks a recognised template
-    flag; anything matching neither is a custom parameter the user is prompted
-    for.
+    Matches the configured stage phrases (config.json ``pipeline_parameters``)
+    against the parameter's display name and name as whole phrases. ``env`` marks
+    a deployment target toggle chosen by the environment selection; ``standard``
+    marks a recognised template flag; anything matching neither is a custom
+    parameter the user is prompted for.
     """
-    text = (
-        (param.get("display") or "") + " " + (param.get("name") or "")
-    ).lower()
-    if any(keyword in text for keyword in PIPELINE_ENVIRONMENT_KEYWORDS):
+    if any(_param_matches_stage(param, s) for s in PIPELINE_ENVIRONMENT_STAGES):
         return "env"
-    if any(keyword in text for keyword in PIPELINE_STANDARD_KEYWORDS):
+    if any(_param_matches_stage(param, s) for s in PIPELINE_STANDARD_STAGES):
         return "standard"
     return None
 
