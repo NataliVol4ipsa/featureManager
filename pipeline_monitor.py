@@ -20,6 +20,7 @@ from pipelines import (
     get_pipeline_stage_statuses,
     rerun_failed_stage,
     rerun_pipeline_from_latest_commit,
+    cancel_pipeline_run,
     has_custom_pipeline_parameters,
     configurable_pipeline_parameters,
 )
@@ -1238,7 +1239,18 @@ class PipelineMonitorWindow(tk.Toplevel):
             button.configure(state="disabled")
         self.title(f"Pipeline monitor - starting new {repo} run...")
 
+        # Identity of the run being replaced, so it can be cancelled if it is
+        # still going (including when it is paused at an approval gate).
+        previous_run = {
+            "org": info.get("org"),
+            "project": info.get("project"),
+            "host": info.get("host"),
+            "build_id": info.get("build_id"),
+        }
+
         def _work():
+            if previous_run.get("build_id") is not None:
+                cancel_pipeline_run(previous_run)
             ok, result = rerun_pipeline_from_latest_commit(info, override)
             self.after(0, self._on_rerun_launched, repo, ok, result)
 

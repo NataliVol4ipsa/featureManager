@@ -1518,6 +1518,40 @@ def rerun_failed_stage(run_info, stage_ref_name):
         return False, f"rerun failed: {exc}"
 
 
+def cancel_pipeline_run(run_info):
+    """Cancel a still-running pipeline build. Returns (ok, error).
+
+    Sends the Azure DevOps "Update Build" status ``cancelling`` so a run that is
+    in progress - including one paused at an approval gate (Acceptance or
+    Production waiting for approval) - is stopped. A build that has already
+    completed is left unchanged by Azure DevOps. *run_info* must contain org,
+    project, host and build_id.
+    """
+    org = run_info.get("org")
+    project = run_info.get("project")
+    host = run_info.get("host")
+    build_id = run_info.get("build_id")
+    if not org or not project or not host or build_id is None:
+        return False, "run info is missing org/project/host/build_id"
+
+    auth, err = _auth_for_host(host, org)
+    if err:
+        return False, err
+
+    url = (
+        f"https://dev.azure.com/{urllib.parse.quote(org)}/"
+        f"{urllib.parse.quote(project)}/_apis/build/builds/{int(build_id)}"
+        f"?api-version=7.1"
+    )
+    try:
+        _api_patch(url, {"status": "cancelling"}, auth)
+        return True, ""
+    except urllib.error.HTTPError as exc:
+        return False, f"cancel failed ({exc.code}): {_http_error_detail(exc)}"
+    except (urllib.error.URLError, OSError, ValueError) as exc:
+        return False, f"cancel failed: {exc}"
+
+
 def run_pipeline_for_repo_details(name, path, branch, environment,
                                   extra_parameters=None):
     """Queue a run and return structured metadata used by the monitor.
