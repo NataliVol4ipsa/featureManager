@@ -86,6 +86,18 @@ class _ScrollableList(ttk.Frame):
         else:
             self._canvas.configure(height=req_h)
 
+    def refit(self):
+        """Re-measure content and grow the canvas when not scrolling.
+
+        Called after a row's contents change height (e.g. an inline warning
+        appears) so the dialog, which auto-sizes to the canvas, expands to fit
+        instead of clipping the new text.
+        """
+        if self._scrollbar.winfo_ismapped():
+            return
+        self.inner.update_idletasks()
+        self._canvas.configure(height=self.inner.winfo_reqheight())
+
     def scroll_to_bottom(self):
         """Reveal the last row (used after a row is appended interactively)."""
         self.inner.update_idletasks()
@@ -1913,12 +1925,15 @@ def ask_missing_remote_branches(parent, names, environment_label):
 def ask_deploy_selection(parent, entries, environment_label):
     """Modal to choose which repositories to deploy to an environment.
 
-    *entries* is a list of ``(repo_name, already_deployed, last_commit)`` where
-    ``last_commit`` is a ``(short_hash, subject)`` tuple. A repo whose latest
-    branch commit already deployed successfully to the environment is unticked
-    by default; ticking it shows an inline note that it will be redeployed with
-    no changes. The last commit is always shown. Returns a
-    ``{repo_name: deploy_bool}`` dict on confirm, or ``None`` if cancelled.
+    *entries* is a list of ``(repo_name, already_deployed, last_commit,
+    overridden)`` where ``last_commit`` is a ``(short_hash, subject)`` tuple and
+    ``overridden`` is True when a later pipeline run (master or another branch)
+    deployed over our earlier successful deployment. A repo whose latest branch
+    commit already deployed successfully is unticked by default (ticking it
+    shows an amber note that it will be redeployed with no changes) - unless it
+    was overridden, in which case it is ticked and shows a blue note. The last
+    commit is always shown in muted grey. Returns a ``{repo_name: deploy_bool}``
+    dict on confirm, or ``None`` if cancelled.
     """
     dialog = tk.Toplevel(parent)
     dialog.title(f"Run {environment_label} deployments")
@@ -1947,19 +1962,28 @@ def ask_deploy_selection(parent, entries, environment_label):
         row=0, column=1, sticky="w", padx=4, pady=(0, 4)
     )
 
-    rows = []  # (name, already_deployed, var, note_label)
-    for index, (name, already, *rest) in enumerate(entries, start=1):
-        short, subject = (rest[0] if rest else ("", "")) or ("", "")
-        var = tk.BooleanVar(value=not already)
+    rows = []  # (name, already, overridden, var, commit_lbl, warn_lbl, short, subject)
+    for index, (name, already, commit, *rest) in enumerate(entries, start=1):
+        short, subject = (commit or ("", "")) or ("", "")
+        overridden = bool(rest[0]) if rest else False
+        var = tk.BooleanVar(value=(not already) or overridden)
         GlyphCheck(table, variable=var, mark="check").grid(
             row=index, column=0, sticky="w", padx=4, pady=2
         )
         tk.Label(table, text=name, font=("", 9, "bold")).grid(
             row=index, column=1, sticky="w", padx=4, pady=2
         )
-        note = tk.Label(table, text="", justify="left", wraplength=260)
+        note = tk.Frame(table)
         note.grid(row=index, column=2, sticky="w", padx=6, pady=2)
-        rows.append((name, already, var, note, short, subject))
+        commit_lbl = tk.Label(
+            note, text="", justify="left", wraplength=260,
+            foreground=theme.FG_MUTED,
+        )
+        commit_lbl.pack(anchor="w")
+        warn_lbl = tk.Label(note, text="", justify="left", wraplength=260)
+        warn_lbl.pack(anchor="w")
+        rows.append((name, already, overridden, var, commit_lbl, warn_lbl,
+                     short, subject))
 
     def _commit_text(short, subject):
         if not short and not subject:
@@ -1967,23 +1991,32 @@ def ask_deploy_selection(parent, entries, environment_label):
         return f"{short}  {subject}".strip()
 
     def _refresh(*_args):
-        for _name, already, var, note, short, subject in rows:
-            commit = _commit_text(short, subject)
-            if already and var.get():
-                extra = ("earlier successful deployment already exists - repo "
-                         "will be redeployed with no changes")
-                note.config(
-                    text=f"{commit}\n{extra}" if commit else extra,
+        for (_name, already, overridden, var, commit_lbl, warn_lbl,
+             short, subject) in rows:
+            commit_lbl.config(text=_commit_text(short, subject))
+            if overridden:
+                warn_lbl.config(
+                    text="earlier successful deployment exists but was "
+                         "overridden by a later pipeline run - redeploy to "
+                         "restore your version",
+                    foreground=theme.READY,
+                )
+            elif already and var.get():
+                warn_lbl.config(
+                    text="earlier successful deployment already exists - repo "
+                         "will be redeployed with no changes",
                     foreground=theme.WARNING,
                 )
             elif already:
-                extra = "already deployed - will be skipped"
-                note.config(
-                    text=f"{commit}\n{extra}" if commit else extra,
+                warn_lbl.config(
+                    text="already deployed - will be skipped",
                     foreground=theme.FG_MUTED,
                 )
             else:
-                note.config(text=commit, foreground=theme.FG_MUTED)
+                warn_lbl.config(text="")
+        # Rows can grow taller when a two-line warning appears; re-fit the
+        # scroll canvas so the auto-sizing dialog expands instead of clipping.
+        scroll.refit()
 
     # Populate the commit/status notes before sizing the scroll area so its
     # height measurement includes the (possibly two-line) notes; otherwise the
@@ -1991,13 +2024,13 @@ def ask_deploy_selection(parent, entries, environment_label):
     _refresh()
     scroll.finalize(len(entries))
 
-    for _name, _already, var, _note, _short, _subject in rows:
-        var.trace_add("write", _refresh)
+    for row in rows:
+        row[3].trace_add("write", _refresh)
 
     result = {"value": None}
 
     def _ok():
-        result["value"] = {name: var.get() for name, _a, var, _n, _s, _su in rows}
+        result["value"] = {row[0]: row[3].get() for row in rows}
         dialog.destroy()
 
     def _cancel():
