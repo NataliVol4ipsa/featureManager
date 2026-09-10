@@ -779,6 +779,8 @@ class ActionTabBase(ttk.Frame):
 
             def _scan(entry):
                 name, path, branch = entry
+                # Reflect the in-flight lookup in the Details table.
+                self.after(0, self.progress.status, name, "in-progress")
                 return is_git_repo(path) and remote_branch_exists(path, branch)
 
             present = run_in_parallel(active, _scan) if active else []
@@ -786,6 +788,13 @@ class ActionTabBase(ttk.Frame):
             for entry, ok in zip(active, present):
                 (existing if ok else missing).append(
                     entry if ok else entry[0]
+                )
+            for name in missing:
+                self.after(
+                    0,
+                    lambda n=name: self.progress.status(
+                        n, "skipped", tooltip="no remote branch to deploy"
+                    ),
                 )
 
             # Ask Azure DevOps whether each branch tip already deployed to the
@@ -796,6 +805,15 @@ class ActionTabBase(ttk.Frame):
                     name, path, branch, environment
                 )
                 short, subject = git_last_commit(path, branch)
+                if ok:
+                    self.after(0, self.progress.status, name, "done")
+                else:
+                    self.after(
+                        0,
+                        lambda n=name, e=info: self.progress.status(
+                            n, "error", tooltip=e
+                        ),
+                    )
                 return name, (info if ok else None), (short, subject)
 
             probes = run_in_parallel(existing, _probe) if existing else []
