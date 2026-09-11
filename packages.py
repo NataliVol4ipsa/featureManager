@@ -37,6 +37,7 @@ import urllib.request
 import urllib.error
 
 from parallel import run_in_parallel
+import disk_cache
 
 
 # Suppress the console window Windows would otherwise pop up (and steal focus
@@ -368,6 +369,9 @@ def _private_feed_prefixes(repo_path):
 _token_cache = {"token": None, "expires": 0.0}
 _token_lock = threading.Lock()
 _feed_base_cache = {}
+# A feed's flat-container root is static, so it is also cached cross-session
+# (non-secret) to avoid re-reading each feed's service index after a restart.
+_feed_base_disk = disk_cache.JsonDiskCache("nuget_feed_base.json")
 
 
 def get_azure_devops_token():
@@ -429,6 +433,11 @@ def _flat_container_base(feed_index_url, token):
     """
     if feed_index_url in _feed_base_cache:
         return _feed_base_cache[feed_index_url]
+    # Reuse a value resolved in a previous session before hitting the network.
+    disk_hit = _feed_base_disk.get(feed_index_url)
+    if disk_hit:
+        _feed_base_cache[feed_index_url] = disk_hit
+        return disk_hit
     base = None
     try:
         request = urllib.request.Request(
@@ -447,6 +456,10 @@ def _flat_container_base(feed_index_url, token):
     if base and not base.endswith("/"):
         base += "/"
     _feed_base_cache[feed_index_url] = base
+    # Only persist successful resolutions; transient failures stay uncached so
+    # they are retried (the in-memory None still throttles retries this session).
+    if base:
+        _feed_base_disk.set(feed_index_url, base)
     return base
 
 

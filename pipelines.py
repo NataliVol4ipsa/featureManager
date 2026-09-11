@@ -24,17 +24,19 @@ rejected by the pipelines API.
 import os
 import re
 import json
-import base64
 import datetime
+import threading
 import urllib.parse
 import urllib.request
 import urllib.error
 
 from gitutils import (
-    is_git_repo, git_remote_url, parse_ado_remote, get_git_credential,
+    is_git_repo, git_remote_url, parse_ado_remote,
     remote_branch_head,
 )
 from parallel import run_in_parallel
+import ado_auth
+import pipeline_ids
 from config import (
     PIPELINE_YAML_LOCATION,
     PIPELINE_ENVIRONMENT_STAGES,
@@ -397,29 +399,12 @@ def _visible_stages_for_run(repo_path, template_parameters):
 # --------------------------------------------------------------------------- #
 
 def _auth_for_host(host, org=None):
-    """Return (authorization_header, error). Prefers ADO_PAT, then Git creds.
+    """Return (authorization_header, error) for Azure DevOps REST calls.
 
-    When *org* is given an org-scoped URL is built for the Git credential
-    lookup: Azure DevOps stores dev.azure.com credentials per-organization
-    (useHttpPath), so a bare host finds nothing.
+    Delegates to the shared in-memory auth-header cache so the credential is
+    derived (ADO_PAT, then Git) at most once per host until it expires.
     """
-    pat = os.environ.get("ADO_PAT", "").strip()
-    if pat:
-        token = base64.b64encode(f":{pat}".encode("utf-8")).decode("ascii")
-        return f"Basic {token}", ""
-
-    url = f"https://{host}/{urllib.parse.quote(org)}" if org else None
-    username, password = get_git_credential(host, url)
-    if password:
-        token = base64.b64encode(
-            f"{username or ''}:{password}".encode("utf-8")
-        ).decode("ascii")
-        return f"Basic {token}", ""
-
-    return None, (
-        "no Azure DevOps credential found. Set the ADO_PAT environment variable "
-        "to a token with Build (Read & execute) and Code (Read) scopes."
-    )
+    return ado_auth.auth_header(host, org)
 
 
 def _http_error_detail(exc):
@@ -514,13 +499,18 @@ def _api_patch(url, body, auth):
 
 
 def _resolve_repo_id(org, project, repo, auth):
-    """Return the Azure DevOps repository id for *repo*, or None."""
+    """Return (repo_id, project_id) for *repo* in Azure DevOps, or (None, None).
+
+    Both come from the same repository lookup, so the project id is captured for
+    free alongside the repository id.
+    """
     url = (
         f"https://dev.azure.com/{urllib.parse.quote(org)}/"
         f"{urllib.parse.quote(project)}/_apis/git/repositories/"
         f"{urllib.parse.quote(repo)}?api-version=7.1"
     )
-    return _api_get(url, auth).get("id")
+    data = _api_get(url, auth)
+    return data.get("id"), (data.get("project") or {}).get("id")
 
 
 def _full_definition(org, project, definition_id, auth):
@@ -594,6 +584,68 @@ def _resolve_pipeline_id(org, project, repo_id, auth):
     return chosen.get("id")
 
 
+# Per-key locks so concurrent callers resolve a given repo's ids only once
+# (single-flight). Different repos keep different locks and still run in
+# parallel; the guard only protects the lock registry, never a network call.
+_id_resolve_locks = {}
+_id_resolve_guard = threading.Lock()
+
+
+def _id_resolve_lock(key):
+    """Return the shared lock for *key*, creating it on first use."""
+    with _id_resolve_guard:
+        lock = _id_resolve_locks.get(key)
+        if lock is None:
+            lock = threading.Lock()
+            _id_resolve_locks[key] = lock
+        return lock
+
+
+def _cached_repo_id(org, project, repo, auth):
+    """Return the repository id, consulting the persistent id cache first.
+
+    A repository never changes its id, so a cached value is trusted; a miss
+    resolves it from Azure DevOps and stores it for next time. Concurrent
+    callers for the same repo (e.g. a deploy probe and a pipeline monitor)
+    resolve it only once via the per-key lock; the rest reuse the stored value.
+    """
+    cached = pipeline_ids.get_repo_id(org, project, repo)
+    if cached:
+        return cached
+    with _id_resolve_lock(("repo", org, project, repo)):
+        # Another thread may have resolved it while we waited for the lock.
+        cached = pipeline_ids.get_repo_id(org, project, repo)
+        if cached:
+            return cached
+        repo_id, project_id = _resolve_repo_id(org, project, repo, auth)
+        if repo_id:
+            pipeline_ids.store(
+                org, project, repo, repo_id=repo_id, project_id=project_id
+            )
+        return repo_id
+
+
+def _cached_pipeline_id(org, project, repo, repo_id, auth):
+    """Return the deploy pipeline id, consulting the persistent id cache first.
+
+    Resolving it can cost one extra REST call per definition when a repo has
+    several, so the result is cached; it is only re-resolved after the cache is
+    cleared from the Settings menu. Concurrent callers for the same repo resolve
+    it only once via the per-key lock; the rest reuse the stored value.
+    """
+    cached = pipeline_ids.get_pipeline_id(org, project, repo)
+    if cached:
+        return cached
+    with _id_resolve_lock(("pipeline", org, project, repo)):
+        cached = pipeline_ids.get_pipeline_id(org, project, repo)
+        if cached:
+            return cached
+        pipeline_id = _resolve_pipeline_id(org, project, repo_id, auth)
+        if pipeline_id:
+            pipeline_ids.store(org, project, repo, pipeline_id=pipeline_id)
+        return pipeline_id
+
+
 def _queue_run(org, project, pipeline_id, branch, template_parameters, auth):
     """POST a pipeline run and return the parsed JSON response."""
     url = (
@@ -612,6 +664,15 @@ def _queue_run(org, project, pipeline_id, branch, template_parameters, auth):
     req.add_header("Authorization", auth)
     with urllib.request.urlopen(req, timeout=30) as resp:
         return json.loads(resp.read().decode("utf-8"))
+
+
+def _run_source_commit(data):
+    """Return the commit sha a queued run resolved for its 'self' repo, or ''."""
+    self_repo = (
+        ((data.get("resources") or {}).get("repositories") or {}).get("self")
+        or {}
+    )
+    return (self_repo.get("version") or "").strip()
 
 
 def _parse_build_id_from_url(url):
@@ -883,10 +944,10 @@ def get_master_stage_durations(name, path, count=15, scan=40):
         return False, f"{name}: {err}"
 
     try:
-        repo_id = _resolve_repo_id(org, project, repo, auth)
+        repo_id = _cached_repo_id(org, project, repo, auth)
         if not repo_id:
             return True, dict(_EMPTY_DURATIONS)
-        pipeline_id = _resolve_pipeline_id(org, project, repo_id, auth)
+        pipeline_id = _cached_pipeline_id(org, project, repo, repo_id, auth)
         if not pipeline_id:
             # No deploy pipeline (e.g. a plain NuGet repo): cache the empty result.
             return True, dict(_EMPTY_DURATIONS)
@@ -1016,10 +1077,10 @@ def find_env_deployment_for_branch(name, path, branch, environment):
 
     target = "development" if environment == "dev" else "acceptance"
     try:
-        repo_id = _resolve_repo_id(org, project, repo, auth)
+        repo_id = _cached_repo_id(org, project, repo, auth)
         if not repo_id:
             return False, f"{name}: could not resolve the repository in Azure DevOps"
-        info["pipeline_id"] = _resolve_pipeline_id(org, project, repo_id, auth)
+        info["pipeline_id"] = _cached_pipeline_id(org, project, repo, repo_id, auth)
         for build in _branch_builds_for_commit(
             org, project, repo_id, branch, commit, auth
         ):
@@ -1575,10 +1636,10 @@ def run_pipeline_for_repo_details(name, path, branch, environment,
         return False, f"{name}: {err}"
 
     try:
-        repo_id = _resolve_repo_id(org, project, repo, auth)
+        repo_id = _cached_repo_id(org, project, repo, auth)
         if not repo_id:
             return False, f"{name}: could not resolve the repository in Azure DevOps"
-        pipeline_id = _resolve_pipeline_id(org, project, repo_id, auth)
+        pipeline_id = _cached_pipeline_id(org, project, repo, repo_id, auth)
         if not pipeline_id:
             return False, f"{name}: no pipeline is configured for this repository"
         params = build_template_parameters(path, environment)
@@ -1687,10 +1748,10 @@ def redeploy_master_for_repo_details(name, path, deploy_dev, deploy_acc):
         return False, f"{name}: {err}"
 
     try:
-        repo_id = _resolve_repo_id(org, project, repo, auth)
+        repo_id = _cached_repo_id(org, project, repo, auth)
         if not repo_id:
             return False, f"{name}: could not resolve the repository in Azure DevOps"
-        pipeline_id = _resolve_pipeline_id(org, project, repo_id, auth)
+        pipeline_id = _cached_pipeline_id(org, project, repo, repo_id, auth)
         if not pipeline_id:
             return False, f"{name}: no pipeline is configured for this repository"
         params = build_template_parameters_for_roles(path, deploy_dev, deploy_acc)
@@ -1708,6 +1769,10 @@ def redeploy_master_for_repo_details(name, path, deploy_dev, deploy_acc):
             build_id = int(data.get("id"))
         except (TypeError, ValueError):
             build_id = None
+    # Record which master commit the run built so a triggered "cleanup" master
+    # run still shows its commit in history (the run response usually carries it;
+    # fall back to the remote master tip).
+    commit_id = _run_source_commit(data) or remote_branch_head(path, "master")
     return True, {
         "url": url,
         "build_id": build_id,
@@ -1720,6 +1785,7 @@ def redeploy_master_for_repo_details(name, path, deploy_dev, deploy_acc):
         "pipeline_id": pipeline_id,
         "visible_stages": visible_stages,
         "template_parameters": params,
+        "commit_id": commit_id,
     }
 
 
@@ -1744,13 +1810,13 @@ def get_latest_master_pipeline_run_details(name, path):
         return False, f"{name}: {err}"
 
     try:
-        repo_id = _resolve_repo_id(org, project, repo, auth)
+        repo_id = _cached_repo_id(org, project, repo, auth)
         if not repo_id:
             return False, f"{name}: could not resolve the repository in Azure DevOps"
         build = _latest_master_deploy_build(org, project, repo_id, auth)
         if not build:
             return False, f"{name}: no master pipeline run found"
-        pipeline_id = _resolve_pipeline_id(org, project, repo_id, auth)
+        pipeline_id = _cached_pipeline_id(org, project, repo, repo_id, auth)
     except urllib.error.HTTPError as exc:
         return False, f"{name}: pipeline run lookup failed ({exc.code}): {_http_error_detail(exc)}"
     except (urllib.error.URLError, OSError, ValueError) as exc:
@@ -1807,7 +1873,7 @@ def get_master_pipeline_run_for_merged_branch_details(name, path, branch):
         return False, f"{name}: {err}"
 
     try:
-        repo_id = _resolve_repo_id(org, project, repo, auth)
+        repo_id = _cached_repo_id(org, project, repo, auth)
         if not repo_id:
             return False, f"{name}: could not resolve the repository in Azure DevOps"
 

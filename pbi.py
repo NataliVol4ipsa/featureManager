@@ -17,7 +17,6 @@ are committed so a fresh checkout knows the expected shape.
 import os
 import re
 import json
-import base64
 import html
 import urllib.parse
 import urllib.request
@@ -25,7 +24,8 @@ import urllib.error
 from html.parser import HTMLParser
 
 from config import REPOS_ROOT
-from gitutils import list_subfolders, get_git_credential
+from gitutils import list_subfolders
+import ado_auth
 
 
 _BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -158,7 +158,11 @@ def map_services(service_names, synonyms=None, folders=None):
 # --------------------------------------------------------------------------- #
 
 def _ado_auth_header():
-    """Return (auth_header_value, error). Reuses the ADO_PAT env var, then git."""
+    """Return (auth_header_value, error) for Azure DevOps work-item reads.
+
+    The header itself is derived and cached by :mod:`ado_auth`; this only adds
+    the secrets.json organization-URL requirement specific to the PBI feature.
+    """
     secrets = load_secrets()
     org_url = (secrets.get("ado_organization_url") or "").strip()
     if not org_url:
@@ -167,26 +171,8 @@ def _ado_auth_header():
             "'ado_organization_url' in secrets.json."
         )
 
-    # Reuse the same ADO_PAT environment variable used for PR/work-item linking
-    # (set once via `setx ADO_PAT "<pat>"`) instead of duplicating it anywhere.
-    pat = os.environ.get("ADO_PAT", "").strip()
-    if pat:
-        token = base64.b64encode(f":{pat}".encode("utf-8")).decode("ascii")
-        return f"Basic {token}", ""
-
-    # Fall back to the Git-stored credential for the org host.
     host = (urllib.parse.urlparse(org_url).hostname or "").lower()
-    username, password = get_git_credential(host, org_url)
-    if password:
-        token = base64.b64encode(
-            f"{username or ''}:{password}".encode("utf-8")
-        ).decode("ascii")
-        return f"Basic {token}", ""
-
-    return None, (
-        "No Azure DevOps credential found. Set the ADO_PAT environment variable "
-        '(setx ADO_PAT "<your-pat>") or sign in with Git for the org host.'
-    )
+    return ado_auth.auth_header(host, cred_url=org_url)
 
 
 def fetch_work_item(work_item_id):

@@ -77,6 +77,12 @@ monitor_session.json
 restart_geometry.json
 pipeline_estimates.json
 pipeline_history.json
+pipeline_ids.json
+pipeline_ids.json.*.tmp
+ado_identity.json
+ado_identity.json.*.tmp
+nuget_feed_base.json
+nuget_feed_base.json.*.tmp
 history_window.flag
 
 # Local-only Copilot working notes (not shared with the team).

@@ -16,6 +16,7 @@ from gitutils import (
 from widgets import Tooltip, GlyphCheck
 import icons
 import pbi
+import pipeline_ids
 import theme
 
 
@@ -30,6 +31,26 @@ def _center_over_parent(dialog, parent):
     x = px + (pw - dw) // 2
     y = py + (ph - dh) // 2
     dialog.geometry(f"+{x}+{y}")
+
+    # Give the modal keyboard focus so its key bindings (e.g. Escape to cancel)
+    # fire even when it has no input widget. focus_force activates the window at
+    # the OS level (plain focus_set does not when the dialog is opened from the
+    # grabbed Settings popup, so keystrokes never reached it). Deferred to the
+    # event loop so a child the dialog pre-focused (an entry/text) is detected
+    # and kept focused rather than replaced by the toplevel.
+    def _activate_modal():
+        if not dialog.winfo_exists():
+            return
+        dialog.lift()
+        focused = dialog.focus_get()
+        path = str(dialog)
+        if focused is not None and (focused is dialog
+                                    or str(focused).startswith(path + ".")):
+            focused.focus_force()  # keep the pre-focused child, activate window
+        else:
+            dialog.focus_force()
+
+    dialog.after(0, _activate_modal)
 
 
 class _ScrollableList(ttk.Frame):
@@ -141,6 +162,15 @@ _DECISION_LABELS = {
 }
 
 
+def _new_modal(parent, name):
+    """Create a modal Toplevel with a stable, unique widget *name*.
+
+    Naming each modal lets it be looked up by identity (parent.nametowidget)
+    rather than matched by its window contents.
+    """
+    return tk.Toplevel(parent, name=name)
+
+
 def ask_change_decision(parent, name, options, on_master=False, note=None):
     """Per-repo modal asking what to do with a repo's uncommitted changes.
 
@@ -152,7 +182,7 @@ def ask_change_decision(parent, name, options, on_master=False, note=None):
     *note*, if given, is extra explanatory text shown above the buttons (e.g.
     why committing is required for a rebase).
     """
-    dialog = tk.Toplevel(parent)
+    dialog = _new_modal(parent, "ask_change_decision")
     dialog.title(f"Uncommitted changes - {name}")
     dialog.transient(parent.winfo_toplevel())
     dialog.resizable(False, False)
@@ -222,7 +252,7 @@ def ask_interrupted_operation_decision(parent, name, operation,
     (returns "abort_git"), which discards all staged and unstaged changes.
     Closing the window is treated as aborting the whole operation.
     """
-    dialog = tk.Toplevel(parent)
+    dialog = _new_modal(parent, "ask_interrupted_operation_decision")
     dialog.title(f"{operation.capitalize()} in progress - {name}")
     dialog.transient(parent.winfo_toplevel())
     dialog.resizable(False, False)
@@ -293,7 +323,7 @@ def ask_branch_name(parent, title="Create feature branch", prefix="feature/",
     must be a valid git branch name (no spaces). *initial* pre-fills the entry
     (e.g. a name derived from a PBI id and title).
     """
-    dialog = tk.Toplevel(parent)
+    dialog = _new_modal(parent, "ask_branch_name")
     dialog.title(title)
     dialog.transient(parent.winfo_toplevel())
     dialog.resizable(False, False)
@@ -348,7 +378,7 @@ def show_report(parent, report_text, title="Report"):
     A Copy button places the full report on the clipboard. The window is made
     wide so long NuGet package names fit without wrapping.
     """
-    dialog = tk.Toplevel(parent)
+    dialog = _new_modal(parent, "show_report")
     dialog.title(title)
     dialog.transient(parent.winfo_toplevel())
     dialog.geometry("820x560")
@@ -403,7 +433,7 @@ def ask_commit_message(parent, repos, branch_warning=None, change_counts=None):
     None if cancelled.
     """
     change_counts = change_counts or {}
-    dialog = tk.Toplevel(parent)
+    dialog = _new_modal(parent, "ask_commit_message")
     dialog.title("Commit all changes")
     dialog.transient(parent.winfo_toplevel())
     dialog.resizable(False, False)
@@ -640,7 +670,7 @@ def ask_branch_warning(parent, repo_count, title="Push all changes",
     when a warning applies. *warning* overrides the default message. Returns True
     if the user confirms, False otherwise.
     """
-    dialog = tk.Toplevel(parent)
+    dialog = _new_modal(parent, "ask_branch_warning")
     dialog.title(title)
     dialog.transient(parent.winfo_toplevel())
     dialog.resizable(False, False)
@@ -705,7 +735,7 @@ def ask_pr_details(parent, repo_count):
     and shared by all. Returns a dict {"mode", "title", "description", "draft"}
     where *mode* is "auto" or "custom", or None if cancelled.
     """
-    dialog = tk.Toplevel(parent)
+    dialog = _new_modal(parent, "ask_pr_details")
     dialog.title("Create pull requests")
     dialog.transient(parent.winfo_toplevel())
     dialog.resizable(False, False)
@@ -824,7 +854,7 @@ def ask_complete_pr_details(parent, repo_count):
     right away: publish drafts, queue a missing build, and set auto-complete when
     a PR is not ready yet. Returns a dict with those choices or None if cancelled.
     """
-    dialog = tk.Toplevel(parent)
+    dialog = _new_modal(parent, "ask_complete_pr_details")
     dialog.title("Complete pull requests")
     dialog.transient(parent.winfo_toplevel())
     dialog.resizable(False, False)
@@ -917,7 +947,7 @@ def ask_pbi_number(parent):
     Returns the numeric id as a string, or None if cancelled. Only digits are
     accepted.
     """
-    dialog = tk.Toplevel(parent)
+    dialog = _new_modal(parent, "ask_pbi_number")
     dialog.title("Create workspace from PBI")
     dialog.transient(parent.winfo_toplevel())
     dialog.resizable(False, False)
@@ -988,7 +1018,7 @@ def resolve_pbi_repos(parent, mappings, folders, nuget_folders=None):
     """
     nuget_folders = list(nuget_folders or [])
 
-    dialog = tk.Toplevel(parent)
+    dialog = _new_modal(parent, "resolve_pbi_repos")
     dialog.title("Create workspace from PBI - map repositories")
     dialog.transient(parent.winfo_toplevel())
     dialog.resizable(False, False)
@@ -1103,7 +1133,7 @@ def ask_workspace_branches(parent, repo_names, initial="", current_branches=None
     prefix; ``added`` lists the repos added via the dropdown with their absolute
     paths), or None if cancelled.
     """
-    dialog = tk.Toplevel(parent)
+    dialog = _new_modal(parent, "ask_workspace_branches")
     dialog.title("Name the feature workspace")
     dialog.transient(parent.winfo_toplevel())
     dialog.resizable(False, False)
@@ -1334,7 +1364,7 @@ def edit_synonyms(parent):
     must parse as a JSON object of {folder: [synonym, ...]}; it is then written
     back to disk. Returns True if saved, False if cancelled.
     """
-    dialog = tk.Toplevel(parent)
+    dialog = _new_modal(parent, "edit_synonyms")
     dialog.title("Repository synonyms")
     dialog.transient(parent.winfo_toplevel())
 
@@ -1387,10 +1417,180 @@ def edit_synonyms(parent):
     ttk.Button(bar, text="Cancel", command=_cancel).pack(side="left", padx=4)
 
     dialog.protocol("WM_DELETE_WINDOW", _cancel)
+    dialog.bind("<Escape>", lambda _e: _cancel())
     _center_over_parent(dialog, parent)
     dialog.grab_set()
     parent.wait_window(dialog)
     return result["saved"]
+
+
+def edit_pipeline_ids(parent):
+    """Modal viewer/editor for the resolved pipeline id cache (pipeline_ids.json).
+
+    Shows the cached repository and deployment-pipeline ids as formatted JSON so
+    single values can be corrected by hand. "Clear cache" empties it so every id
+    is re-resolved from Azure DevOps on next use. Returns True if saved.
+    """
+    dialog = _new_modal(parent, "edit_pipeline_ids")
+    dialog.title("Pipeline id cache")
+    dialog.transient(parent.winfo_toplevel())
+
+    tk.Label(
+        dialog,
+        text="Resolved Azure DevOps repository and deployment-pipeline ids, "
+             "cached so the deploy dialog need not re-resolve them every time. "
+             "Edit a value to correct it, or clear the cache to re-resolve all.",
+        justify="left", wraplength=460,
+    ).pack(padx=16, pady=(16, 6), anchor="w")
+
+    text = tk.Text(dialog, width=62, height=20, wrap="none")
+    text.pack(padx=16, fill="both", expand=True)
+    text.insert(
+        "1.0", json.dumps(pipeline_ids.all_entries(), indent=2, sort_keys=True)
+    )
+    text.focus_set()
+
+    error_label = tk.Label(dialog, text="", foreground=theme.ERROR,
+                           justify="left", wraplength=460)
+    error_label.pack(padx=16, anchor="w")
+
+    result = {"saved": False}
+
+    def _save():
+        raw = text.get("1.0", "end").strip()
+        try:
+            data = json.loads(raw)
+        except ValueError as exc:
+            error_label.config(text=f"Invalid JSON: {exc}")
+            return
+        ok, message = pipeline_ids.save_all(data)
+        if not ok:
+            error_label.config(text=message)
+            return
+        result["saved"] = True
+        dialog.destroy()
+
+    def _clear():
+        ok, message = pipeline_ids.clear()
+        if not ok:
+            error_label.config(text=message)
+            return
+        text.delete("1.0", "end")
+        text.insert("1.0", json.dumps({}, indent=2))
+        error_label.config(text="Cache cleared; ids will be re-resolved on next use.")
+
+    def _cancel():
+        result["saved"] = False
+        dialog.destroy()
+
+    bar = ttk.Frame(dialog)
+    bar.pack(padx=16, pady=12)
+    ttk.Button(bar, text="Save", command=_save).pack(side="left", padx=4)
+    ttk.Button(bar, text="Clear cache", command=_clear).pack(side="left", padx=4)
+    ttk.Button(bar, text="Cancel", command=_cancel).pack(side="left", padx=4)
+
+    dialog.protocol("WM_DELETE_WINDOW", _cancel)
+    dialog.bind("<Escape>", lambda _e: _cancel())
+    _center_over_parent(dialog, parent)
+    dialog.grab_set()
+    parent.wait_window(dialog)
+    return result["saved"]
+
+
+def edit_disk_cache(parent, title, description, cache, name="edit_disk_cache"):
+    """Modal viewer/editor for a JsonDiskCache (view, edit values, clear).
+
+    *cache* is a ``disk_cache.JsonDiskCache``; its contents are shown as JSON the
+    user can edit. "Clear cache" empties it so the values are re-fetched on next
+    use. Returns True if saved.
+    """
+    dialog = _new_modal(parent, name)
+    dialog.title(title)
+    dialog.transient(parent.winfo_toplevel())
+
+    tk.Label(
+        dialog, text=description, justify="left", wraplength=460,
+    ).pack(padx=16, pady=(16, 6), anchor="w")
+
+    text = tk.Text(dialog, width=62, height=20, wrap="none")
+    text.pack(padx=16, fill="both", expand=True)
+    text.insert("1.0", json.dumps(cache.all(), indent=2, sort_keys=True))
+    text.focus_set()
+
+    error_label = tk.Label(dialog, text="", foreground=theme.ERROR,
+                           justify="left", wraplength=460)
+    error_label.pack(padx=16, anchor="w")
+
+    result = {"saved": False}
+
+    def _save():
+        raw = text.get("1.0", "end").strip()
+        try:
+            data = json.loads(raw)
+        except ValueError as exc:
+            error_label.config(text=f"Invalid JSON: {exc}")
+            return
+        if not isinstance(data, dict):
+            error_label.config(text="Expected a JSON object.")
+            return
+        if not cache.replace(data):
+            error_label.config(text="Could not save the cache.")
+            return
+        result["saved"] = True
+        dialog.destroy()
+
+    def _clear():
+        if not cache.clear():
+            error_label.config(text="Could not clear the cache.")
+            return
+        text.delete("1.0", "end")
+        text.insert("1.0", json.dumps({}, indent=2))
+        error_label.config(text="Cache cleared; values re-fetched on next use.")
+
+    def _cancel():
+        result["saved"] = False
+        dialog.destroy()
+
+    bar = ttk.Frame(dialog)
+    bar.pack(padx=16, pady=12)
+    ttk.Button(bar, text="Save", command=_save).pack(side="left", padx=4)
+    ttk.Button(bar, text="Clear cache", command=_clear).pack(side="left", padx=4)
+    ttk.Button(bar, text="Cancel", command=_cancel).pack(side="left", padx=4)
+
+    dialog.protocol("WM_DELETE_WINDOW", _cancel)
+    dialog.bind("<Escape>", lambda _e: _cancel())
+    _center_over_parent(dialog, parent)
+    dialog.grab_set()
+    parent.wait_window(dialog)
+    return result["saved"]
+
+
+def edit_ado_identity_cache(parent):
+    """View/edit/clear the cross-session ADO identity-id cache."""
+    import gitutils
+    return edit_disk_cache(
+        parent,
+        "ADO identity cache",
+        "Azure DevOps authenticated-user identity id per organization, used for "
+        "pull-request auto-complete. Cached so it is not re-fetched each time; "
+        "clear it if you sign in as a different account.",
+        gitutils._IDENTITY_CACHE,
+        name="cache_ado_identity",
+    )
+
+
+def edit_nuget_feed_cache(parent):
+    """View/edit/clear the cross-session NuGet feed-root cache."""
+    import packages
+    return edit_disk_cache(
+        parent,
+        "NuGet feed roots cache",
+        "Resolved flat-container (PackageBaseAddress) URL per private NuGet feed, "
+        "cached so the feed's service index is not re-read on every restart. "
+        "Clear it if a feed's endpoints change.",
+        packages._feed_base_disk,
+        name="cache_nuget_feed",
+    )
 
 
 def edit_branch_overrides(parent, workspace_name, entries):
@@ -1423,7 +1623,7 @@ def edit_branch_overrides(parent, workspace_name, entries):
 
     default = default_workspace_branch(workspace_name)
 
-    dialog = tk.Toplevel(parent)
+    dialog = _new_modal(parent, "edit_branch_overrides")
     dialog.title(f"Manage workspace branches - {workspace_name}")
     dialog.transient(parent.winfo_toplevel())
     dialog.resizable(False, False)
@@ -1664,7 +1864,7 @@ def ask_include_skipped(parent, action_label, names):
     in for this run only. Returns the set of names the user chose to include, or
     None if the dialog is cancelled.
     """
-    dialog = tk.Toplevel(parent)
+    dialog = _new_modal(parent, "ask_include_skipped")
     dialog.title(f"Include skipped repositories - {action_label}")
     dialog.transient(parent.winfo_toplevel())
     dialog.resizable(False, False)
@@ -1723,7 +1923,7 @@ def ask_branches_to_delete(parent, entries):
     list of selected ``(repo_name, branch, path)`` triples on confirm, or None
     if the dialog is cancelled.
     """
-    dialog = tk.Toplevel(parent)
+    dialog = _new_modal(parent, "ask_branches_to_delete")
     dialog.title("Delete remote branches")
     dialog.transient(parent.winfo_toplevel())
     dialog.resizable(False, False)
@@ -1798,7 +1998,7 @@ def ask_solutions_to_open(parent, entries):
     """
     import os
 
-    dialog = tk.Toplevel(parent)
+    dialog = _new_modal(parent, "ask_solutions_to_open")
     dialog.title("Open solutions in Visual Studio")
     dialog.transient(parent.winfo_toplevel())
     dialog.resizable(False, False)
@@ -1873,7 +2073,7 @@ def ask_missing_remote_branches(parent, names, environment_label):
     for the repositories that do have a remote branch, or False to abort the
     whole run. *environment_label* (e.g. "Development") is shown for context.
     """
-    dialog = tk.Toplevel(parent)
+    dialog = _new_modal(parent, "ask_missing_remote_branches")
     dialog.title("Missing remote branches")
     dialog.transient(parent.winfo_toplevel())
     dialog.resizable(False, False)
@@ -1935,7 +2135,7 @@ def ask_deploy_selection(parent, entries, environment_label):
     commit is always shown in muted grey. Returns a ``{repo_name: deploy_bool}``
     dict on confirm, or ``None`` if cancelled.
     """
-    dialog = tk.Toplevel(parent)
+    dialog = _new_modal(parent, "ask_deploy_selection")
     dialog.title(f"Run {environment_label} deployments")
     dialog.transient(parent.winfo_toplevel())
     dialog.resizable(False, False)
@@ -2062,7 +2262,7 @@ def ask_pipeline_parameters(parent, service_name, params, context_label=""):
     confirm (booleans as bool, other types as their string), or ``None`` if
     cancelled.
     """
-    dialog = tk.Toplevel(parent)
+    dialog = _new_modal(parent, "ask_pipeline_parameters")
     dialog.title(f"Run pipeline - {service_name}")
     dialog.transient(parent.winfo_toplevel())
     dialog.resizable(False, False)
@@ -2155,7 +2355,7 @@ def ask_redeploy_selection(parent, names):
     Returns ``{repo: {"dev": bool, "acc": bool, "view": bool}}`` on confirm, or
     ``None`` if cancelled. Production is never offered.
     """
-    dialog = tk.Toplevel(parent)
+    dialog = _new_modal(parent, "ask_redeploy_selection")
     dialog.title("Redeploy latest master commit")
     dialog.transient(parent.winfo_toplevel())
     dialog.resizable(False, False)
@@ -2324,7 +2524,7 @@ def confirm_force_close(parent, monitor_count):
     Returns True to force-close the app, False to abort and keep it running.
     """
     plural = "s" if monitor_count != 1 else ""
-    dialog = tk.Toplevel(parent)
+    dialog = _new_modal(parent, "confirm_force_close")
     dialog.title("Pipeline monitors still open")
     dialog.transient(parent.winfo_toplevel())
     dialog.resizable(False, False)
@@ -2365,7 +2565,7 @@ def ask_pipeline_poll_seconds(parent, current, minimum, maximum):
 
     Returns the chosen integer value, or None if cancelled.
     """
-    dialog = tk.Toplevel(parent)
+    dialog = _new_modal(parent, "ask_pipeline_poll_seconds")
     dialog.title("Pipeline monitor polling")
     dialog.transient(parent.winfo_toplevel())
     dialog.resizable(False, False)
@@ -2430,6 +2630,7 @@ def ask_pipeline_poll_seconds(parent, current, minimum, maximum):
 
     entry.bind("<Return>", lambda _e: _ok())
     dialog.protocol("WM_DELETE_WINDOW", _cancel)
+    dialog.bind("<Escape>", lambda _e: _cancel())
     _center_over_parent(dialog, parent)
     dialog.grab_set()
     parent.wait_window(dialog)

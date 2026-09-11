@@ -1007,22 +1007,28 @@ class ActionTabBase(ttk.Frame):
                                pbi_title="", test_reports=None,
                                show_prod_control=True, release_message=True,
                                record_history=True, history_session_id=None,
+                               history_run_infos=None,
                                restore_geometry=None):
         """Create a floating always-on-top window tracking started pipeline runs."""
         # Record this monitor as a history session (unless we are reopening an
         # already-recorded one after a theme relaunch). "Run new" actions inside
-        # the monitor append child runs to this same session id.
+        # the monitor append child runs to this same session id. Only runs that
+        # were actually triggered are recorded: *history_run_infos*, when given,
+        # is that subset (an empty subset records nothing), while the monitor
+        # still opens for the full *run_infos* (which may include view-only rows).
         if record_history and history_session_id is None:
-            history_session_id = pipeline_history.record_session(
-                run_infos, workspace=self._history_workspace_name(),
-                monitor_kwargs={
-                    "show_autoapprove_controls": show_autoapprove_controls,
-                    "show_prod_control": show_prod_control,
-                    "release_message": release_message,
-                    "pbi_title": pbi_title,
-                    "test_reports": test_reports,
-                },
-            )
+            to_record = run_infos if history_run_infos is None else history_run_infos
+            if to_record:
+                history_session_id = pipeline_history.record_session(
+                    to_record, workspace=self._history_workspace_name(),
+                    monitor_kwargs={
+                        "show_autoapprove_controls": show_autoapprove_controls,
+                        "show_prod_control": show_prod_control,
+                        "release_message": release_message,
+                        "pbi_title": pbi_title,
+                        "test_reports": test_reports,
+                    },
+                )
 
         monitor = PipelineMonitorWindow(
             self,
@@ -1173,11 +1179,14 @@ class ActionTabBase(ttk.Frame):
         for info in run_infos.values():
             info["is_master_run"] = True
 
+        # Viewing existing master runs tied to merged PRs triggers nothing, so
+        # it is not recorded in pipeline history.
         self._open_pipeline_monitor(
             run_infos,
             show_autoapprove_controls=True,
             pbi_title=pbi_title,
             test_reports=test_reports,
+            record_history=False,
         )
         count = len(run_infos)
         self.progress.show_completion(
@@ -1284,11 +1293,18 @@ class ActionTabBase(ttk.Frame):
         if not run_infos:
             return
 
+        # Only repos that were actually re-queued are recorded; "View latest"
+        # rows (is_previous_run) are shown in the monitor but not in history.
+        triggered = {
+            name: info for name, info in run_infos.items()
+            if not info.get("is_previous_run")
+        }
         self._open_pipeline_monitor(
             run_infos,
             show_autoapprove_controls=True,
             show_prod_control=False,
             release_message=False,
+            history_run_infos=triggered,
         )
         count = len(run_infos)
         self.progress.show_completion(

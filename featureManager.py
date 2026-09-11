@@ -21,7 +21,10 @@ from tkinter import ttk
 
 from manual_tab import ManualTab
 from workspaces_tab import WorkspacesTab
-from dialogs import edit_synonyms, ask_pipeline_poll_seconds, confirm_force_close
+from dialogs import (
+    edit_synonyms, edit_pipeline_ids, edit_ado_identity_cache,
+    edit_nuget_feed_cache, ask_pipeline_poll_seconds, confirm_force_close,
+)
 from toolbar import build_action_toolbar
 import packages
 import pipeline_estimates
@@ -142,8 +145,16 @@ def main():
         )
 
     def _settings_entries():
-        return [
+        # A nested entry is (label, submenu_list, False); the popup drills into
+        # the list in place. The cache editors are grouped under "Caches".
+        cache_items = [
+            ("Pipeline id cache\u2026", lambda: edit_pipeline_ids(root), False),
+            ("ADO identity cache\u2026", lambda: edit_ado_identity_cache(root), False),
+            ("NuGet feed cache\u2026", lambda: edit_nuget_feed_cache(root), False),
+        ]
+        top = [
             ("Repository synonyms\u2026", lambda: edit_synonyms(root), False),
+            ("Caches", None, False),  # replaced with its submenu below
             (
                 f"Pipeline monitor polling ({theme.load_pipeline_poll_seconds()}s)\u2026",
                 _set_pipeline_poll_seconds,
@@ -161,6 +172,10 @@ def main():
             ),
             ("Dark theme", _toggle_theme, theme.load_dark_preference()),
         ]
+        # "\u2039 Back" is itself a nested entry whose submenu is the top menu.
+        cache_menu = [("\u2039  Back", top, False)] + cache_items
+        top[1] = ("Caches", cache_menu, False)
+        return top
 
     def _post_settings(_event=None):
         popup = tk.Toplevel(root)
@@ -177,23 +192,35 @@ def main():
             if popup.winfo_exists():
                 popup.destroy()
 
-        for label, command, checked in _settings_entries():
-            entry = tk.Label(
-                inner, text=("\u2713  " if checked else "     ") + label,
-                anchor="w", background=theme.BG_PANEL, foreground=theme.FG,
-                padx=12, pady=5,
-            )
-            entry.pack(fill="x")
-            entry.bind("<Enter>",
-                       lambda _e, w=entry: w.config(background=theme.ACCENT))
-            entry.bind("<Leave>",
-                       lambda _e, w=entry: w.config(background=theme.BG_PANEL))
-            entry.bind("<Button-1>",
-                       lambda _e, c=command: (_dismiss(), c()))
+        def _render(entries):
+            for child in inner.winfo_children():
+                child.destroy()
+            for label, command, checked in entries:
+                submenu = command if isinstance(command, list) else None
+                # Right chevron for a drill-in, but not for "\u2039 Back".
+                arrow = (" \u203a" if submenu is not None
+                         and not label.lstrip().startswith("\u2039") else "")
+                entry = tk.Label(
+                    inner, text=("\u2713  " if checked else "     ") + label + arrow,
+                    anchor="w", background=theme.BG_PANEL, foreground=theme.FG,
+                    padx=12, pady=5,
+                )
+                entry.pack(fill="x")
+                entry.bind("<Enter>",
+                           lambda _e, w=entry: w.config(background=theme.ACCENT))
+                entry.bind("<Leave>",
+                           lambda _e, w=entry: w.config(background=theme.BG_PANEL))
+                if submenu is not None:
+                    entry.bind("<Button-1>",
+                               lambda _e, sub=submenu: _render(sub))
+                else:
+                    entry.bind("<Button-1>",
+                               lambda _e, c=command: (_dismiss(), c()))
+            popup.update_idletasks()  # re-fit the borderless window to content
+
+        _render(_settings_entries())
 
         # A click anywhere else (grabbed) or losing focus closes the menu.
-        popup.bind("<Button-1>", _dismiss)
-        inner.bind("<Button-1>", _dismiss)
         popup.bind("<Escape>", _dismiss)
         popup.bind("<FocusOut>", _dismiss)
         popup.grab_set()

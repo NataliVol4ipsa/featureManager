@@ -265,10 +265,15 @@ class PipelineMonitorWindow(tk.Toplevel):
             return
         self.update_idletasks()
         # Give the scrolling canvas the size of its content so the window's
-        # requested size accounts for every row.
+        # requested size accounts for every row. grid_bbox reflects only the
+        # VISIBLE rows; the inner frame's winfo_reqheight stays stale after rows
+        # are hidden (it never shrinks), which left the window too tall once
+        # completed rows were hidden. Fall back to reqheight before layout.
+        bbox = self._inner.grid_bbox()
+        content_height = bbox[3] if bbox is not None else self._inner.winfo_reqheight()
         self._canvas.configure(
             width=self._inner.winfo_reqwidth(),
-            height=self._inner.winfo_reqheight(),
+            height=content_height,
         )
         self.update_idletasks()
         self._update_scrollregion_and_scrollbar()
@@ -887,7 +892,9 @@ class PipelineMonitorWindow(tk.Toplevel):
         pollable = [
             repo for repo, row in self._rows.items() if not row.get("skipped")
         ]
-        all_complete = bool(pollable) and all(
+        # The celebration banner only makes sense in the "Hide completed" view,
+        # where finished rows disappear; in the full view leave everything shown.
+        all_complete = self._hide_completed and bool(pollable) and all(
             self._row_is_complete(repo) for repo in pollable
         )
         hidden_now = set()
@@ -1256,6 +1263,32 @@ class PipelineMonitorWindow(tk.Toplevel):
 
         threading.Thread(target=_work, daemon=True).start()
 
+    def _ensure_history_session(self):
+        """Create a history session lazily for this monitor (returns nothing).
+
+        Used when a monitor that opened as view-only (no session) gets its first
+        "Run new": the whole monitor is then recorded, and the child run is
+        grouped into the new session id.
+        """
+        if self.history_session_id:
+            return
+        tab = self._tab
+        workspace = (
+            tab._history_workspace_name()
+            if hasattr(tab, "_history_workspace_name") else None
+        )
+        self.history_session_id = pipeline_history.record_session(
+            self._run_infos,
+            workspace=workspace,
+            monitor_kwargs={
+                "show_autoapprove_controls": self._show_autoapprove_controls,
+                "show_prod_control": self._show_prod_control,
+                "release_message": self._release_message,
+                "pbi_title": self._pbi_title,
+                "test_reports": self._test_reports,
+            },
+        )
+
     def _on_rerun_launched(self, repo, ok, result):
         if self._closed:
             return
@@ -1272,12 +1305,17 @@ class PipelineMonitorWindow(tk.Toplevel):
         info = self._run_infos.get(repo)
         # Record the fresh run as a child of this repo in the history session
         # (a full "Run new"; failed-stage retries are deliberately not recorded).
-        if info is not None and self.history_session_id:
-            pipeline_history.add_child_run(
-                self.history_session_id,
-                repo,
-                pipeline_history.child_run_from_result(info, result),
-            )
+        # A view-only monitor has no session yet: triggering a run turns it into
+        # a recorded one, so create the session lazily on this first "Run new".
+        if info is not None:
+            if not self.history_session_id:
+                self._ensure_history_session()
+            if self.history_session_id:
+                pipeline_history.add_child_run(
+                    self.history_session_id,
+                    repo,
+                    pipeline_history.child_run_from_result(info, result),
+                )
         if info is not None:
             # Follow the new run: refresh identity, drop stale approval flags.
             info["url"] = result.get("url", "")

@@ -21,6 +21,13 @@ from config import (
     REPOS_ROOT, NUGETS_ROOT, WORKSPACES_ROOT,
     EXCLUDED_FOLDERS, EXCLUDED_NUGETS, EXCLUDED_WORKSPACES,
 )
+import disk_cache
+
+
+# Cross-session cache of each org's authenticated-user identity id. The identity
+# never changes for the signed-in account, so PR auto-complete need not re-fetch
+# connectionData every time.
+_IDENTITY_CACHE = disk_cache.JsonDiskCache("ado_identity.json")
 
 
 # Base message for the generic "commit changes as savepos" commits. Using
@@ -1339,7 +1346,15 @@ def _ado_send_json(url, auth, body, method, timeout=30):
 
 
 def _ado_current_user_id(org, auth):
-    """Return the authenticated user's identity id (for auto-complete), or None."""
+    """Return the authenticated user's identity id (for auto-complete), or None.
+
+    Cached cross-session per org (the identity never changes for the signed-in
+    account), so PR auto-complete does not re-fetch connectionData each time.
+    """
+    key = (org or "").lower()
+    cached = _IDENTITY_CACHE.get(key)
+    if cached:
+        return cached
     url = (
         f"https://dev.azure.com/{urllib.parse.quote(org)}/"
         f"_apis/connectionData?api-version=7.1"
@@ -1347,7 +1362,10 @@ def _ado_current_user_id(org, auth):
     ok, data = _ado_get_json(url, auth)
     if not ok:
         return None
-    return (data.get("authenticatedUser") or {}).get("id")
+    user_id = (data.get("authenticatedUser") or {}).get("id")
+    if user_id:
+        _IDENTITY_CACHE.set(key, user_id)
+    return user_id
 
 
 def _pr_policy_state(org, project, project_id, pr_id, auth):
