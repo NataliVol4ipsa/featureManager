@@ -32,7 +32,7 @@ import urllib.error
 
 from gitutils import (
     is_git_repo, git_remote_url, parse_ado_remote,
-    remote_branch_head,
+    remote_branch_head, git_commit_message,
 )
 from parallel import run_in_parallel
 import ado_auth
@@ -1712,6 +1712,11 @@ def rerun_pipeline_from_latest_commit(run_info, override_parameters=None):
             build_id = int(data.get("id"))
         except (TypeError, ValueError):
             build_id = None
+    # Record which commit the branch tip resolved to, so "Run new" shows a
+    # commit id/message in pipeline history like the initial run does.
+    path = run_info.get("repo_path")
+    commit_id = _run_source_commit(data) or remote_branch_head(path, branch)
+    commit_message = git_commit_message(path, commit_id) if (path and commit_id) else ""
     return True, {
         "url": url,
         "build_id": build_id,
@@ -1724,6 +1729,8 @@ def rerun_pipeline_from_latest_commit(run_info, override_parameters=None):
         "pipeline_id": pipeline_id,
         "visible_stages": list(run_info.get("visible_stages") or []),
         "template_parameters": dict(params),
+        "commit_id": commit_id,
+        "commit_message": commit_message,
     }
 
 

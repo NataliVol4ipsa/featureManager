@@ -57,6 +57,7 @@ class FeatureManagerApp(ttk.Notebook):
 
 
 def main():
+    theme.enable_dpi_awareness()  # before Tk() - fixes popdown/geometry glitches
     root = tk.Tk()
     root.title("Feature Manager")
     root.geometry("1160x740")

@@ -1114,7 +1114,9 @@ class WorkspacesTab(ActionTabBase):
 
         # Build the repo list (de-duplicated, order preserved). Excluded services
         # (folder None) are left out; shared NuGet folders resolve under
-        # NUGETS_ROOT.
+        # NUGETS_ROOT. An empty list is fine - the workspace is created with no
+        # repositories and more can be added later via the branch modal or the
+        # workspace's own "add repository" flow.
         chosen, seen = [], set()
         for folder in resolved.values():
             if not folder or folder in seen:
@@ -1122,12 +1124,6 @@ class WorkspacesTab(ActionTabBase):
             seen.add(folder)
             root = NUGETS_ROOT if folder in nuget_set else REPOS_ROOT
             chosen.append((folder, os.path.join(root, folder)))
-
-        if not chosen:
-            self.errors.add(
-                f"PBI {result['id']}: no repositories selected for the workspace."
-            )
-            return
 
         # Name the workspace and set a per-repo feature branch (pre-filled with
         # the workspace name), then create the branches - same modal and flow as

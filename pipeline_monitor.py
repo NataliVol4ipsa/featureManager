@@ -1022,9 +1022,9 @@ class PipelineMonitorWindow(tk.Toplevel):
                 canvas.create_text(
                     x, y - 18, text=style["label"], fill=label_color, font=("", 8)
                 )
-            # A failed stage is retryable: remember its circle and, while it is
-            # hovered, draw a white rerun icon on top of the red circle.
-            if state == "failed":
+            # Failed and canceled stages are retryable: remember their circle
+            # and, while hovered, draw a white rerun icon on top.
+            if state in ("failed", "canceled"):
                 retry_hitboxes.append((key, x, y))
                 if row.get("hover_stage") == key:
                     canvas.create_text(
@@ -1037,7 +1037,7 @@ class PipelineMonitorWindow(tk.Toplevel):
         row["running_hitboxes"] = running_hitboxes
 
     def _stage_at(self, row, px, py):
-        """Return the failed-stage key whose circle contains (px, py), or None."""
+        """Return the retryable stage key at (px, py), or None."""
         for key, cx, cy in row.get("retry_hitboxes") or []:
             if (px - cx) ** 2 + (py - cy) ** 2 <= 12 ** 2:
                 return key
@@ -1185,7 +1185,7 @@ class PipelineMonitorWindow(tk.Toplevel):
             self._retry_stage(repo, key)
 
     def _retry_stage(self, repo, key):
-        """Rerun the failed jobs of *key* stage for *repo* on a worker thread."""
+        """Rerun the failed or canceled jobs of *key* stage on a worker thread."""
         row = self._rows.get(repo)
         info = self._run_infos.get(repo)
         if not row or not info or row.get("retry_in_progress"):

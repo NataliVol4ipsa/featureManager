@@ -24,6 +24,7 @@ from dialogs import (
     ask_missing_remote_branches, ask_deploy_selection,
     ask_complete_pr_details, ask_interrupted_operation_decision,
     ask_redeploy_selection, ask_workspace_branches, ask_pipeline_parameters,
+    ask_packages_to_bump,
 )
 from pipelines import (
     run_pipeline_for_repo_details,
@@ -333,11 +334,10 @@ class ActionTabBase(ttk.Frame):
         the resulting branch overrides, then each repo's feature branch is
         created. *repos* is a list of ``(name, path)``. *initial* pre-fills the
         workspace name. *on_created*, if given, is called with the workspace name
-        after the file is written (e.g. to refresh a workspace list).
+        after the file is written (e.g. to refresh a workspace list). *repos*
+        may be empty - the workspace is created with no folders and repos can
+        still be added via the dialog's "Add repository" dropdown.
         """
-        if not repos:
-            return
-
         self.errors.clear()
 
         repos = list(repos)  # local copy: added repos are appended below
@@ -673,20 +673,82 @@ class ActionTabBase(ttk.Frame):
         # fetched from the feed only once (but a later batch still re-checks).
         packages.reset_version_cache()
 
+        # Phase 1: find the available updates across every repo (the network-
+        # heavy step). Status circles update live as each repo is checked; the
+        # resolved versions are memoised so applying the selection is instant.
+        self.errors.clear()
+        self.progress.show_repos(
+            [(name, "...") for name, _ in repos], with_status=True,
+        )
+
+        plans = {}  # repo name -> list of (props, id, old, new)
+
+        def _check_one(name, path):
+            if not packages.find_all_props_files(path):
+                self.after(0, self.progress.status, name, "skipped",
+                           "no Directory.Packages.props found")
+                return
+            self.after(0, self.progress.status, name, "in-progress")
+            ok_check, result = packages.compute_repo_bumps(
+                path, include_public=include_public,
+                include_private=include_private, token=token,
+            )
+            if not ok_check:
+                self.after(0, self.progress.status, name, "error")
+                self.after(0, self.errors.add, result)
+                return
+            plans[name] = result
+            self.after(0, self.progress.status, name, "done")
+
+        def _check_worker():
+            run_in_parallel(repos, lambda rp: _check_one(*rp))
+            self.after(0, _choose_and_apply)
+
+        def _choose_and_apply():
+            # Collapse duplicate (id, old, new) rows per repo (a package can
+            # appear in several props files of a multi-repository repo).
+            entries = []  # (repo_name, id, old, new)
+            for name, _ in repos:
+                seen = set()
+                for _props, package_id, old, new in plans.get(name, []):
+                    key = (package_id, old, new)
+                    if key not in seen:
+                        seen.add(key)
+                        entries.append((name, package_id, old, new))
+            if not entries:
+                self.progress.show_completion(f"All packages up to date ({label}).")
+                return
+            selected = ask_packages_to_bump(self, entries, label)
+            if selected is None:
+                return  # user cancelled the whole batch
+            self._apply_bumps(repos, plans, selected, label)
+
+        threading.Thread(target=_check_worker, daemon=True).start()
+
+    def _apply_bumps(self, repos, plans, selected, label):
+        """Phase 2: write only the user-selected package updates and report them."""
+        chosen = {(name, package_id, old, new) for name, package_id, old, new
+                  in selected}
+
         reports = {}
         self._bump_reports = reports
 
         def _skip(name, path):
-            if not packages.find_all_props_files(path):
-                return "no Directory.Packages.props found"
+            # Repos with no available (or no selected) updates are skipped so the
+            # status table mirrors what actually changed.
+            if not any((name, package_id, old, new) in chosen
+                       for _props, package_id, old, new in plans.get(name, [])):
+                return "no packages selected"
             return ""
 
-        def _bump(name, path):
-            ok_bump, result = packages.bump_repo_packages(
-                path, include_public=include_public,
-                include_private=include_private, token=token,
-            )
-            if not ok_bump:
+        def _apply(name, path):
+            entries = [
+                (props, package_id, old, new)
+                for props, package_id, old, new in plans.get(name, [])
+                if (name, package_id, old, new) in chosen
+            ]
+            ok_apply, result = packages.apply_selected_bumps(entries)
+            if not ok_apply:
                 return False, result
             reports[name] = result
             return True, ""
@@ -705,7 +767,7 @@ class ActionTabBase(ttk.Frame):
 
         self.run_repo_action(
             repos,
-            _bump,
+            _apply,
             f"Package versions bumped ({label}).",
             skip_fn=_skip,
             completion_report_fn=_report_text,

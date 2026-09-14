@@ -2065,6 +2065,168 @@ def ask_solutions_to_open(parent, entries):
     return result["value"]
 
 
+def ask_packages_to_bump(parent, entries, feed_label):
+    """Modal to choose which package updates to apply.
+
+    *entries* is a list of ``(repo_name, package_id, old, new)`` tuples - the
+    available updates found across the selected repositories. Every update is
+    ticked by default. The dialog has two tabs over the SAME selection: "By
+    repository" groups updates under each repo, "By package" groups them under
+    each NuGet id with a tri-state parent checkbox (ticking/unticking a package
+    toggles all its services; a mixed selection shows a partial dash). *feed_label*
+    (e.g. "public") is shown for context. Returns the list of selected
+    ``(repo_name, package_id, old, new)`` tuples on confirm, or ``None`` if
+    cancelled.
+    """
+    dialog = _new_modal(parent, "ask_packages_to_bump")
+    dialog.title(f"Bump NuGet packages ({feed_label})")
+    dialog.transient(parent.winfo_toplevel())
+    dialog.resizable(False, False)
+
+    count = len(entries)
+    tk.Label(
+        dialog,
+        text=f"{count} package update{'s' if count != 1 else ''} available. "
+             f"Untick any you do not want to apply, then confirm.",
+        justify="left", wraplength=460,
+    ).pack(padx=16, pady=(16, 8), anchor="w")
+
+    # One BooleanVar per update, SHARED by both tabs, so a tick in one tab is
+    # reflected in the other (and drives the tri-state package checkboxes).
+    entry_vars = [tk.BooleanVar(value=True) for _ in entries]
+
+    notebook = ttk.Notebook(dialog)
+    notebook.pack(padx=16, fill="both", expand=True)
+
+    # -- Tab 1: grouped by repository ------------------------------------- #
+    tab_repo = ttk.Frame(notebook)
+    notebook.add(tab_repo, text="By repository")
+    scroll_repo = _ScrollableList(tab_repo)
+    scroll_repo.pack(fill="both", expand=True)
+    box_repo = scroll_repo.inner
+    last_repo = None
+    for (repo_name, package_id, old, new), var in zip(entries, entry_vars):
+        if repo_name != last_repo:
+            tk.Label(box_repo, text=repo_name, font=("", 9, "bold")).pack(
+                anchor="w", pady=(6, 1)
+            )
+            last_repo = repo_name
+        row = ttk.Frame(box_repo)
+        row.pack(anchor="w", fill="x", padx=(16, 0), pady=1)
+        GlyphCheck(row, variable=var, mark="check").pack(side="left")
+        label = tk.Label(row, text=package_id, cursor="hand2")
+        label.pack(side="left", padx=(4, 0))
+        tk.Label(
+            row, text=f"{old} \u2192 {new}", foreground=theme.FG_MUTED,
+        ).pack(side="left", padx=(8, 0))
+        label.bind("<Button-1>", lambda _e, v=var: v.set(not v.get()))
+    scroll_repo.finalize(len(box_repo.winfo_children()))
+
+    # -- Tab 2: grouped by package id (tri-state parents) ----------------- #
+    tab_pkg = ttk.Frame(notebook)
+    notebook.add(tab_pkg, text="By package")
+    scroll_pkg = _ScrollableList(tab_pkg)
+    scroll_pkg.pack(fill="both", expand=True)
+    box_pkg = scroll_pkg.inner
+
+    groups = {}  # package_id -> list of entry indexes (preserves encounter order)
+    for index, (_repo, package_id, _old, _new) in enumerate(entries):
+        groups.setdefault(package_id, []).append(index)
+
+    for package_id, indexes in groups.items():
+        group_vars = [entry_vars[i] for i in indexes]
+        parent_var = tk.BooleanVar(value=True)
+
+        prow = ttk.Frame(box_pkg)
+        prow.pack(anchor="w", fill="x", pady=(6, 1))
+        parent_check = GlyphCheck(prow, variable=parent_var, mark="check")
+        parent_check.pack(side="left")
+        plabel = tk.Label(prow, text=package_id, font=("", 9, "bold"),
+                          cursor="hand2")
+        plabel.pack(side="left", padx=(4, 0))
+
+        # Ticking/unticking the package sets every service to its new state.
+        def _toggle_group(gvars=group_vars, pvar=parent_var):
+            value = pvar.get()
+            for v in gvars:
+                v.set(value)
+        parent_check.config(command=_toggle_group)
+        plabel.bind(
+            "<Button-1>",
+            lambda _e, pv=parent_var, cmd=_toggle_group: (
+                pv.set(not pv.get()), cmd(),
+            ),
+        )
+
+        # Keep the parent in step with its services (all -> ticked, none ->
+        # unticked, mixed -> partial dash). Runs on any child change, including
+        # ticks made on the "By repository" tab.
+        def _sync(*_a, gvars=group_vars, pvar=parent_var, pcheck=parent_check):
+            states = [v.get() for v in gvars]
+            if all(states):
+                pvar.set(True)
+                pcheck.set_partial(False)
+            elif not any(states):
+                pvar.set(False)
+                pcheck.set_partial(False)
+            else:
+                pvar.set(False)
+                pcheck.set_partial(True)
+        for v in group_vars:
+            v.trace_add("write", _sync)
+
+        for i in indexes:
+            repo_name, _pid, old, new = entries[i]
+            row = ttk.Frame(box_pkg)
+            row.pack(anchor="w", fill="x", padx=(16, 0), pady=1)
+            GlyphCheck(row, variable=entry_vars[i], mark="check").pack(side="left")
+            label = tk.Label(row, text=repo_name, cursor="hand2")
+            label.pack(side="left", padx=(4, 0))
+            tk.Label(
+                row, text=f"({old} \u2192 {new})", foreground=theme.FG_MUTED,
+            ).pack(side="left", padx=(8, 0))
+            label.bind("<Button-1>", lambda _e, v=entry_vars[i]: v.set(not v.get()))
+
+        _sync()
+    scroll_pkg.finalize(len(box_pkg.winfo_children()))
+
+    def _set_all(value):
+        for var in entry_vars:
+            var.set(value)
+
+    toggle_bar = ttk.Frame(dialog)
+    toggle_bar.pack(padx=16, pady=(8, 0), anchor="w")
+    ttk.Button(toggle_bar, text="Select all",
+               command=lambda: _set_all(True)).pack(side="left", padx=(0, 4))
+    ttk.Button(toggle_bar, text="Select none",
+               command=lambda: _set_all(False)).pack(side="left", padx=4)
+
+    result = {"value": None}
+
+    def _ok():
+        result["value"] = [
+            (repo_name, package_id, old, new)
+            for (repo_name, package_id, old, new), var in zip(entries, entry_vars)
+            if var.get()
+        ]
+        dialog.destroy()
+
+    def _cancel():
+        result["value"] = None
+        dialog.destroy()
+
+    bar = ttk.Frame(dialog)
+    bar.pack(padx=16, pady=12)
+    ttk.Button(bar, text="Bump selected", command=_ok).pack(side="left", padx=4)
+    ttk.Button(bar, text="Cancel", command=_cancel).pack(side="left", padx=4)
+
+    dialog.protocol("WM_DELETE_WINDOW", _cancel)
+    _center_over_parent(dialog, parent)
+    dialog.grab_set()
+    parent.wait_window(dialog)
+    return result["value"]
+
+
 def ask_missing_remote_branches(parent, names, environment_label):
     """Modal warning that some repos have no remote feature branch.
 

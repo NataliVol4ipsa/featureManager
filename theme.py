@@ -428,6 +428,36 @@ def apply_theme(root, dark=None):
     return dark
 
 
+def enable_dpi_awareness():
+    """Mark the process per-monitor DPI aware (no-op off Windows).
+
+    Must be called before the Tk root is created. Without this, Windows treats
+    the process as DPI-unaware and virtualises/scales its windows, which throws
+    off screen-coordinate math done by Tk itself - most visibly, a ttk
+    Combobox's popdown list can appear far from the combobox (e.g. bottom-left
+    of the primary monitor) on a multi-monitor setup with mixed DPI scaling.
+    Tries the modern per-monitor-v2 API first, falling back to older ones.
+    """
+    if not sys.platform.startswith("win"):
+        return
+    try:
+        ctypes.windll.user32.SetProcessDpiAwarenessContext(
+            ctypes.c_void_p(-4)  # DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2
+        )
+        return
+    except Exception:
+        pass
+    try:
+        ctypes.windll.shcore.SetProcessDpiAwareness(2)  # PROCESS_PER_MONITOR_DPI_AWARE
+        return
+    except Exception:
+        pass
+    try:
+        ctypes.windll.user32.SetProcessDPIAware()
+    except Exception:
+        pass
+
+
 def _set_titlebar(window, dark):
     """Set *window*'s native Windows title bar to dark or light (no-op else).
 

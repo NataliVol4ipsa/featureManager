@@ -613,13 +613,13 @@ def _apply_bumps(text, new_versions):
     return _ELEMENT_RE.sub(replace_element, text)
 
 
-def _bump_props_file(props, include_public, include_private, token):
-    """Bump every out-of-date package in a single props file.
+def _compute_props_bumps(props, include_public, include_private, token):
+    """Find every out-of-date package in a single props file (no write).
 
     Private feeds are resolved from the ``nuget.config`` nearest to *props* so a
     multi-repository repo's per-sub-solution feeds are honoured. Returns
-    ``(ok, result)`` where *result* is the list of ``(id, old, new)`` bumps on
-    success or an error message on failure.
+    ``(ok, result)`` where *result* is the list of ``(id, old, new)`` available
+    bumps on success or an error message on failure.
     """
     try:
         with open(props, encoding="utf-8") as handle:
@@ -647,40 +647,51 @@ def _bump_props_file(props, include_public, include_private, token):
     latests = run_in_parallel(entries, lambda entry: resolver.latest(entry[0]))
 
     bumps = []
-    new_versions = {}
     for (package_id, current), latest in zip(entries, latests):
         if latest and _is_newer(latest, current):
             bumps.append((package_id, current, latest))
-            new_versions[package_id.lower()] = latest
+    return True, bumps
 
+
+def _write_props_bumps(props, bumps):
+    """Apply *bumps* (a list of ``(id, old, new)``) to a single props file.
+
+    Only the ``Version`` attribute of each named package is rewritten. Returns
+    ``(ok, error_message)``.
+    """
     if not bumps:
-        return True, []
+        return True, ""
+    try:
+        with open(props, encoding="utf-8") as handle:
+            text = handle.read()
+    except OSError as error:
+        return False, f"could not read {os.path.basename(props)}: {error}"
 
+    new_versions = {package_id.lower(): new for package_id, _old, new in bumps}
     new_text = _apply_bumps(text, new_versions)
     try:
         with open(props, "w", encoding="utf-8") as handle:
             handle.write(new_text)
     except OSError as error:
         return False, f"could not write {os.path.basename(props)}: {error}"
+    return True, ""
 
-    return True, bumps
 
-
-def bump_repo_packages(repo_path, include_public=True, include_private=False,
+def compute_repo_bumps(repo_path, include_public=True, include_private=False,
                        token=None):
-    """Bump every out-of-date package across the repo's props file(s).
+    """Find every out-of-date package across the repo's props file(s) (no write).
 
     *include_public* consults nuget.org; *include_private* consults the Azure
     DevOps feed(s) from the relevant nuget.config (using *token*, or a freshly
     fetched Azure CLI token when None). The highest stable version across the
     consulted feeds wins. A multi-repository repo (no root props file) has every
-    sub-solution's ``Directory.Packages.props`` bumped.
+    sub-solution's ``Directory.Packages.props`` inspected.
 
     Returns ``(ok, result)``. On success *result* is a list of
-    ``(package_id, old_version, new_version)`` tuples describing the bumps made
-    (empty when everything is already up to date; duplicates across props files
-    are collapsed). On failure *ok* is False and *result* is an error message.
-    Packages not found on the consulted feeds are left unchanged and omitted.
+    ``(props_path, package_id, old_version, new_version)`` tuples describing the
+    available bumps (empty when everything is already up to date; the same
+    package may appear once per props file that references it). On failure *ok*
+    is False and *result* is an error message.
     """
     props_files = find_all_props_files(repo_path)
     if not props_files:
@@ -691,18 +702,57 @@ def bump_repo_packages(repo_path, include_public=True, include_private=False,
         if not token:
             return False, "no Azure DevOps token - run 'az login' first"
 
-    all_bumps = []
+    plan = []
     for props in props_files:
-        ok, result = _bump_props_file(
+        ok, result = _compute_props_bumps(
             props, include_public, include_private, token
         )
         if not ok:
             return False, result
-        for bump in result:
-            if bump not in all_bumps:
-                all_bumps.append(bump)
+        for package_id, old, new in result:
+            plan.append((props, package_id, old, new))
+    return True, plan
 
-    return True, all_bumps
+
+def apply_selected_bumps(plan_entries):
+    """Write the selected bumps to their props files.
+
+    *plan_entries* is a list of ``(props_path, package_id, old, new)`` tuples
+    (a subset of what :func:`compute_repo_bumps` returned). Entries are grouped
+    per props file and applied in a single rewrite each. Returns ``(ok, result)``
+    where on success *result* is the list of distinct ``(package_id, old, new)``
+    bumps applied, and on failure *result* is an error message.
+    """
+    by_file = {}
+    for props, package_id, old, new in plan_entries:
+        by_file.setdefault(props, []).append((package_id, old, new))
+
+    applied = []
+    for props, bumps in by_file.items():
+        ok, error = _write_props_bumps(props, bumps)
+        if not ok:
+            return False, error
+        for bump in bumps:
+            if bump not in applied:
+                applied.append(bump)
+    return True, applied
+
+
+def bump_repo_packages(repo_path, include_public=True, include_private=False,
+                       token=None):
+    """Bump every out-of-date package across the repo's props file(s).
+
+    Convenience wrapper that computes the available bumps (see
+    :func:`compute_repo_bumps`) and applies all of them. Returns ``(ok, result)``
+    where on success *result* is the list of distinct ``(package_id, old, new)``
+    bumps made and on failure *result* is an error message.
+    """
+    ok, plan = compute_repo_bumps(
+        repo_path, include_public, include_private, token
+    )
+    if not ok:
+        return False, plan
+    return apply_selected_bumps(plan)
 
 
 def dotnet_restore(repo_path, token=None):

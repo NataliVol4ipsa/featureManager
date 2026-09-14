@@ -520,6 +520,9 @@ class GlyphCheck(tk.Canvas):
         self._mark = "cross" if mark == "cross" else "check"
         self._command = command
         self._enabled = True
+        # Tri-state: when set, a dash is drawn regardless of the variable (used
+        # for a parent whose children are only partially selected).
+        self._partial = False
         self._bg = str(kwargs.get("background", theme.BG))
         kwargs.setdefault("background", self._bg)
         super().__init__(
@@ -551,28 +554,47 @@ class GlyphCheck(tk.Canvas):
 
     config = configure
 
+    def set_partial(self, value):
+        """Show (or clear) the tri-state dash, independent of the variable."""
+        value = bool(value)
+        if value != self._partial:
+            self._partial = value
+            self._render()
+
     def _render(self):
         self.delete("all")
         on = bool(self._var.get())
         s = self._SIZE
+        # glyph is what gets drawn inside the box: "check"/"cross"/"dash"/None.
         if not self._enabled:
             fill, outline = theme.BG_INPUT, theme.BORDER
-            mark_color = theme.FG_MUTED if on else None
+            if self._partial:
+                glyph, mark_color = "dash", theme.FG_MUTED
+            else:
+                glyph, mark_color = (self._mark if on else None), theme.FG_MUTED
+        elif self._partial:
+            fill = theme.SUCCESS if self._mark == "check" else theme.ERROR
+            outline, mark_color, glyph = fill, "#ffffff", "dash"
         elif on:
             fill = theme.SUCCESS if self._mark == "check" else theme.ERROR
-            outline, mark_color = fill, "#ffffff"
+            outline, mark_color, glyph = fill, "#ffffff", self._mark
         else:
-            fill, outline, mark_color = theme.BG_INPUT, theme.BORDER, None
+            fill, outline, mark_color, glyph = theme.BG_INPUT, theme.BORDER, None, None
 
         image = _rounded_box_image(s, fill, outline, self._bg)
         self.create_image(0, 0, anchor="nw", image=image)
         self._image = image  # keep a per-widget reference too
-        if not (on and mark_color):
+        if not (glyph and mark_color):
             return
-        if self._mark == "check":
+        if glyph == "check":
             self.create_line(
                 s * 0.26, s * 0.52, s * 0.43, s * 0.69, s * 0.74, s * 0.30,
                 fill=mark_color, width=2, capstyle="round", joinstyle="round",
+            )
+        elif glyph == "dash":
+            self.create_line(
+                s * 0.28, s * 0.5, s * 0.72, s * 0.5,
+                fill=mark_color, width=2, capstyle="round",
             )
         else:
             self.create_line(s * 0.31, s * 0.31, s * 0.69, s * 0.69,
