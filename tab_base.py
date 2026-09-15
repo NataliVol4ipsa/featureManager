@@ -1171,6 +1171,8 @@ class ActionTabBase(ttk.Frame):
                 ok, result = get_master_pipeline_run_for_merged_branch_details(
                     name, path, branch_of[name]
                 )
+                if ok:
+                    result["repo_path"] = path
                 self.after(0, self.progress.status, name,
                            "done" if ok else "error")
                 return name, ok, result

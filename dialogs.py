@@ -1913,6 +1913,80 @@ def ask_include_skipped(parent, action_label, names):
     return result["value"]
 
 
+# Ordered (stage_key, display label) pairs offered by ask_deployment_status_stages.
+# Build is intentionally excluded - it is not a deployment target.
+DEPLOYMENT_STATUS_STAGES = (
+    ("development", "Development (dev)"),
+    ("acceptance", "Acceptance (acc)"),
+    ("production", "Production (prod)"),
+)
+
+
+def ask_deployment_status_stages(parent, preselected=None):
+    """Modal offering the four pipeline stages to check.
+
+    *preselected*, if given, is an iterable of stage keys ticked by default
+    (e.g. when opened from a pipeline monitor, its own tracked stages); all
+    stages are off by default otherwise. Returns the selected stage keys (a
+    subset of the keys in ``DEPLOYMENT_STATUS_STAGES``, in that order), or None
+    if cancelled/none ticked.
+    """
+    preselected = set(preselected or ())
+    dialog = _new_modal(parent, "ask_deployment_status_stages")
+    dialog.title("View deployment status")
+    dialog.transient(parent.winfo_toplevel())
+    dialog.resizable(False, False)
+
+    tk.Label(
+        dialog,
+        text="Tick which pipeline stages to check. For each selected "
+             "repository, the latest commit that completed each stage "
+             "(on any branch) is shown.",
+        justify="left", wraplength=380,
+    ).pack(padx=16, pady=(16, 8), anchor="w")
+
+    box = ttk.Frame(dialog)
+    box.pack(padx=16, anchor="w")
+    checks = {}
+    for key, label in DEPLOYMENT_STATUS_STAGES:
+        var = tk.BooleanVar(value=key in preselected)
+        row = ttk.Frame(box)
+        row.pack(anchor="w", fill="x", pady=1)
+        GlyphCheck(row, variable=var, mark="check").pack(side="left")
+        text_label = tk.Label(row, text=label, cursor="hand2")
+        text_label.pack(side="left", padx=(4, 0))
+        text_label.bind("<Button-1>", lambda _e, v=var: v.set(not v.get()))
+        checks[key] = var
+
+    error_label = tk.Label(dialog, text="", foreground=theme.ERROR)
+    error_label.pack(padx=16, anchor="w")
+
+    result = {"value": None}
+
+    def _ok():
+        selected = [key for key, _label in DEPLOYMENT_STATUS_STAGES if checks[key].get()]
+        if not selected:
+            error_label.config(text="Tick at least one stage.")
+            return
+        result["value"] = selected
+        dialog.destroy()
+
+    def _cancel():
+        result["value"] = None
+        dialog.destroy()
+
+    bar = ttk.Frame(dialog)
+    bar.pack(padx=16, pady=12)
+    ttk.Button(bar, text="Continue", command=_ok).pack(side="left", padx=4)
+    ttk.Button(bar, text="Cancel", command=_cancel).pack(side="left", padx=4)
+
+    dialog.protocol("WM_DELETE_WINDOW", _cancel)
+    _center_over_parent(dialog, parent)
+    dialog.grab_set()
+    parent.wait_window(dialog)
+    return result["value"]
+
+
 def ask_branches_to_delete(parent, entries):
     """Modal to pick which remote branches to delete (red cross, all off).
 

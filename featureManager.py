@@ -26,6 +26,7 @@ from dialogs import (
     edit_nuget_feed_cache, ask_pipeline_poll_seconds, confirm_force_close,
 )
 from toolbar import build_action_toolbar
+import deployment_status
 import packages
 import pipeline_estimates
 import pipeline_history
@@ -99,6 +100,9 @@ def main():
                 if win.winfo_exists():
                     sessions.append(win.session_state())
         theme.save_monitor_session(sessions)
+        theme.save_deployment_status_session(
+            [win.session_state() for win in deployment_status.open_windows()]
+        )
         # Remember where the window is so the restarted app reopens in place.
         theme.save_restart_geometry(root.geometry())
         # Reopen the pipeline history window too if it is currently open.
@@ -354,6 +358,14 @@ def main():
     root.after(0, lambda: [
         app.workspaces_tab.reopen_monitor_session(session)
         for session in theme.pop_monitor_session()
+    ])
+
+    # Reopen any "View deployment status" windows that were open before a
+    # theme-change relaunch (parent just needs to be some live widget under
+    # root - the window reparents to the toplevel regardless of which tab).
+    root.after(0, lambda: [
+        deployment_status.reopen_session(app.workspaces_tab, session)
+        for session in theme.pop_deployment_status_session()
     ])
 
     # Reopen the pipeline history window too if it was open at relaunch. Delayed

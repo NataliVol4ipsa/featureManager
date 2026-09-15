@@ -282,6 +282,13 @@ ACTION_ICON_DARK = {
         "QgNdj0HcjwpCh3negrbb4lpCHI9ABxIydNdkWqsfOEpqFHPSJtOEpTUa6UaBP2XMgSemS3FXagwT"
         "Cpht3uN46an9hk+l3O+mm3e3VQAAAABJRU5ErkJggg=="
     ),
+    'View deployment status': (
+        "iVBORw0KGgoAAAANSUhEUgAAABIAAAASCAYAAABWzo5XAAAA3klEQVR4nO2UwQ2CMBSG/wcnxYNu"
+        "QEdwEl3BDfRo1ACRxCMrOIJuoBu4QR2BC3iS+oCUYMQI2qPfqX15/9f28EowRCVSMhomSCYEctEC"
+        "DsYE69gTyysY3gM3uXMz3CUvO9OHMyKxYCmTynCugEiBxgOxunAJiQy5pAJHbHw0oA/nzIwz+0KU"
+        "yK3Pl/McsS72OZ9EOfWeImhchK9oFKkAFeQpqDMBJ7ylzLyIjD3tL6qo9xRBYyI9IhZsoYew3oQG"
+        "GkdEF3nZmaehzSm/kXRKyFy0gL+bmGAf9Asq0a88ABTW2hNmGEJPAAAAAElFTkSuQmCC"
+    ),
     'Bump NuGet packages (private)': (
         "iVBORw0KGgoAAAANSUhEUgAAABIAAAASCAYAAABWzo5XAAACY0lEQVR4nJ2UwU8TQRTGv7cLtiRA"
         "oWCCJ/gHDHgx3qxXuXCj6EEqEG8KCYnGg2xNTDyYWE9qoGljopSTeDHxVm8eUf8BPEkUCzTEtrHd"
@@ -745,6 +752,14 @@ ACTION_ICON_LIGHT = {
         "N+pBVyywuXjrTaEYeqOqsuas+BW8wdcSam9a1v1NWFfo3HCnxxLq+hQfzKHj0OvuWEL97gqMv9+y"
         "Kff2JtiKczZnkuMj7wvlXZD4oII0a9/nRaN6vMUxhXJJRQbEjq/JHb3iNufGrqjnkcvFE+jzikdF"
         "I226v5a8I6YvEl8poGMj0ikYcF/s2kd4AI7dF4hILF/mAAAAAElFTkSuQmCC"
+    ),
+    'View deployment status': (
+        "iVBORw0KGgoAAAANSUhEUgAAABIAAAASCAYAAABWzo5XAAAA7klEQVR4nO2UQQ7BUBBAZ0QjwqJu"
+        "wBEcwUZ0xRXcgI0ECyyw7BUcgRU73MANOMJPEA2pMX+iTUVFG116mz9/MvOaaTIfISF80do2zevF"
+        "rQNSESJASIrIWFhddQBGRMupWUS67TmMTSZrFCptpUS0muRafNiptFGudtSOY50jIhxZ/dMQQvA+"
+        "TphqWt3jTETLcX6ISINa7yx3zTeRJlgjjYmLOIxNqEgn+SrIHXALBBv4gNRwz5sosdH+Ip9gjTQm"
+        "JuJEiw+b0Ch5S8g5vwhCCF+RZ5LD2LwsrUY/I47jNuAe7RnhX6F4grk3gS/6lQfX7wMiJ7IDJgAA"
+        "AABJRU5ErkJggg=="
     ),
     'Bump NuGet packages (private)': (
         "iVBORw0KGgoAAAANSUhEUgAAABIAAAASCAYAAABWzo5XAAACXElEQVR4nJWTQW8SQRTH/2/LksYY"

@@ -74,6 +74,7 @@ secrets.json
 repo_synonyms.json
 ui_prefs.json
 monitor_session.json
+deployment_status_session.json
 restart_geometry.json
 pipeline_estimates.json
 pipeline_history.json

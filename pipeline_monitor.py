@@ -24,7 +24,8 @@ from pipelines import (
     has_custom_pipeline_parameters,
     configurable_pipeline_parameters,
 )
-from dialogs import ask_pipeline_parameters
+from dialogs import ask_pipeline_parameters, ask_deployment_status_stages
+from deployment_status import DeploymentStatusWindow
 import pipeline_estimates
 
 
@@ -180,7 +181,7 @@ class PipelineMonitorWindow(tk.Toplevel):
         self._compact = bool(theme.load_pipeline_monitor_compact())
         # When on, rows whose every stage has finished successfully are hidden so
         # only the runs still worth watching remain on screen.
-        self._hide_completed = False
+        self._hide_completed = bool(theme.load_pipeline_monitor_hide_completed())
         self._confetti_visible = False
         # Repos currently hidden by the toggle; used to auto-fit the window only
         # when the hidden set actually changes (not on every poll).
@@ -197,17 +198,20 @@ class PipelineMonitorWindow(tk.Toplevel):
         self._progress_tip_target = None
         self._acc_locked_by_master = False
         self._prod_locked_by_master = False
+        # A fresh monitor defaults to the last value the user toggled in any
+        # monitor (persisted across app restarts); an explicit True on a run
+        # info (e.g. a restored relaunch session) always wins.
         self._autoapprove_acceptance = any(
             bool(info.get("autoapprove_acceptance")) or (
                 info.get("environment") == "acc"
                 and bool(info.get("autoapprove_acc"))
             )
             for info in self._run_infos.values()
-        )
+        ) or theme.load_pipeline_monitor_autoapprove_acceptance()
         self._autoapprove_production = any(
             bool(info.get("autoapprove_production"))
             for info in self._run_infos.values()
-        )
+        ) or theme.load_pipeline_monitor_autoapprove_production()
 
         self._build_ui()
         self._apply_autoapprove_flags()
@@ -370,6 +374,22 @@ class PipelineMonitorWindow(tk.Toplevel):
             )
         self._copy_links_button.pack(side="left", padx=(12, 0))
 
+        # Preselected with this monitor's own repos + tracked stages; hidden in
+        # compact view along with the other secondary controls.
+        self._deploy_status_button = ttk.Button(
+            controls,
+            text="Deployment status",
+            command=self._show_deployment_status,
+        )
+        Tooltip(
+            self._deploy_status_button,
+            "Open 'View deployment status' preselected for this monitor's "
+            "repositories and tracked stages: shows the latest commit deployed "
+            "per stage on master, colour-coded against each repo's branch.",
+        )
+        if not self._compact:
+            self._deploy_status_button.pack(side="left", padx=(6, 0))
+
         # Compact/full view toggle, right-aligned so it never crowds the
         # left-hand action buttons.
         self._compact_button = ttk.Button(
@@ -389,7 +409,7 @@ class PipelineMonitorWindow(tk.Toplevel):
         # window only lists the pipelines still worth watching.
         self._hide_completed_button = ttk.Button(
             controls,
-            text="Hide completed",
+            text="Show completed" if self._hide_completed else "Hide completed",
             command=self._toggle_hide_completed,
         )
         self._hide_completed_button.pack(side="right", padx=(0, 6))
@@ -630,6 +650,7 @@ class PipelineMonitorWindow(tk.Toplevel):
         if self._acc_locked_by_master:
             return
         self._autoapprove_acceptance = not self._autoapprove_acceptance
+        theme.save_pipeline_monitor_autoapprove_acceptance(self._autoapprove_acceptance)
         self._apply_autoapprove_flags()
         self._sync_control_labels()
 
@@ -637,6 +658,7 @@ class PipelineMonitorWindow(tk.Toplevel):
         if self._prod_locked_by_master:
             return
         self._autoapprove_production = not self._autoapprove_production
+        theme.save_pipeline_monitor_autoapprove_production(self._autoapprove_production)
         self._apply_autoapprove_flags()
         self._sync_control_labels()
 
@@ -725,6 +747,31 @@ class PipelineMonitorWindow(tk.Toplevel):
         self.clipboard_append(text)
         self.title("Pipeline monitor - links copied")
         self._flash_copied()
+
+    def _show_deployment_status(self):
+        """Open the deployment status window for exactly this monitor's runs.
+
+        Preselects the repositories tracked by this monitor and the stages it
+        actually shows, so the picker only needs adjusting, not filled in.
+        """
+        entries = []
+        stage_keys = set()
+        for repo, info in self._run_infos.items():
+            path = info.get("repo_path")
+            row = self._rows.get(repo) or {}
+            if not path or row.get("skipped"):
+                continue
+            entries.append((repo, path, info.get("branch") or "master"))
+            stage_keys.update(
+                row.get("configured_stages") or info.get("visible_stages") or ()
+            )
+        stage_keys.discard("build")  # not a deployment target
+        if not entries:
+            return
+        stages = ask_deployment_status_stages(self, preselected=stage_keys)
+        if not stages:
+            return
+        DeploymentStatusWindow(self, entries, stages)
 
     def _generate_release_message(self):
         """Copy the feature name, run links and linked test report links."""
@@ -838,6 +885,7 @@ class PipelineMonitorWindow(tk.Toplevel):
     def _toggle_compact(self):
         """Switch between the full and compact view and re-layout every row."""
         self._compact = not self._compact
+        theme.save_pipeline_monitor_compact(self._compact)
         self._apply_view_mode()
 
     def _apply_view_mode(self):
@@ -847,6 +895,10 @@ class PipelineMonitorWindow(tk.Toplevel):
         self._compact_button.configure(
             text="Full view" if self._compact else "Compact view"
         )
+        if self._compact:
+            self._deploy_status_button.pack_forget()
+        else:
+            self._deploy_status_button.pack(side="left", padx=(6, 0))
         minsize = self._row_minsize()
         height = self._graph_height()
         for repo, row in self._rows.items():
@@ -875,6 +927,7 @@ class PipelineMonitorWindow(tk.Toplevel):
     def _toggle_hide_completed(self):
         """Toggle hiding of the rows that have already finished successfully."""
         self._hide_completed = not self._hide_completed
+        theme.save_pipeline_monitor_hide_completed(self._hide_completed)
         self._hide_completed_button.configure(
             text="Show completed" if self._hide_completed else "Hide completed"
         )

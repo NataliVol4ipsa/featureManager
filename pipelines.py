@@ -24,6 +24,7 @@ rejected by the pipelines API.
 import os
 import re
 import json
+import time
 import datetime
 import threading
 import urllib.parse
@@ -32,7 +33,7 @@ import urllib.error
 
 from gitutils import (
     is_git_repo, git_remote_url, parse_ado_remote,
-    remote_branch_head, git_commit_message,
+    remote_branch_head, git_commit_message, git_commit_is_ancestor,
 )
 from parallel import run_in_parallel
 import ado_auth
@@ -96,6 +97,10 @@ PIPELINE_STAGE_DEFAULTS = {
 # Stages shown for a "Redeploy latest master" monitor row: Production is never
 # part of the overview, so a viewed run's Production stage is excluded.
 REDEPLOY_VISIBLE_STAGES = ("build", "development", "acceptance")
+
+# Stages tracked by the "View deployment status" feature - Build is excluded,
+# it is not a deployment target (only environments are).
+DEPLOY_STATUS_STAGE_KEYS = ("development", "acceptance", "production")
 
 _STAGE_DONE_STATES = {"done", "skipped"}
 
@@ -2021,3 +2026,285 @@ def get_work_item_report_details_for_repo(name, path, work_item_id):
         return False, f"{name}: remote is not an Azure DevOps repository"
     org, project, _repo, host = parsed
     return get_work_item_report_details(org, project, work_item_id, host)
+
+
+# --------------------------------------------------------------------------- #
+# Deployment status (latest commit deployed per stage, across master runs)
+# --------------------------------------------------------------------------- #
+
+# How many recent completed builds (across every branch) to scan for a
+# completed stage before giving up.
+_DEPLOY_STATUS_SCAN = 100
+
+# In-memory only (never persisted): an inline "Rerun" changes a stage's finish
+# time without reordering the build list, so this is recomputed from the
+# timeline each time, but a short TTL avoids re-scanning on every dialog open.
+_DEPLOY_STATUS_CACHE_TTL = 120  # seconds
+_deploy_status_cache = {}
+_deploy_status_cache_lock = threading.Lock()
+
+
+def _commit_message_from_ado(org, project, repo, commit_id, auth):
+    """Return the subject line of *commit_id* via the ADO commits API, or ''."""
+    if not commit_id:
+        return ""
+    url = (
+        f"https://dev.azure.com/{urllib.parse.quote(org)}/"
+        f"{urllib.parse.quote(project)}/_apis/git/repositories/"
+        f"{urllib.parse.quote(repo)}/commits/{urllib.parse.quote(commit_id)}"
+        f"?api-version=7.1"
+    )
+    try:
+        data = _api_get(url, auth)
+    except (urllib.error.HTTPError, urllib.error.URLError, OSError, ValueError):
+        return ""
+    return (data.get("comment") or "").splitlines()[0] if data.get("comment") else ""
+
+
+def get_latest_deployed_artifacts(name, path, force=False):
+    """Return (ok, data_or_error) with the latest commit deployed per stage.
+
+    Scans the repository's recent builds of its deploy pipeline (ANY status,
+    not just completed - see _get_latest_deployed_artifacts_scan) ACROSS EVERY
+    BRANCH (not just master) and, for each of ``DEPLOY_STATUS_STAGE_KEYS``
+    (development/acceptance/production - Build is excluded, it is not a
+    deployment target), keeps the commit from the newest build whose stage
+    actually completed. This mirrors Azure DevOps's own pipeline "Stages" tab,
+    which lists the latest run per stage regardless of branch - Development/
+    Acceptance are routinely deployed from a feature branch (the app's own
+    "Run dev/acc pipelines" actions do exactly that), so a master-only scan
+    would report a stale commit for those stages. It also reflects an inline
+    "Rerun" correctly even though that does not change a build's position in
+    the Runs list. Scheduled runs (e.g. the nightly Veracode scan) and pull
+    request validation builds are excluded - PR builds never run a deploy
+    stage, so keeping them in the scan window only pushed the real deploy run
+    further back and could surface a stale commit.
+
+    (Azure DevOps's own "Stages" tab is powered by an internal, undocumented
+    data-provider endpoint that would avoid this scan entirely - tried as an
+    optional fast path, but it rejected this app's PAT auth with a 401, so it
+    was removed; this scan against the public Build REST API is the only path.)
+
+    On success *data* is ``{stage_key: {"commit","message","build_id","url",
+    "triggered_by"} or None}`` (all three stage keys always present; a stage
+    with no completed run is None) plus a ``"_pipeline_url"`` entry (the repo's
+    deployment pipeline overview page, built from the already-resolved pipeline
+    id - no extra HTTP call). Results are cached in memory per repository for a
+    short time (``_DEPLOY_STATUS_CACHE_TTL``); pass *force=True* to bypass the
+    cache.
+    """
+    if not is_git_repo(path):
+        return False, f"{name}: not a git repository"
+
+    parsed = parse_ado_remote(git_remote_url(path))
+    if not parsed:
+        return False, f"{name}: remote is not an Azure DevOps repository"
+    org, project, repo, host = parsed
+
+    cache_key = (org.lower(), project.lower(), repo.lower())
+    if not force:
+        with _deploy_status_cache_lock:
+            entry = _deploy_status_cache.get(cache_key)
+        if entry and (time.monotonic() - entry[0]) < _DEPLOY_STATUS_CACHE_TTL:
+            return True, entry[1]
+
+    auth, err = _auth_for_host(host, org)
+    if err:
+        return False, f"{name}: {err}"
+
+    try:
+        repo_id = _cached_repo_id(org, project, repo, auth)
+        if not repo_id:
+            return True, {key: None for key in DEPLOY_STATUS_STAGE_KEYS}
+        pipeline_id = _cached_pipeline_id(org, project, repo, repo_id, auth)
+        if not pipeline_id:
+            return True, {key: None for key in DEPLOY_STATUS_STAGE_KEYS}
+    except urllib.error.HTTPError as exc:
+        return False, f"{name}: deployment status lookup failed ({exc.code}): {_http_error_detail(exc)}"
+    except (urllib.error.URLError, OSError, ValueError) as exc:
+        return False, f"{name}: deployment status lookup failed: {exc}"
+
+    pipeline_url = _pipeline_web_url(org, project, pipeline_id)
+    ok_scan, result = _get_latest_deployed_artifacts_scan(
+        name, org, project, repo, auth, pipeline_id
+    )
+    if not ok_scan:
+        return False, result
+
+    # Fetch each distinct commit's message once (several stages often share it).
+    messages = {}
+    for key in DEPLOY_STATUS_STAGE_KEYS:
+        entry = result.get(key)
+        if entry and entry["commit"] and entry["commit"] not in messages:
+            messages[entry["commit"]] = _commit_message_from_ado(
+                org, project, repo, entry["commit"], auth
+            )
+    for key in DEPLOY_STATUS_STAGE_KEYS:
+        entry = result.get(key)
+        if entry:
+            entry["message"] = messages.get(entry["commit"], "")
+
+    result["_pipeline_url"] = pipeline_url
+    with _deploy_status_cache_lock:
+        _deploy_status_cache[cache_key] = (time.monotonic(), result)
+    return True, result
+
+
+def _get_latest_deployed_artifacts_scan(name, org, project, repo, auth, pipeline_id):
+    """Fallback path: scan recent builds (any status) and read each timeline.
+
+    Returns (ok, {stage_key: entry_or_None}) - same per-stage shape as the
+    hierarchy-query fast path, without "_source"/"_pipeline_url" (the caller
+    adds those uniformly for both paths).
+
+    Deliberately NOT filtered to statusFilter=completed: a build can still be
+    "in progress" overall (e.g. waiting on a later Production approval) while
+    an EARLIER stage like Development already finished successfully - filtering
+    to completed builds skipped that stage's real result entirely and fell
+    back to an older, fully-finished build instead (observed: an in-progress
+    build's already-succeeded Development stage was ignored in favour of a
+    days-older run). Sorted by queueTime (not finishTime, which is null/absent
+    for a build still running) so ordering stays well-defined regardless of
+    status.
+    """
+    try:
+        query = urllib.parse.urlencode({
+            "definitions": str(pipeline_id),
+            "queryOrder": "queueTimeDescending",
+            "$top": str(_DEPLOY_STATUS_SCAN),
+            "api-version": "7.1",
+        })
+        url = (
+            f"https://dev.azure.com/{urllib.parse.quote(org)}/"
+            f"{urllib.parse.quote(project)}/_apis/build/builds?{query}"
+        )
+        builds = _api_get(url, auth).get("value") or []
+    except urllib.error.HTTPError as exc:
+        return False, f"{name}: deployment status lookup failed ({exc.code}): {_http_error_detail(exc)}"
+    except (urllib.error.URLError, OSError, ValueError) as exc:
+        return False, f"{name}: deployment status lookup failed: {exc}"
+
+    builds = [
+        build for build in builds
+        if (build.get("reason") or "").lower() not in ("schedule", "pullrequest")
+    ]
+    result = {key: None for key in DEPLOY_STATUS_STAGE_KEYS}
+    if not builds:
+        return True, result
+
+    timelines = run_in_parallel(
+        builds,
+        lambda b: _api_build_timeline_safe(org, project, b.get("id"), auth),
+    )
+
+    pending = set(DEPLOY_STATUS_STAGE_KEYS)
+    for build, timeline in zip(builds, timelines):
+        if not pending:
+            break
+        stages = {}
+        for record in (timeline or {}).get("records") or []:
+            if (record.get("type") or "").lower() != "stage":
+                continue
+            key = _timeline_stage_key(record.get("name") or record.get("identifier"))
+            if key:
+                stages[key] = _timeline_state(record)
+        for key in list(pending):
+            if stages.get(key) == "done":
+                result[key] = {
+                    "commit": build.get("sourceVersion") or "",
+                    "message": "",
+                    "build_id": build.get("id"),
+                    "url": _build_web_url(org, project, build),
+                    "triggered_by": _build_triggered_by(build),
+                }
+                pending.discard(key)
+    return True, result
+
+
+
+def _pipeline_web_url(org, project, pipeline_id):
+    """Return the web URL for a pipeline definition's run history overview."""
+    if not pipeline_id:
+        return ""
+    return (
+        f"https://dev.azure.com/{urllib.parse.quote(org)}/"
+        f"{urllib.parse.quote(project)}/_build?definitionId={pipeline_id}"
+    )
+
+
+def _build_triggered_by(build):
+    """Return a short "triggered by" display string for a build, or ''."""
+    person = build.get("requestedFor") or build.get("requestedBy") or {}
+    return person.get("displayName") or person.get("uniqueName") or person.get("id") or ""
+
+
+def get_deployment_commit_context(name, path, branch):
+    """Return (ok, context_or_error) used to classify a deployed commit's origin.
+
+    *context* carries the master/branch tip commit ids (lowercase) plus the
+    local repo *path* so classify_deployed_commit can run exact, on-demand
+    ancestry checks per commit via LOCAL git (gitutils.git_commit_is_ancestor),
+    not a guessed/bounded Azure DevOps REST query - a repo only ever has a
+    handful of distinct deployed commits to classify, so this stays cheap.
+    *branch* should be the exact branch this repository uses in its workspace
+    (workspaces can override the branch per repo, so it must not be assumed to
+    be ``feature/<workspace>``).
+    """
+    if not is_git_repo(path):
+        return False, f"{name}: not a git repository"
+
+    master_tip = (remote_branch_head(path, "master") or "").lower()
+    branch_tip = (
+        (remote_branch_head(path, branch) or "").lower()
+        if branch and branch != "master" else master_tip
+    )
+
+    return True, {
+        "master_tip": master_tip,
+        "branch_tip": branch_tip,
+        "branch": branch,
+        "_path": path,
+        "_ancestor_cache": {},
+    }
+
+
+def classify_deployed_commit(context, commit):
+    """Return one of "master"/"branch_latest"/"branch_older"/"master_older"/
+    "unknown" for a deployed *commit*, given a ``get_deployment_commit_context``
+    *context*.
+
+    Order matters: a feature branch is cut FROM master, so every master commit
+    merged before the branch point is ALSO an ancestor of the branch. "On
+    master" must therefore be decided BEFORE "on the branch", otherwise a plain
+    merged master commit is mislabelled as branch-only ("branch_older"). Hence
+    "branch_older" means exactly "on the feature branch but NOT on master" (i.e.
+    genuinely unmerged feature work), which only holds when master ancestry is
+    tested first.
+    """
+    if not context or not commit:
+        return "unknown"
+    commit = commit.lower()
+    if commit == context.get("master_tip"):
+        return "master"
+    if commit == context.get("branch_tip"):
+        return "branch_latest"
+
+    path = context.get("_path")
+    if not path:
+        return "unknown"
+
+    cache = context.setdefault("_ancestor_cache", {})
+
+    def is_ancestor_of(ref):
+        key = (commit, ref)
+        if key not in cache:
+            cache[key] = git_commit_is_ancestor(path, commit, ref)
+        return cache[key]
+
+    if is_ancestor_of("master"):
+        return "master_older"
+    branch = context.get("branch")
+    if branch and branch != "master" and is_ancestor_of(branch):
+        return "branch_older"
+    return "unknown"
+

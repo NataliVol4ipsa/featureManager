@@ -24,8 +24,10 @@ from tab_base import ActionTabBase
 from dialogs import (
     ask_branch_name, ask_pbi_number, resolve_pbi_repos, edit_branch_overrides,
     ask_include_skipped, ask_solutions_to_open, ask_branches_to_delete,
+    ask_deployment_status_stages,
 )
 import pbi
+from deployment_status import DeploymentStatusWindow
 
 # Base message for the savepos commits created when switching workspaces.
 SWITCH_SAVE_MSG = "savepos before workspace switch"
@@ -387,6 +389,28 @@ class WorkspacesTab(ActionTabBase):
             return
         self.redeploy_latest_master(active)
 
+    def _action_view_deployment_status(self):
+        """Ask which stages to check, then open the deployment status window."""
+        self.errors.clear()
+        ok, workspace, entries = self._selected_entries()
+        if not ok:
+            self.errors.add(entries)
+            return
+
+        active = [
+            (e["name"], e["path"], e["branch"]) for e in entries if not e["ignoreGit"]
+        ]
+        if not active:
+            self.errors.add(
+                "this workspace has no repositories to check deployment status for"
+            )
+            return
+        stages = ask_deployment_status_stages(self)
+        if not stages:
+            return
+        self.show_repos_async([(n, p) for n, p, _b in active], with_status=True)
+        DeploymentStatusWindow(self, active, stages, on_progress=self.progress.status)
+
     def _open_actions(self):
         return [
             (
@@ -438,6 +462,19 @@ class WorkspacesTab(ActionTabBase):
                 "branch and opens it in your default web browser. Repos flagged "
                 "'ignore git' keep their own branch and are skipped. Repos with "
                 "no open PR are reported in the Errors panel.",
+            ),
+            (
+                "View deployment status",
+                self._action_view_deployment_status,
+                "For the selected workspace's non-skipped repositories: lets "
+                "you tick which deployment stages to check (Development, "
+                "Acceptance, Production), then shows a table of the latest "
+                "commit that completed each ticked stage (on any branch) per "
+                "repository - the reliable way to see what's actually live per "
+                "environment, since an inline pipeline rerun does not reorder "
+                "the Runs list. Hover a commit to see its message, click it to "
+                "open the run. Results are cached briefly and the window "
+                "remembers its position across restarts.",
             ),
         ]
 

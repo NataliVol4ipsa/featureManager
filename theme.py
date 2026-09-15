@@ -129,6 +129,37 @@ def pop_monitor_session():
     return data if isinstance(data, list) else []
 
 
+# Transient snapshot of open "View deployment status" windows, written just
+# before a relaunch and consumed (then deleted) on the next startup, mirroring
+# the pipeline-monitor session above.
+_DEPLOYMENT_STATUS_SESSION_PATH = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "deployment_status_session.json"
+)
+
+
+def save_deployment_status_session(sessions):
+    """Persist open deployment-status window snapshots for a relaunch."""
+    try:
+        with open(_DEPLOYMENT_STATUS_SESSION_PATH, "w", encoding="utf-8") as handle:
+            json.dump(list(sessions), handle)
+    except (OSError, TypeError):
+        pass
+
+
+def pop_deployment_status_session():
+    """Return the saved deployment-status snapshots and delete the file; [] if none."""
+    try:
+        with open(_DEPLOYMENT_STATUS_SESSION_PATH, "r", encoding="utf-8") as handle:
+            data = json.load(handle)
+    except (OSError, ValueError):
+        data = []
+    try:
+        os.remove(_DEPLOYMENT_STATUS_SESSION_PATH)
+    except OSError:
+        pass
+    return data if isinstance(data, list) else []
+
+
 # Transient flag marking that the pipeline history window was open at relaunch,
 # so it can be reopened on the next startup (deleted once consumed).
 _HISTORY_FLAG_PATH = os.path.join(
@@ -214,6 +245,19 @@ def save_dark_preference(dark):
     _save_prefs(data)
 
 
+def load_deployment_status_geometry():
+    """Return the persisted deployment-status window geometry, or "" if none."""
+    geometry = _load_prefs().get("deployment_status_geometry")
+    return geometry if isinstance(geometry, str) else ""
+
+
+def save_deployment_status_geometry(geometry):
+    """Persist the deployment-status window geometry across app restarts."""
+    data = _load_prefs()
+    data["deployment_status_geometry"] = geometry or ""
+    _save_prefs(data)
+
+
 def load_pipeline_poll_seconds():
     """Return pipeline monitor polling interval in seconds.
 
@@ -262,6 +306,42 @@ def save_pipeline_monitor_compact(compact):
     """Persist the default pipeline-monitor view mode (compact vs full)."""
     data = _load_prefs()
     data["pipeline_monitor_compact"] = bool(compact)
+    _save_prefs(data)
+
+
+def load_pipeline_monitor_hide_completed():
+    """Return the default "Hide completed" state for new pipeline monitors."""
+    return bool(_load_prefs().get("pipeline_monitor_hide_completed", False))
+
+
+def save_pipeline_monitor_hide_completed(hide_completed):
+    """Persist the default "Hide completed" state across app restarts."""
+    data = _load_prefs()
+    data["pipeline_monitor_hide_completed"] = bool(hide_completed)
+    _save_prefs(data)
+
+
+def load_pipeline_monitor_autoapprove_acceptance():
+    """Return the default Auto-approve ACC state for new pipeline monitors."""
+    return bool(_load_prefs().get("pipeline_monitor_autoapprove_acceptance", False))
+
+
+def save_pipeline_monitor_autoapprove_acceptance(enabled):
+    """Persist the default Auto-approve ACC state across app restarts."""
+    data = _load_prefs()
+    data["pipeline_monitor_autoapprove_acceptance"] = bool(enabled)
+    _save_prefs(data)
+
+
+def load_pipeline_monitor_autoapprove_production():
+    """Return the default Auto-approve PRD state for new pipeline monitors."""
+    return bool(_load_prefs().get("pipeline_monitor_autoapprove_production", False))
+
+
+def save_pipeline_monitor_autoapprove_production(enabled):
+    """Persist the default Auto-approve PRD state across app restarts."""
+    data = _load_prefs()
+    data["pipeline_monitor_autoapprove_production"] = bool(enabled)
     _save_prefs(data)
 
 

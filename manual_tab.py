@@ -12,7 +12,8 @@ from gitutils import (
 )
 from widgets import FolderTab
 from tab_base import ActionTabBase
-from dialogs import ask_branch_name, ask_solutions_to_open
+from dialogs import ask_branch_name, ask_solutions_to_open, ask_deployment_status_stages
+from deployment_status import DeploymentStatusWindow
 
 # Base message for the rebase savepos commits (see gitutils.save_uncommitted).
 REBASE_SAVE_MSG = "save changes before rebase"
@@ -282,6 +283,19 @@ class ManualTab(ActionTabBase):
                 "default web browser. Repos with no open PR are reported in the "
                 "Errors panel.",
             ),
+            (
+                "View deployment status",
+                self._action_view_deployment_status,
+                "For every selected repository: lets you tick which deployment "
+                "stages to check (Development, Acceptance, Production), "
+                "then shows a table of the latest commit that completed each "
+                "ticked stage (on any branch) per repository - the reliable "
+                "way to see what's actually live per environment, since an "
+                "inline pipeline rerun does not reorder the Runs list. Hover a "
+                "commit to see its message, click it to open the run. Results "
+                "are cached briefly and the window remembers its position "
+                "across restarts.",
+            ),
         ]
 
     # -- Selection helper -------------------------------------------------- #
@@ -523,6 +537,19 @@ class ManualTab(ActionTabBase):
             return
         active = [(name, path, git_current_branch(path)) for name, path in repos]
         self.show_master_pipeline_monitor_for_merged_prs(active)
+
+    def _action_view_deployment_status(self):
+        """Ask which stages to check, then open the deployment status window."""
+        self.errors.clear()
+        repos = self._all_selected_repos()
+        if not repos:
+            return
+        active = [(name, path, git_current_branch(path)) for name, path in repos]
+        stages = ask_deployment_status_stages(self)
+        if not stages:
+            return
+        self.show_repos_async(repos, with_status=True)
+        DeploymentStatusWindow(self, active, stages, on_progress=self.progress.status)
 
     # -- Open on the remote host ------------------------------------------- #
     def _action_open_repos_master(self):

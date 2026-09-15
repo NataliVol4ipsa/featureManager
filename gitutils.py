@@ -706,6 +706,41 @@ def remote_branch_head(repo_path, branch):
     return out.split()[0].strip()
 
 
+def git_commit_is_ancestor(repo_path, commit_id, ref):
+    """Return True if *commit_id* is *ref* itself or one of its ancestors.
+
+    Exact, using local git (not a guessed/bounded ADO REST query): refreshes
+    *ref* from origin first (via FETCH_HEAD - plain ``git fetch origin <ref>``
+    does NOT update the ``origin/<ref>`` tracking branch, same gotcha handled
+    in git_branch_is_empty), falling back to an existing tracking/local ref
+    when offline. If *commit_id* isn't already known locally it is fetched
+    directly by sha before testing, so this works even for a commit older than
+    the last routine fetch. Hits the network, so call it off the UI thread.
+    Returns False on any git failure (network error, or the commit still
+    unknown after the fetch attempt).
+    """
+    ok, _ = run_git(repo_path, ["fetch", "--quiet", "origin", ref])
+    target_ref = "FETCH_HEAD" if ok else None
+    if target_ref is None:
+        for candidate in (f"origin/{ref}", ref):
+            ok, _ = run_git(repo_path, ["rev-parse", "--verify", candidate])
+            if ok:
+                target_ref = candidate
+                break
+    if target_ref is None:
+        return False
+
+    known, _ = run_git(repo_path, ["cat-file", "-e", commit_id + "^{commit}"])
+    if not known:
+        run_git(repo_path, ["fetch", "--quiet", "origin", commit_id])
+        known, _ = run_git(repo_path, ["cat-file", "-e", commit_id + "^{commit}"])
+        if not known:
+            return False
+
+    ok, _ = run_git(repo_path, ["merge-base", "--is-ancestor", commit_id, target_ref])
+    return ok
+
+
 def git_commit_message(repo_path, ref):
     """Return the subject line of the commit at *ref*, or '' on failure."""
     ok, out = run_git(repo_path, ["log", "-1", "--format=%s", ref])
