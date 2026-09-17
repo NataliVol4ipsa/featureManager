@@ -712,22 +712,30 @@ def git_commit_is_ancestor(repo_path, commit_id, ref):
     Exact, using local git (not a guessed/bounded ADO REST query): refreshes
     *ref* from origin first (via FETCH_HEAD - plain ``git fetch origin <ref>``
     does NOT update the ``origin/<ref>`` tracking branch, same gotcha handled
-    in git_branch_is_empty), falling back to an existing tracking/local ref
-    when offline. If *commit_id* isn't already known locally it is fetched
-    directly by sha before testing, so this works even for a commit older than
-    the last routine fetch. Hits the network, so call it off the UI thread.
-    Returns False on any git failure (network error, or the commit still
-    unknown after the fetch attempt).
+    in git_branch_is_empty), pinned immediately to a concrete sha, falling back
+    to an existing tracking/local ref when offline. If *commit_id* isn't already
+    known locally it is fetched directly by sha before testing, so this works
+    even for a commit older than the last routine fetch. Hits the network, so
+    call it off the UI thread. Returns False on any git failure (network error,
+    or the commit still unknown after the fetch attempt).
     """
     ok, _ = run_git(repo_path, ["fetch", "--quiet", "origin", ref])
-    target_ref = "FETCH_HEAD" if ok else None
-    if target_ref is None:
+    target = None
+    if ok:
+        # Pin FETCH_HEAD to a concrete sha NOW: fetching the commit below (when
+        # it isn't local yet) repoints FETCH_HEAD to that commit, which would
+        # otherwise turn the ancestry test into "<commit> vs <commit>" (always
+        # true - the source of the "everything looks like master" bug).
+        rok, out = run_git(repo_path, ["rev-parse", "FETCH_HEAD"])
+        if rok and out.strip():
+            target = out.strip().splitlines()[0].split()[0]
+    if target is None:
         for candidate in (f"origin/{ref}", ref):
-            ok, _ = run_git(repo_path, ["rev-parse", "--verify", candidate])
-            if ok:
-                target_ref = candidate
+            rok, out = run_git(repo_path, ["rev-parse", "--verify", candidate])
+            if rok and out.strip():
+                target = out.strip().splitlines()[0]
                 break
-    if target_ref is None:
+    if target is None:
         return False
 
     known, _ = run_git(repo_path, ["cat-file", "-e", commit_id + "^{commit}"])
@@ -737,7 +745,7 @@ def git_commit_is_ancestor(repo_path, commit_id, ref):
         if not known:
             return False
 
-    ok, _ = run_git(repo_path, ["merge-base", "--is-ancestor", commit_id, target_ref])
+    ok, _ = run_git(repo_path, ["merge-base", "--is-ancestor", commit_id, target])
     return ok
 
 
