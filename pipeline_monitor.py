@@ -594,6 +594,7 @@ class PipelineMonitorWindow(tk.Toplevel):
                 "stage_progress": {},
                 "running_hitboxes": [],
                 "stage_times": {},
+                "nodes": {},
                 "estimate": estimate,
                 "estimate_label": estimate_label,
                 "environment": info.get("environment"),
@@ -1116,6 +1117,7 @@ class PipelineMonitorWindow(tk.Toplevel):
             estimate,
             row.get("stages") or {},
             row.get("stage_times") or {},
+            row.get("nodes") or {},
             environment=row.get("environment"),
             visible_stages=row.get("configured_stages"),
         )
@@ -1477,6 +1479,9 @@ class PipelineMonitorWindow(tk.Toplevel):
             )
             self._rows[repo]["stage_times"] = (
                 payload.get("stage_times") or {}
+            )
+            self._rows[repo]["nodes"] = (
+                payload.get("nodes") or {}
             )
             self._poll_latest_timestamp = payload.get(
                 "updated_at", self._poll_latest_timestamp

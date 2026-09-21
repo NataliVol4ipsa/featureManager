@@ -895,52 +895,225 @@ def _stage_timings_from_timeline(timeline):
     return result
 
 
+def _stage_timings_from_timeline(timeline):
+    """Return {stage_key: {"state","start","finish"}} from a build timeline."""
+    result = {}
+    for record in (timeline or {}).get("records") or []:
+        if (record.get("type") or "").lower() != "stage":
+            continue
+        key = _timeline_stage_key(record.get("name") or record.get("identifier"))
+        if not key:
+            continue
+        result[key] = {
+            "state": _timeline_state(record),
+            "start": record.get("startTime"),
+            "finish": record.get("finishTime"),
+        }
+    return result
+
+
 def _api_build_timeline_safe(org, project, build_id, auth):
-    """Return a build timeline, or {} on any lookup error (never raises)."""
-    try:
-        return _api_build_timeline(org, project, int(build_id), auth)
-    except (urllib.error.HTTPError, urllib.error.URLError, OSError,
-            ValueError, TypeError):
-        return {}
+    """Return a build timeline, or {} on any lookup error (never raises).
+
+    Azure DevOps occasionally answers a burst of concurrent timeline requests
+    with ``409 Conflict`` (or throttles with ``429``); a couple of short,
+    backing-off retries clear that without failing the whole refresh.
+    """
+    delay = 0.4
+    for attempt in range(3):
+        try:
+            return _api_build_timeline(org, project, int(build_id), auth)
+        except urllib.error.HTTPError as exc:
+            if exc.code in (409, 429) and attempt < 2:
+                time.sleep(delay)
+                delay *= 2
+                continue
+            return {}
+        except (urllib.error.URLError, OSError, ValueError, TypeError):
+            return {}
+    return {}
+
+
+# --------------------------------------------------------------------------- #
+# Granular timeline tree (stages -> phases -> jobs -> tasks)
+# --------------------------------------------------------------------------- #
+
+_NODE_TYPES = ("stage", "phase", "job", "task")
+
+
+def _node_key(stage_key, segments):
+    """Return a stable path key for a timeline node.
+
+    *segments* is the ordered ``(type, identifier, order)`` chain from the
+    stage's direct child down to the node (empty for the stage record itself).
+    The identifier (or name for tasks, which have none) plus the sibling order
+    keeps matrix jobs and repeated step names distinct, and stays stable across
+    runs of the same pipeline definition.
+    """
+    parts = [stage_key]
+    for node_type, ident, order in segments:
+        parts.append(f"{node_type[0]}:{ident}#{order}")
+    return "/".join(parts)
+
+
+def _walk_timeline_nodes(timeline):
+    """Return ``(run_start_iso, nodes)`` for a build timeline.
+
+    *nodes* maps each node's stable key (see :func:`_node_key`) to::
+
+        {"type","stage","name","order","state","start","finish","parent"}
+
+    where ``stage`` is the canonical stage key the node belongs to and
+    ``parent`` is the key of its enclosing node (the stage key for a top-level
+    child, ``None`` for a stage). The same walk is used both to aggregate
+    historical averages and to read a live run's structure, so a live run keys
+    identically to its cached profile.
+    """
+    records = (timeline or {}).get("records") or []
+    by_id = {r.get("id"): r for r in records if r.get("id")}
+
+    def rtype(record):
+        return (record.get("type") or "").lower()
+
+    def ancestry(record):
+        """Return ``(stage_key, segments)`` from stage-child down to *record*."""
+        chain = []
+        current = record
+        seen = set()
+        while current is not None:
+            cid = current.get("id")
+            if cid in seen:
+                return None, None
+            seen.add(cid)
+            if rtype(current) == "stage":
+                stage_key = _timeline_stage_key(
+                    current.get("name") or current.get("identifier")
+                )
+                chain.reverse()
+                return stage_key, chain
+            ident = current.get("identifier") or current.get("name") or ""
+            chain.append((rtype(current), ident, current.get("order") or 0))
+            current = by_id.get(current.get("parentId"))
+        return None, None
+
+    nodes = {}
+    starts = []
+    for record in records:
+        node_type = rtype(record)
+        if node_type not in _NODE_TYPES:
+            continue
+        if node_type == "stage":
+            stage_key = _timeline_stage_key(
+                record.get("name") or record.get("identifier")
+            )
+            if not stage_key:
+                continue
+            key = stage_key
+            parent = None
+        else:
+            stage_key, segments = ancestry(record)
+            if not stage_key or not segments:
+                continue
+            key = _node_key(stage_key, segments)
+            parent = _node_key(stage_key, segments[:-1])
+        nodes[key] = {
+            "type": node_type,
+            "stage": stage_key,
+            "name": record.get("name") or "",
+            "order": record.get("order") or 0,
+            "state": _timeline_state(record),
+            "start": record.get("startTime"),
+            "finish": record.get("finishTime"),
+            "parent": parent,
+        }
+        started = _parse_iso_utc(record.get("startTime"))
+        if started is not None:
+            starts.append(started)
+
+    run_start = min(starts).isoformat() if starts else None
+    return run_start, nodes
 
 
 # A repo that reached Azure DevOps but has no fully successful master run to
 # measure - a stable fact worth caching so it is not rescanned every refresh.
-_EMPTY_DURATIONS = {"stages": {}, "acc_parallel": False, "samples": 0}
+_EMPTY_PROFILE = {"stages": {}, "nodes": {}, "acc_parallel": False, "samples": 0}
 
 
-def get_master_stage_durations(name, path, count=15, scan=40):
-    """Return (ok, data_or_error) with average per-stage master run durations.
+def _accumulate_profile_nodes(agg, run_start_iso, nodes):
+    """Fold one run's completed nodes into the running aggregate *agg*.
 
-    Collects the *count* most recent master runs of the repo's deployment
-    pipeline and averages each stage's wall-clock duration (in seconds)
-    independently over the runs where that stage ran and succeeded. Averaging
-    per stage (rather than only over runs where all four stages completed) keeps
-    a Build+Development+Acceptance estimate available for repos whose master runs
-    rarely complete a Production stage. Scheduled runs (e.g. the nightly Veracode
-    scan) are excluded so only real merge deployments are measured.
+    For every node that ran and succeeded, accumulate its wall-clock duration
+    and its start offset relative to the run start (used later to reason about
+    which nodes overlap in time - i.e. run in parallel). *agg* is keyed by the
+    node's stable path key.
+    """
+    run_start = _parse_iso_utc(run_start_iso)
+    for key, node in nodes.items():
+        if node.get("state") != "done":
+            continue
+        secs = _duration_seconds(node.get("start"), node.get("finish"))
+        if secs is None:
+            continue
+        entry = agg.get(key)
+        if entry is None:
+            entry = agg[key] = {
+                "type": node.get("type"),
+                "stage": node.get("stage"),
+                "name": node.get("name") or "",
+                "parent": node.get("parent"),
+                "order": node.get("order") or 0,
+                "sum": 0.0,
+                "count": 0,
+                "sum_offset": 0.0,
+                "offset_count": 0,
+            }
+        entry["sum"] += secs
+        entry["count"] += 1
+        started = _parse_iso_utc(node.get("start"))
+        if run_start is not None and started is not None:
+            entry["sum_offset"] += (started - run_start).total_seconds()
+            entry["offset_count"] += 1
 
-    On success the data is::
+
+def get_master_pipeline_profile(name, path, count=15, scan=40):
+    """Return (ok, profile_or_error): a granular timing profile of a pipeline.
+
+    Collects the *count* most recent successful master runs of the repo's
+    deployment pipeline and, from each run's build timeline, averages the
+    wall-clock duration of *every* node - stage, phase, job and task -
+    independently over the runs in which that node ran and succeeded. Because a
+    single timeline call already returns the whole stage->phase->job->task tree,
+    this granularity costs no extra Azure DevOps requests. Scheduled runs (e.g.
+    the nightly Veracode scan) are excluded so only real merge deployments are
+    measured.
+
+    On success the profile is::
 
         {
-          "stages": {"build": s, "development": s, "acceptance": s, "production": s},
-          "acc_parallel": bool,   # Acceptance overlaps Development (vs. strictly after)
+          "stages": {stage_key: avg_seconds, ...},   # per-stage wall clock
+          "nodes":  {node_key: {                     # granular tree
+              "type","stage","name","parent","order",
+              "avg","count","avg_offset",            # avg_offset = start vs run start
+          }, ...},
+          "acc_parallel": bool,   # Acceptance overlaps Development
           "samples": int,
         }
 
-    A repo that definitively yields no estimate (not cloned, no ADO remote, no
-    deploy pipeline, or no fully successful runs) returns ``ok=True`` with an
-    empty ``stages`` and ``samples`` 0 so callers can cache the "nothing here"
-    answer and avoid rescanning it every time. Only transient problems (missing
-    credential, network/HTTP errors) return ``ok=False`` so they are retried.
+    Keeping the full node tree lets the estimator match a *live* run's actual
+    structure (which reflects the run's template parameters - skipped stages and
+    jobs simply do not appear) instead of blindly summing every historical
+    stage. A repo that definitively yields no estimate (not cloned, no ADO
+    remote, no deploy pipeline, or no successful runs) returns ``ok=True`` with
+    an empty profile so callers cache the "nothing here" answer; only transient
+    problems (missing credential, network/HTTP errors) return ``ok=False``.
     """
     # Stable "no estimate" facts about the repo: report empty so it is cached.
     if not is_git_repo(path):
-        return True, dict(_EMPTY_DURATIONS)
+        return True, dict(_EMPTY_PROFILE)
 
     parsed = parse_ado_remote(git_remote_url(path))
     if not parsed:
-        return True, dict(_EMPTY_DURATIONS)
+        return True, dict(_EMPTY_PROFILE)
     org, project, repo, host = parsed
 
     # A missing credential is transient (VPN/PAT): keep it uncached to retry.
@@ -951,11 +1124,11 @@ def get_master_stage_durations(name, path, count=15, scan=40):
     try:
         repo_id = _cached_repo_id(org, project, repo, auth)
         if not repo_id:
-            return True, dict(_EMPTY_DURATIONS)
+            return True, dict(_EMPTY_PROFILE)
         pipeline_id = _cached_pipeline_id(org, project, repo, repo_id, auth)
         if not pipeline_id:
             # No deploy pipeline (e.g. a plain NuGet repo): cache the empty result.
-            return True, dict(_EMPTY_DURATIONS)
+            return True, dict(_EMPTY_PROFILE)
         query = urllib.parse.urlencode({
             "definitions": str(pipeline_id),
             "branchName": "refs/heads/master",
@@ -981,37 +1154,29 @@ def get_master_stage_durations(name, path, count=15, scan=40):
         if (build.get("reason") or "").lower() in _MERGE_BUILD_REASONS
     ]
     if not builds:
-        return True, dict(_EMPTY_DURATIONS)
+        return True, dict(_EMPTY_PROFILE)
 
+    # One timeline call per build returns the whole node tree; fan them out but
+    # keep the pool bounded (and the calls retry on 409/429) so we do not throttle.
     timelines = run_in_parallel(
         builds,
         lambda b: _api_build_timeline_safe(org, project, b.get("id"), auth),
     )
 
-    stage_keys = ("build", "development", "acceptance", "production")
-    # Average each stage independently over the runs where that stage ran and
-    # succeeded, so a Build+Dev+Acc estimate is still available for repos whose
-    # master runs rarely (or never) complete a Production stage.
-    per_stage = {key: [] for key in stage_keys}
+    agg = {}
     parallel_votes = 0
     overlap_samples = 0
     runs_used = 0
     for timeline in timelines:
-        timings = _stage_timings_from_timeline(timeline)
-        contributed = False
-        for key in stage_keys:
-            record = timings.get(key) or {}
-            if record.get("state") != "done":
-                continue
-            secs = _duration_seconds(record.get("start"), record.get("finish"))
-            if secs is None:
-                continue
-            per_stage[key].append(secs)
-            contributed = True
+        run_start_iso, nodes = _walk_timeline_nodes(timeline)
+        # A run contributes if any of its nodes completed successfully.
+        if not any(n.get("state") == "done" for n in nodes.values()):
+            continue
+        _accumulate_profile_nodes(agg, run_start_iso, nodes)
         # Decide whether Acceptance overlaps Development (parallel) or strictly
         # follows it, from runs where both stages ran.
-        dev = timings.get("development") or {}
-        acc = timings.get("acceptance") or {}
+        dev = nodes.get("development") or {}
+        acc = nodes.get("acceptance") or {}
         if dev.get("state") == "done" and acc.get("state") == "done":
             dev_finish = _parse_iso_utc(dev.get("finish"))
             acc_start = _parse_iso_utc(acc.get("start"))
@@ -1019,21 +1184,38 @@ def get_master_stage_durations(name, path, count=15, scan=40):
                 overlap_samples += 1
                 if acc_start < dev_finish:
                     parallel_votes += 1
-        if contributed:
-            runs_used += 1
+        runs_used += 1
         if runs_used >= count:
             break
 
-    averages = {
-        key: sum(values) / len(values)
-        for key, values in per_stage.items() if values
-    }
-    if not averages:
-        return True, dict(_EMPTY_DURATIONS)
+    if not agg:
+        return True, dict(_EMPTY_PROFILE)
+
+    profile_nodes = {}
+    stages = {}
+    for key, entry in agg.items():
+        avg = entry["sum"] / entry["count"]
+        node = {
+            "type": entry["type"],
+            "stage": entry["stage"],
+            "name": entry["name"],
+            "parent": entry["parent"],
+            "order": entry["order"],
+            "avg": avg,
+            "count": entry["count"],
+            "avg_offset": (
+                entry["sum_offset"] / entry["offset_count"]
+                if entry["offset_count"] else 0.0
+            ),
+        }
+        profile_nodes[key] = node
+        if entry["type"] == "stage":
+            stages[entry["stage"]] = avg
 
     acc_parallel = overlap_samples > 0 and parallel_votes * 2 >= overlap_samples
     return True, {
-        "stages": averages,
+        "stages": stages,
+        "nodes": profile_nodes,
         "acc_parallel": acc_parallel,
         "samples": runs_used,
     }
@@ -1419,6 +1601,11 @@ def get_pipeline_stage_statuses(run_info):
         for key, record in stage_records.items()
     }
 
+    # Full granular node tree (stage -> phase -> job -> task) of this live run,
+    # keyed identically to the cached profile so the estimator can match each
+    # running/pending node to its historical average without extra API calls.
+    _run_start_iso, live_nodes = _walk_timeline_nodes(timeline)
+
     # A stage that never appears in this run's timeline is not part of its
     # pipeline (e.g. a master run with no Development deployment). Once Build
     # has finished, treat any still-absent stage as skipped so the monitor
@@ -1529,6 +1716,7 @@ def get_pipeline_stage_statuses(run_info):
         "stage_identifiers": stage_identifiers,
         "stage_progress": stage_progress,
         "stage_times": stage_times,
+        "nodes": live_nodes,
         "approval_target": approval_target,
         "autoapproved": autoapproved,
         "autoapproved_target": autoapproved_target,
