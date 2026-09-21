@@ -1377,9 +1377,7 @@ class PipelineMonitorWindow(tk.Toplevel):
             info["visible_stages"] = result.get("visible_stages") or []
             info["template_parameters"] = result.get("template_parameters") or {}
             info["is_previous_run"] = False
-            for stale in ("_autoapprove_acceptance_done",
-                          "_autoapprove_production_done"):
-                info.pop(stale, None)
+            info.pop("_approved_approval_ids", None)
 
         if row:
             # A fresh run is no longer a "previous" one - drop the rewind marker.

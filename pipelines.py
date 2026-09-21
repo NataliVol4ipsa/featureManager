@@ -1495,40 +1495,30 @@ def get_pipeline_stage_statuses(run_info):
     autoapproved = False
     autoapproved_target = ""
     autoapprove_error = ""
-    if (
-        approval_target == "acceptance"
-        and autoapprove_acceptance
-        and pending_approval_ids
-        and not any_partially_approved
-        and not run_info.get("_autoapprove_acceptance_done")
-    ):
-        ok_approve, approve_error = _approve_pending_approvals(
-            org, project, pending_approval_ids, auth
-        )
-        if ok_approve:
-            run_info["_autoapprove_acceptance_done"] = True
-            autoapproved = True
-            autoapproved_target = "acceptance"
-            stages["acceptance"] = "running"
-        else:
-            autoapprove_error = approve_error
-    elif (
-        approval_target == "production"
-        and autoapprove_production
-        and pending_approval_ids
-        and not any_partially_approved
-        and not run_info.get("_autoapprove_production_done")
-    ):
-        ok_approve, approve_error = _approve_pending_approvals(
-            org, project, pending_approval_ids, auth
-        )
-        if ok_approve:
-            run_info["_autoapprove_production_done"] = True
-            autoapproved = True
-            autoapproved_target = "production"
-            stages["production"] = "running"
-        else:
-            autoapprove_error = approve_error
+    want_target = ""
+    if approval_target == "acceptance" and autoapprove_acceptance:
+        want_target = "acceptance"
+    elif approval_target == "production" and autoapprove_production:
+        want_target = "production"
+
+    if want_target and pending_approval_ids and not any_partially_approved:
+        # Guard per approval id, not with a once-only boolean: a failed-stage
+        # retry reopens the gate with a NEW approval id, so tracking approved ids
+        # lets the retry be auto-approved again while still avoiding re-hammering
+        # the same id before ADO finishes processing it.
+        approved_ids = run_info.setdefault("_approved_approval_ids", [])
+        new_ids = [aid for aid in pending_approval_ids if aid not in approved_ids]
+        if new_ids:
+            ok_approve, approve_error = _approve_pending_approvals(
+                org, project, new_ids, auth
+            )
+            if ok_approve:
+                approved_ids.extend(new_ids)
+                autoapproved = True
+                autoapproved_target = want_target
+                stages[want_target] = "running"
+            else:
+                autoapprove_error = approve_error
 
     return True, {
         "build_id": int(build_id),

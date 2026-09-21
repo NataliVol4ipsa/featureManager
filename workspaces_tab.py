@@ -16,6 +16,7 @@ from gitutils import (
     workspace_branch_entries, save_branch_overrides,
     remote_branch_exists, delete_remote_branch,
     set_workspace_folders,
+    rename_workspace,
     SAVEPOS_MSG,
 )
 from parallel import run_in_parallel
@@ -254,7 +255,10 @@ class WorkspacesTab(ActionTabBase):
                 "repos): pushes the current branch to origin, creating the "
                 "remote branch automatically if it does not exist yet. No "
                 "prompts are shown unless the repos are on different branches, "
-                "in which case a warning is shown first.",
+                "in which case a warning is shown first. If a push is rejected "
+                "because the remote branch has diverged, the affected "
+                "repositories are listed with their ahead (+) / behind (-) "
+                "commit counts and you are asked whether to force push.",
             ),
             (
                 "Create pull request",
@@ -537,6 +541,7 @@ class WorkspacesTab(ActionTabBase):
         if plan is None:
             return
 
+        new_workspace = plan["name"]
         overrides = plan["overrides"]
         added = plan["added"]        # list of (name, path, branch, ignore)
         removed = set(plan["removed"])
@@ -567,16 +572,23 @@ class WorkspacesTab(ActionTabBase):
         # Every validation passed and the user approved the new-repo actions, so
         # now apply the workspace file changes: rewrite the folder list (add new,
         # drop removed) and persist the branch overrides.
+        ok_rename, message = rename_workspace(workspace, new_workspace)
+        if not ok_rename:
+            self.errors.add(message)
+            return
+
         if added or removed:
             current = [(e["name"], e["path"]) for e in entries]
             kept = [(n, p) for n, p in current if n not in removed]
             final_repos = kept + [(n, p) for n, p, _b, _ig in added]
-            ok_folders, msg_folders = set_workspace_folders(workspace, final_repos)
+            ok_folders, msg_folders = set_workspace_folders(
+                new_workspace, final_repos
+            )
             if not ok_folders:
                 self.errors.add(msg_folders)
                 return
 
-        ok_save, message = save_branch_overrides(workspace, overrides)
+        ok_save, message = save_branch_overrides(new_workspace, overrides)
         if not ok_save:
             self.errors.add(message)
             return
@@ -589,13 +601,15 @@ class WorkspacesTab(ActionTabBase):
                     n, p, suffix_of[n], decisions.get(n)
                 ),
                 "Repositories added and feature branches created.",
-                on_complete=lambda _ok: self._on_workspace_selected(workspace),
+                on_complete=lambda _ok: self._on_workspace_selected(new_workspace),
                 parallel=True,
             )
             return
 
         # Reflect any change in the Details table.
-        self._on_workspace_selected(workspace)
+        self.workspace_list.set_items(self._workspace_items())
+        self.workspace_list.select(new_workspace)
+        self._on_workspace_selected(new_workspace)
 
     # -- Switch to selected workspace -------------------------------------- #
     def _action_switch(self):

@@ -285,6 +285,21 @@ def save_branch_overrides(workspace_name, overrides):
         return False, f"could not save branch overrides: {exc}"
 
 
+def rename_workspace(old_name, new_name):
+    """Rename a workspace file, returning ``(ok, message)``."""
+    if old_name == new_name:
+        return True, "Workspace name unchanged."
+    source = os.path.join(WORKSPACES_ROOT, f"{old_name}.code-workspace")
+    target = os.path.join(WORKSPACES_ROOT, f"{new_name}.code-workspace")
+    if os.path.exists(target):
+        return False, f"a workspace named '{new_name}' already exists"
+    try:
+        os.rename(source, target)
+        return True, f"Workspace renamed to {new_name}."
+    except OSError as exc:
+        return False, f"could not rename workspace: {exc}"
+
+
 def set_workspace_folders(workspace_name, repos):
     """Replace a workspace's folder list, preserving every other block.
 
@@ -910,6 +925,49 @@ def git_push(name, path):
     if not branch:
         return False, f"{name}: not on a branch (detached HEAD)"
     ok, out = run_git(path, ["push", "-u", "origin", "HEAD"])
+    if not ok:
+        return False, f"{name}: {out}"
+    return True, ""
+
+
+def git_ahead_behind(path, branch, remote="origin"):
+    """Return (ahead, behind) commit counts for *branch* vs *remote*/*branch*.
+
+    Fetches the remote branch first so the counts are accurate, then compares
+    HEAD to the remote tip: *ahead* = local commits not on the remote, *behind*
+    = remote commits not in the local branch. Hits the network, so call it off
+    the UI thread. Returns (0, 0) when the counts cannot be determined.
+    """
+    if not branch:
+        return (0, 0)
+    run_git(path, ["fetch", remote, branch])
+    ok, out = run_git(
+        path, ["rev-list", "--left-right", "--count", f"HEAD...{remote}/{branch}"]
+    )
+    if not ok:
+        return (0, 0)
+    parts = out.split()
+    if len(parts) != 2:
+        return (0, 0)
+    try:
+        return (int(parts[0]), int(parts[1]))
+    except ValueError:
+        return (0, 0)
+
+
+def git_force_push(name, path):
+    """Force-push one repo's current branch to origin. Returns (ok, error).
+
+    Uses ``push --force-with-lease`` so the overwrite is refused if the remote
+    moved again since the last fetch (a safer force push). Call after the user
+    has confirmed overwriting the diverged remote branch.
+    """
+    if not is_git_repo(path):
+        return False, f"{name}: not a git repository"
+    branch = git_current_branch(path)
+    if not branch:
+        return False, f"{name}: not on a branch (detached HEAD)"
+    ok, out = run_git(path, ["push", "--force-with-lease", "-u", "origin", "HEAD"])
     if not ok:
         return False, f"{name}: {out}"
     return True, ""

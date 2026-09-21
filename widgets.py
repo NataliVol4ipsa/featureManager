@@ -820,3 +820,13 @@ class WorkspaceList(ttk.Frame):
         if not selection:
             return None
         return self._names.get(selection[0])
+
+    def select(self, name):
+        """Select the workspace named *name*, if it is present."""
+        for row_id, row_name in self._names.items():
+            if row_name == name:
+                self.tree.selection_set(row_id)
+                self.tree.focus(row_id)
+                self.tree.see(row_id)
+                return True
+        return False

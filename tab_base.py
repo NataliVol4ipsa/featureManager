@@ -12,6 +12,7 @@ from widgets import ProgressPanel, ErrorList
 from gitutils import (
     is_git_repo, git_current_branch, git_has_changes, commit_all, git_push,
     git_branch_url, create_ado_pr, ado_pr_title_from_branch,
+    git_ahead_behind, git_force_push,
     git_branch_is_empty, open_in_terminal_tabs, get_ado_pr_url,
     remote_branch_exists, ado_work_item_id_from_branch, complete_ado_pr,
     ado_host_for_path, check_ado_connectivity, git_last_commit,
@@ -21,7 +22,7 @@ from gitutils import (
 )
 from dialogs import (
     ask_change_decision, ask_commit_message, ask_branch_warning, ask_pr_details,
-    ask_missing_remote_branches, ask_deploy_selection,
+    ask_force_push, ask_missing_remote_branches, ask_deploy_selection,
     ask_complete_pr_details, ask_interrupted_operation_decision,
     ask_redeploy_selection, ask_workspace_branches, ask_pipeline_parameters,
     ask_packages_to_bump,
@@ -315,14 +316,63 @@ class ActionTabBase(ttk.Frame):
                 return
             skip_empty = answer["skip_empty"]
 
+        # Check every remote for divergence BEFORE pushing (the same fetch is
+        # needed to get the ahead/behind counts anyway): this way a force push is
+        # offered up front with the counts already resolved, and no failed-push
+        # errors are shown. Runs off the UI thread.
+        self.progress.show_repos(
+            [(name, "checking\u2026") for name, _ in repos], with_status=True,
+            with_link=False, show_branch=True,
+        )
+
+        def _check(rp):
+            name, path = rp
+            branch = git_current_branch(path) if is_git_repo(path) else ""
+            ahead, behind = git_ahead_behind(path, branch) if branch else (0, 0)
+            return (name, path, branch, ahead, behind)
+
+        def _prepared(rows):
+            # A push is rejected only when both sides moved (local commits to
+            # send AND remote commits we lack). Offer force push for those.
+            diverged = [r for r in rows if r[3] > 0 and r[4] > 0]
+            force_names = set()
+            if diverged:
+                modal_rows = [(n, b, a, bh) for n, _p, b, a, bh in diverged]
+                if ask_force_push(self, modal_rows):
+                    force_names = {r[0] for r in diverged}
+            diverged_names = {r[0] for r in diverged}
+            self._run_push(repos, skip_empty, diverged_names, force_names)
+
+        def _prepare():
+            rows = run_in_parallel(repos, _check)
+            self.after(0, _prepared, rows)
+
+        threading.Thread(target=_prepare, daemon=True).start()
+
+    def _run_push(self, repos, skip_empty, diverged_names, force_names):
+        """Push *repos*, force-pushing the ones the user confirmed.
+
+        *diverged_names* are repos whose remote diverged; those in *force_names*
+        are force-pushed, the rest of the diverged ones are skipped (the user
+        declined the force push). All other repos push normally.
+        """
+        def push_one(name, path):
+            if name in force_names:
+                return git_force_push(name, path)
+            if name in diverged_names:
+                return ("warning",
+                        f"{name}: skipped - remote has diverged (force push declined)")
+            return git_push(name, path)
+
         self.run_repo_action(
             repos,
-            git_push,
+            push_one,
             "All branches pushed successfully.",
             link_fn=lambda n, p: git_branch_url(p, git_current_branch(p)),
             skip_fn=git_branch_is_empty if skip_empty else None,
             parallel=True,
         )
+
 
     def create_workspace_with_branches(self, repos, initial="", on_created=None):
         """Name a workspace, configure per-repo branches, then create them.
@@ -376,8 +426,9 @@ class ActionTabBase(ttk.Frame):
                 continue
             suffix = info["branches"].get(repo_name, name)
             branch_suffix[repo_name] = suffix
-            if suffix != name:
-                overrides[repo_name] = {"branch": f"feature/{suffix}"}
+            # Always pin the branch (even when it equals the workspace name) so a
+            # later workspace rename never re-points the repo's feature branch.
+            overrides[repo_name] = {"branch": f"feature/{suffix}"}
 
         ok_ws, message = write_workspace(name, repos)
         if not ok_ws:

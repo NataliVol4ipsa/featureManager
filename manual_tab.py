@@ -120,7 +120,10 @@ class ManualTab(ActionTabBase):
                 "origin, creating the remote branch automatically if it does "
                 "not exist yet. No prompts are shown unless the selected repos "
                 "are on different branches, in which case a warning is shown "
-                "first.",
+                "first. If a push is rejected because the remote branch has "
+                "diverged, the affected repositories are listed with their "
+                "ahead (+) / behind (-) commit counts and you are asked "
+                "whether to force push.",
             ),
             (
                 "Create pull request",

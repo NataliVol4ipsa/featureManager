@@ -726,6 +726,81 @@ def ask_branch_warning(parent, repo_count, title="Push all changes",
     return {"ok": result["ok"], "skip_empty": bool(skip_empty.get())}
 
 
+def ask_force_push(parent, rows):
+    """Modal listing repos whose push would be rejected (the remote diverged).
+
+    *rows* is a list of ``(name, branch, ahead, behind)`` with the commit counts
+    already resolved: *ahead* local commits not on the remote (shown green) and
+    *behind* remote commits missing locally (shown red). Asks whether to force-
+    push the listed repos. Returns True to force push, False to cancel.
+    """
+    dialog = _new_modal(parent, "ask_force_push")
+    dialog.title("Push rejected - remote has diverged")
+    dialog.transient(parent.winfo_toplevel())
+    dialog.resizable(False, False)
+
+    count = len(rows)
+    tk.Label(
+        dialog,
+        text=(
+            f"{count} {'repository' if count == 1 else 'repositories'} cannot "
+            "be pushed because the remote branch has commits that are not in "
+            "your local branch."
+        ),
+        justify="left", wraplength=440,
+    ).pack(padx=16, pady=(16, 8), anchor="w")
+
+    table = ttk.Frame(dialog)
+    table.pack(padx=16, pady=(0, 8), anchor="w", fill="x")
+    for name, branch, ahead, behind in rows:
+        row = ttk.Frame(table)
+        row.pack(anchor="w", fill="x", pady=1)
+        tk.Label(row, text=name, font=("", 9, "bold")).pack(side="left")
+        tk.Label(row, text=f"({branch})", foreground=theme.FG_MUTED).pack(
+            side="left", padx=(4, 10))
+        tk.Label(
+            row, text=f"\u2191 {ahead}",
+            foreground=theme.SUCCESS, font=("", 9, "bold"),
+        ).pack(side="left")
+        tk.Label(
+            row,
+            text=f"\u2193 {behind}",
+            foreground=theme.ERROR, font=("", 9, "bold"),
+        ).pack(side="left", padx=(10, 0))
+
+    warn = ttk.Frame(dialog)
+    warn.pack(padx=16, pady=(0, 4), anchor="w")
+    tk.Label(warn, text="\u26A0", foreground=theme.ERROR,
+             font=("", 11, "bold")).pack(side="left", padx=(0, 4))
+    tk.Label(
+        warn,
+        text="Force pushing overwrites the remote branch and discards the "
+             "remote commits shown above.",
+        foreground=theme.ERROR, justify="left", wraplength=400,
+    ).pack(side="left")
+
+    result = {"ok": False}
+
+    def _ok():
+        result["ok"] = True
+        dialog.destroy()
+
+    def _cancel():
+        result["ok"] = False
+        dialog.destroy()
+
+    bar = ttk.Frame(dialog)
+    bar.pack(padx=16, pady=12)
+    ttk.Button(bar, text="Force push", command=_ok).pack(side="left", padx=4)
+    ttk.Button(bar, text="Cancel", command=_cancel).pack(side="left", padx=4)
+
+    dialog.protocol("WM_DELETE_WINDOW", _cancel)
+    _center_over_parent(dialog, parent)
+    dialog.grab_set()
+    parent.wait_window(dialog)
+    return result["ok"]
+
+
 def ask_pr_details(parent, repo_count):
     """Modal collecting pull-request options for every selected repo.
 
@@ -1611,6 +1686,7 @@ def edit_branch_overrides(parent, workspace_name, entries):
     until the caller applies the plan and every validation passes.
 
     Returns a dict with:
+            * ``name`` - the new workspace name,
       * ``overrides`` - the ``{folder: {...}}`` override map to persist (only
         repos that ignore git or whose branch differs from the default),
       * ``added`` - a list of ``(name, path, branch, ignore)`` for repos to add
@@ -1628,6 +1704,16 @@ def edit_branch_overrides(parent, workspace_name, entries):
     dialog.transient(parent.winfo_toplevel())
     dialog.resizable(False, False)
 
+    name_frame = ttk.Frame(dialog)
+    name_frame.pack(padx=16, pady=(16, 4), fill="x")
+    ttk.Label(name_frame, text="Workspace name", font=("", 9, "bold")).pack(
+        side="left", padx=(0, 8)
+    )
+    name_var = tk.StringVar(value=workspace_name)
+    name_entry = ttk.Entry(name_frame, textvariable=name_var, width=40)
+    name_entry.pack(side="left", fill="x", expand=True)
+    name_entry.focus_set()
+
     # A red trash glyph reused from the "Delete remote branches" action icon so
     # the button matches the rest of the app; falls back to a unicode wastebasket.
     icon_set = (icons.ACTION_ICON_DARK if theme.load_dark_preference()
@@ -1642,7 +1728,7 @@ def edit_branch_overrides(parent, workspace_name, entries):
     _keep_refs = [trash_image]  # hold PhotoImage refs so Tk does not GC them
 
     header = ttk.Frame(dialog)
-    header.pack(padx=16, pady=(16, 8), fill="x")
+    header.pack(padx=16, pady=(4, 8), fill="x")
     tk.Label(
         header,
         text=f"Configure the feature branch for each repository in "
@@ -1803,6 +1889,16 @@ def edit_branch_overrides(parent, workspace_name, entries):
     result = {"value": None}
 
     def _save():
+        ws_name = name_var.get().strip()
+        if not ws_name:
+            error_label.config(text="Workspace name is required.")
+            return
+        if not is_valid_branch_name(ws_name):
+            error_label.config(
+                text="Invalid workspace name: no spaces; use letters, digits, "
+                     ". _ / -"
+            )
+            return
         overrides = {}
         added = []
         removed = []
@@ -1833,10 +1929,12 @@ def edit_branch_overrides(parent, workspace_name, entries):
                 return
             if row["is_new"]:
                 added.append((name, row["path"], branch, False))
-            if branch != default:
-                overrides[name] = {"branch": branch}
+            # Always pin the branch (even when it equals the default) so renaming
+            # the workspace never re-points the repo's feature branch.
+            overrides[name] = {"branch": branch}
         result["value"] = {
-            "overrides": overrides, "added": added, "removed": removed,
+            "name": ws_name, "overrides": overrides,
+            "added": added, "removed": removed,
         }
         dialog.destroy()
 
