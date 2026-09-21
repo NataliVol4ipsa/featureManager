@@ -290,17 +290,6 @@ class WorkspacesTab(ActionTabBase):
                 "link' lines to the clipboard. Repos without an open PR are "
                 "listed in the Errors panel.",
             ),
-            (
-                "Delete remote branches",
-                self._action_delete_remote_branches,
-                "For the selected workspace's repositories (excluding skipped "
-                "repos): lists every repo whose feature branch actually exists "
-                "on origin and lets you tick which ones to delete from the "
-                "remote (red-cross checkboxes, all off by default). Selected "
-                "branches are deleted with 'git push origin --delete'. This is "
-                "destructive and cannot be undone; nothing is deleted unless you "
-                "explicitly tick it.",
-            ),
         ]
 
     def _pipeline_actions(self):
@@ -479,6 +468,15 @@ class WorkspacesTab(ActionTabBase):
                 "the Runs list. Hover a commit to see its message, click it to "
                 "open the run. Results are cached briefly and the window "
                 "remembers its position across restarts.",
+            ),
+            (
+                "Delete remote branches",
+                self._action_delete_remote_branches,
+                "For the selected workspace's repositories (excluding skipped "
+                "repos): checks in parallel which configured feature branches "
+                "exist on origin, then lets you untick any branches to keep. "
+                "Confirmed branches are deleted in parallel with 'git push "
+                "origin --delete'. This is destructive and cannot be undone.",
             ),
         ]
 
@@ -904,13 +902,21 @@ class WorkspacesTab(ActionTabBase):
 
         # Checking origin hits the network, so filter to existing remote branches
         # off the UI thread, then resume on the UI thread to show the picker.
-        self.progress.show_repos([])
-        self.progress.show_completion("Checking remote branches\u2026")
+        self.progress.show_repos(
+            [(name, branch) for name, _path, branch in active], with_status=True
+        )
 
         def _work():
-            flags = run_in_parallel(
-                active, lambda item: remote_branch_exists(item[1], item[2])
-            )
+            def _check(item):
+                name, path, branch = item
+                self.after(0, self.progress.status, name, "in-progress")
+                present = remote_branch_exists(path, branch)
+                state = "done" if present else "skipped"
+                tooltip = None if present else "Remote branch not found"
+                self.after(0, self.progress.status, name, state, tooltip)
+                return present
+
+            flags = run_in_parallel(active, _check)
             existing = [
                 (name, branch, path)
                 for (name, path, branch), present in zip(active, flags)
@@ -924,21 +930,26 @@ class WorkspacesTab(ActionTabBase):
         """Show the branch picker once existing remote branches are known."""
         self.progress.clear_completion()
         if not existing:
-            self.errors.add(
-                "none of this workspace's feature branches exist on origin"
-            )
+            self.errors.add("No remote branches found.", info=True)
             return
 
         selected = ask_branches_to_delete(self, existing)
+        if selected is None:
+            return
         if not selected:
+            self.errors.add("No remote branches selected for deletion.", info=True)
             return
 
-        repos = [(name, path) for name, _branch, path in selected]
-        branches = {name: branch for name, branch, path in selected}
+        repos = [(name, path) for name, _branch, path in existing]
+        branches = {name: branch for name, branch, _path in existing}
+        selected_names = {name for name, _branch, _path in selected}
         self.run_repo_action(
             repos,
             lambda n, p: delete_remote_branch(n, p, branches[n]),
             "Remote branches deleted.",
+            skip_fn=lambda n, _p: (
+                False if n in selected_names else "Kept on origin"
+            ),
             parallel=True,
         )
 

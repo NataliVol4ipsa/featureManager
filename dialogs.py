@@ -1714,11 +1714,11 @@ def edit_branch_overrides(parent, workspace_name, entries):
     name_entry.pack(side="left", fill="x", expand=True)
     name_entry.focus_set()
 
-    # A red trash glyph reused from the "Delete remote branches" action icon so
-    # the button matches the rest of the app; falls back to a unicode wastebasket.
-    icon_set = (icons.ACTION_ICON_DARK if theme.load_dark_preference()
-                else icons.ACTION_ICON_LIGHT)
-    trash_b64 = icon_set.get("Delete remote branches")
+    # Repository removal uses its own red trash asset; the remote-branch cleanup
+    # toolbar action has a separate yellow branch icon.
+    icon_set = (icons.MISC_ICON_DARK if theme.load_dark_preference()
+                else icons.MISC_ICON_LIGHT)
+    trash_b64 = icon_set.get("remove-repository")
     trash_image = None
     if trash_b64:
         try:
@@ -2086,12 +2086,11 @@ def ask_deployment_status_stages(parent, preselected=None):
 
 
 def ask_branches_to_delete(parent, entries):
-    """Modal to pick which remote branches to delete (red cross, all off).
+    """Modal to confirm which remote branches to delete.
 
     *entries* is a list of ``(repo_name, branch, path)`` triples - only the
-    repositories that actually have the branch on origin. Every branch gets a
-    red-cross checkbox, all unticked by default (deleting a remote branch is
-    destructive, so nothing is selected without an explicit tick). Returns the
+    repositories that actually have the branch on origin. Every branch is
+    selected by default; users can untick branches they want to keep. Returns the
     list of selected ``(repo_name, branch, path)`` triples on confirm, or None
     if the dialog is cancelled.
     """
@@ -2102,8 +2101,8 @@ def ask_branches_to_delete(parent, entries):
 
     tk.Label(
         dialog,
-        text="Tick the remote branches to delete from origin. This is "
-             "destructive and cannot be undone. Nothing is selected by default.",
+           text="The selected remote branches will be deleted from origin. Untick "
+               "any branches you want to keep. This cannot be undone.",
         justify="left", wraplength=460,
     ).pack(padx=16, pady=(16, 8), anchor="w")
 
@@ -2113,7 +2112,7 @@ def ask_branches_to_delete(parent, entries):
 
     checks = []  # (repo_name, branch, path, var)
     for repo_name, branch, path in entries:
-        var = tk.BooleanVar(value=False)
+        var = tk.BooleanVar(value=True)
         row = ttk.Frame(box)
         row.pack(anchor="w", fill="x", pady=1)
         GlyphCheck(row, variable=var, mark="cross").pack(side="left")
@@ -2583,7 +2582,8 @@ def ask_deploy_selection(parent, entries, environment_label):
     return result["value"]
 
 
-def ask_pipeline_parameters(parent, service_name, params, context_label=""):
+def ask_pipeline_parameters(parent, service_name, params, context_label="",
+                            decision_index=None, decision_count=None):
     """Modal to configure a pipeline's run parameters before it is queued.
 
     Shown for a service whose pipeline declares custom (non-standard) flags. It
@@ -2594,7 +2594,10 @@ def ask_pipeline_parameters(parent, service_name, params, context_label=""):
     default, or the previous run's value for a re-run). Boolean parameters get a
     checkbox; anything else a text field. Returns a ``{name: value}`` dict on
     confirm (booleans as bool, other types as their string), or ``None`` if
-    cancelled.
+    cancelled. When *decision_index* and *decision_count* are supplied, the
+    dialog acts as one step in a repository sequence: it shows the position,
+    offers Previous after the first step, and returns ``(action, values)`` where
+    action is ``"next"`` or ``"previous"``.
     """
     dialog = _new_modal(parent, "ask_pipeline_parameters")
     dialog.title(f"Run pipeline - {service_name}")
@@ -2651,11 +2654,21 @@ def ask_pipeline_parameters(parent, service_name, params, context_label=""):
 
     result = {"value": None}
 
-    def _ok():
-        collected = {}
+    def _collected():
+        values = {}
         for name, ptype, var in rows:
-            collected[name] = bool(var.get()) if ptype == "boolean" else var.get()
-        result["value"] = collected
+            values[name] = bool(var.get()) if ptype == "boolean" else var.get()
+        return values
+
+    def _ok():
+        values = _collected()
+        result["value"] = (
+            ("next", values) if decision_count is not None else values
+        )
+        dialog.destroy()
+
+    def _previous():
+        result["value"] = ("previous", _collected())
         dialog.destroy()
 
     def _cancel():
@@ -2663,9 +2676,24 @@ def ask_pipeline_parameters(parent, service_name, params, context_label=""):
         dialog.destroy()
 
     bar = ttk.Frame(dialog)
-    bar.pack(padx=16, pady=12)
-    ttk.Button(bar, text="Run pipeline", command=_ok).pack(side="left", padx=4)
+    bar.pack(padx=16, pady=12, fill="x")
+    if decision_count is not None:
+        ttk.Button(
+            bar, text="Previous", command=_previous,
+            state=("normal" if decision_index and decision_index > 1 else "disabled"),
+        ).pack(side="left", padx=4)
+    primary_label = (
+        "Next" if decision_count is not None and decision_index < decision_count
+        else "Run pipelines" if decision_count is not None
+        else "Run pipeline"
+    )
+    ttk.Button(bar, text=primary_label, command=_ok).pack(side="left", padx=4)
     ttk.Button(bar, text="Cancel", command=_cancel).pack(side="left", padx=4)
+    if decision_count is not None:
+        ttk.Label(
+            bar, text=f"{decision_index} / {decision_count} repositories",
+            foreground=theme.FG_MUTED,
+        ).pack(side="right", padx=4)
 
     dialog.protocol("WM_DELETE_WINDOW", _cancel)
     _center_over_parent(dialog, parent)

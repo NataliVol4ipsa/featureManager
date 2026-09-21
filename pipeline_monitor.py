@@ -1119,10 +1119,14 @@ class PipelineMonitorWindow(tk.Toplevel):
             environment=row.get("environment"),
             visible_stages=row.get("configured_stages"),
         )
-        if total and total > 0:
-            label.configure(text="~" + pipeline_estimates.fmt_mmss(total))
-        else:
+        if total is None:
             label.configure(text="")
+        elif total <= 0 and not self._row_is_complete(repo):
+            label.configure(text="00:00")
+        elif total <= 0:
+            label.configure(text="")
+        else:
+            label.configure(text="~" + pipeline_estimates.fmt_mmss(total))
 
     def _tick_estimates(self):
         """Re-render the estimated time-left columns once a second."""

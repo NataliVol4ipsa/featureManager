@@ -41,7 +41,7 @@ const MAP = {
   "git-pull-request": "Create pull request",
   "link": "Copy PR links",
   "git-merge": "Complete pull request",
-  "trash-2": "Delete remote branches",
+  "git-branch-minus": "Delete remote branches",
   "package": "Bump NuGet packages (public)",
   "boxes": "Bump all NuGet packages",
   "package-check": "Restore NuGet packages",
@@ -67,7 +67,7 @@ grp("blue", [
 grp("red", [
   "Rebase current branch on master", "Commit all changes",
   "Git push", "Create pull request", "Copy PR links",
-  "Complete pull request", "Delete remote branches",
+  "Complete pull request",
 ]);
 grp("brown", [
   "Bump NuGet packages (public)", "Bump NuGet packages (private)",
@@ -76,13 +76,19 @@ grp("brown", [
 grp("green", ["Run dev pipelines", "Run acc pipelines", "View merged master pipelines", "Redeploy latest master commit"]);
 grp("yellow", [
   "Open repositories (master)", "Open remote branches", "Open pull requests",
-  "View deployment status",
+  "View deployment status", "Delete remote branches",
 ]);
 
 // Non-action ("misc") icons keyed by a stable name, each with its own colour.
 // Used outside the toolbar - e.g. the pipeline monitor's "previous run" marker.
-const MISC = { "undo-2": "previous-run" };
-const MISC_COLOR = { "previous-run": "gray" };
+const MISC = {
+  "undo-2": "previous-run",
+  "trash-2": "remove-repository",
+};
+const MISC_COLOR = {
+  "previous-run": "gray",
+  "remove-repository": "red",
+};
 
 function wrap(inner, color) {
   return (

@@ -9,7 +9,7 @@ There are two theme-specific sets: ACTION_ICON_DARK and ACTION_ICON_LIGHT.
 toolbar._image_for() picks one via theme.load_dark_preference(). The icons are
 Lucide (https://lucide.dev, ISC licence - see licenses/lucide-LICENSE.txt),
 rasterised to 18px PNG, recoloured per action group (blue=workspace/branch,
-red=git, brown=packages, green=pipelines, yellow=open); the light set uses
+red=git, brown=packages, green=pipelines, yellow=open/cleanup); the light set uses
 darker/more saturated tones so they read on the light toolbar. The private-feed
 bump is a package+padlock composite. The VS Code and Git Bash entries are the
 products' own logos (shared by both sets). MISC_ICON_DARK / MISC_ICON_LIGHT hold
@@ -153,14 +153,14 @@ ACTION_ICON_DARK = {
         "A20wbyXQ/ekYigqVZM8GhbbfhBkJob/wDjL15ROE2a1LAAAAAElFTkSuQmCC"
     ),
     'Delete remote branches': (
-        "iVBORw0KGgoAAAANSUhEUgAAABIAAAASCAYAAABWzo5XAAABaUlEQVR4nO2UTUoDQRCFqyoiAQOa"
-        "hTLZuXCdzBEMieAyN1BPYA4gOIIH0BMYb5ClkAT1BE6yFnSXwY1ZRAhiunzT2qODcSTgMh809aaa"
-        "fl39N0wZPO34PhOvQlrWO3e3CDNhtB8M6/42q14Q6SalGYlIdaMThtApZhvVyi1U0kDbN0wjpCww"
-        "b8O85fUGTXymsEbPDX/t7YUryrTFrJGZ6inSJCypAUbNGQJJjo9U2WOl+6UV7Rfb4cgaDevlAMlj"
-        "yLnB5Cel7iCwRnFFkzH5rOZahS6Zc1dIkxqNEBJY2EMg1ekuG9pTlmq+QGFSkSOqldXNQBm4FWCv"
-        "kvGJiPluFFf5OjaHywU5Rxc5Hc8+l9HHFcBSUT66yOlSN7xZGP2zUXxqk7Fp5gtib7PTc58aZfCn"
-        "0bBWeUTiIScSUAZTYwIiKnq9vo9owbgvorrfxP0P8AiSf9BvqMhBqRO26JOUkSPeaMrAvS/IhHdg"
-        "zRoiy4P3EQAAAABJRU5ErkJggg=="
+        "iVBORw0KGgoAAAANSUhEUgAAABIAAAASCAYAAABWzo5XAAABiElEQVR4nK2SQU7CQBSG/2EFbRcc"
+        "gZ6AegM8AXoDEuNaTFwJxBpAFy6QvYlwAzkBHAFOUI6gCaVu6PjPlDatUNJEv2Qyj8frN6/TJ/BP"
+        "ZETSG1W32N4YMMbCvv1k6gDfGzT5mCMh15bdnTKlEVwJgddvhBDzEuR5xe4tkCI6xJ8zdLhilqbd"
+        "PeNeXLRdP91JGb5Q+WjAeg3gtyQwAkqXpn3/cVIUeM+1EOGIr9FgYZUlYAcMVa36b+cpsWn3XJ2M"
+        "SYskSvUQ0oXuWkyElBajKwHRrsCYqrukxD3ZEcMZV5NrZsBsqYvf39ECQJ0rZsUOHe48I0VKpJix"
+        "6IJ7QiQLGsCOX63Er9aZYM9RkQS+TJg11QnThcgRiTFPazNVmKxoPeyEUg4gxJtZ61wzVRgtit49"
+        "f9iKoEUbb9gSkO9UHh02lujDvhHUGWYoo7JSd6lFvtd36XxgB/r372EDiWtwQFSjH4w7yhs2kKij"
+        "jcMwQxnWMulIFfGOFsgZtiJokSKSHR+2IiSiv/IDHjTeE7hLOJ4AAAAASUVORK5CYII="
     ),
     'Bump NuGet packages (public)': (
         "iVBORw0KGgoAAAANSUhEUgAAABIAAAASCAYAAABWzo5XAAACGElEQVR4nLWUsW/TQBTG37MDSaSS"
@@ -625,14 +625,15 @@ ACTION_ICON_LIGHT = {
         "6IZzau1uFVNSQn/hA4EByBPBK0rEAAAAAElFTkSuQmCC"
     ),
     'Delete remote branches': (
-        "iVBORw0KGgoAAAANSUhEUgAAABIAAAASCAYAAABWzo5XAAABaUlEQVR4nO2UvUoDQRSFz8yqBBu1"
-        "S2khiWDhjmVikXSWvoH6BOYBBEfwAfQJjG9gaWdE3TaxEGIQtEyZSoK4M579G1yMi4plPlju3cuZ"
-        "s3f+VqCAbm3Nt164wDRm46Z/zTARwecL3c3VBow9A+wyPiMwgp1tquChx7cck43qlTYstuFhF1aO"
-        "WEow5oJD2ip4bPEtR2zUbfiLNhyve0asGIkhTHjMMj1kboAw5oQBkN6BNCiH0j4Jr3SvOr1RYlSr"
-        "aACHfP7CkQoGOjFiR3gf+2z9CgLnUnqXLHOZ7JDBIYUoM1AWbnHqO5CyiZlSz3WUwc4sQ/wFFECd"
-        "BmdAnRvvkggKnFHc5dvrPubmT1lDlkdfp07jx0bxEeBUo/Yj0lzd9jvUaUyN/tEo2bUWdyo5zWn+"
-        "611DAdRpFBtVX1h5tlJoFCCM1byJS+pu4CMlb1SvtmAjEdw/6Hvkngr6baTkjDLihS4ivV/MHB+I"
-        "vvcTRHkS0AAAAABJRU5ErkJggg=="
+        "iVBORw0KGgoAAAANSUhEUgAAABIAAAASCAYAAABWzo5XAAABnklEQVR4nK2SQU7CUBCGZ0iRYiDh"
+        "CNwAvAGshBV6AxLjWkzcAAsxUTFxgexNhBvoClnBEeAEcgQMGBCw4/8etKHakib6JS9vOp3+/d+8"
+        "YfonXEK9RiKxmK/O9kyjmT0fj5H6xetdvMAiaRIeHVYmbaQ0jOXQqccyKOoJczZfnvZpC/WTz9my"
+        "hzCNZTPIVT4OsAcX6t7GL4SsexG+MveNB4gWiajBFDqGs+edQp16IsmyauBVhkgSBOBAf7N+t3wT"
+        "COer05pO2mwLMUuKLK6Rcs3UEuEYk3VCISpFIuG26qWI1HY6IuYXEimoPWIaRdX4TY/6RJTCshnC"
+        "YRo7eQspIJIrT48QOSixxewrY6lbC/EoX560aIOPEL9HokZSOUE6EN5CzE24KSEVGJdQtx6rooHX"
+        "xKHHXHlyilRgtJA6OxqJI3kPWxC0UKceL7JYT7hiz2FDrH+2nK22b0wTjhpD1cu10E2shrm5hIP1"
+        "849hI2DXIHRh12w+XDvyGzaUaEfz+SqN0IVpGgPHkSrCcfrkM2xB0EIKJeY3bEFwhP7KN1id/xPZ"
+        "eowfAAAAAElFTkSuQmCC"
     ),
     'Bump NuGet packages (public)': (
         "iVBORw0KGgoAAAANSUhEUgAAABIAAAASCAYAAABWzo5XAAACEklEQVR4nLWTQWsTURDH/7NkQxFJ"
@@ -973,6 +974,16 @@ MISC_ICON_DARK = {
         "YFRHERQ98XE9b5lZEObZcW69zfCr+SwEzvMZs8TS7KK2JGw6UGpNJuR23PFY0dV1Ld1S6pTxB4Uk"
         "9xRDHbrM9v5Lk0UtdcbYhpcDbr6+qpfjTmL4bT7MTfQN+PiRE9gLG9UAAAAASUVORK5CYII="
     ),
+    'remove-repository': (
+        "iVBORw0KGgoAAAANSUhEUgAAABIAAAASCAYAAABWzo5XAAABaUlEQVR4nO2UTUoDQRCFqyoiAQOa"
+        "hTLZuXCdzBEMieAyN1BPYA4gOIIH0BMYb5ClkAT1BE6yFnSXwY1ZRAhiunzT2qODcSTgMh809aaa"
+        "fl39N0wZPO34PhOvQlrWO3e3CDNhtB8M6/42q14Q6SalGYlIdaMThtApZhvVyi1U0kDbN0wjpCww"
+        "b8O85fUGTXymsEbPDX/t7YUryrTFrJGZ6inSJCypAUbNGQJJjo9U2WOl+6UV7Rfb4cgaDevlAMlj"
+        "yLnB5Cel7iCwRnFFkzH5rOZahS6Zc1dIkxqNEBJY2EMg1ekuG9pTlmq+QGFSkSOqldXNQBm4FWCv"
+        "kvGJiPluFFf5OjaHywU5Rxc5Hc8+l9HHFcBSUT66yOlSN7xZGP2zUXxqk7Fp5gtib7PTc58aZfCn"
+        "0bBWeUTiIScSUAZTYwIiKnq9vo9owbgvorrfxP0P8AiSf9BvqMhBqRO26JOUkSPeaMrAvS/IhHdg"
+        "zRoiy4P3EQAAAABJRU5ErkJggg=="
+    ),
 }
 
 MISC_ICON_LIGHT = {
@@ -984,5 +995,15 @@ MISC_ICON_LIGHT = {
         "2OWaxuPK2pdn3oMOCMyIQtaRTc5zZD7Q0+i33HsCKVFIQhY3zmNXas+YPOy13CJeCfVinKoq0AEF"
         "i1YUAtELzmzQb7sOgaWiLJwbdTr+Nq9CyLteS2tEm4siCXfwCY+sQ3k+XXGmyC6rIibUUUYIzmM7"
         "BVQDS0on+S+tFgmjUEYwBdiOv5cjb7qSKZmiTdia6Ae/RpUTJqyDwAAAAABJRU5ErkJggg=="
+    ),
+    'remove-repository': (
+        "iVBORw0KGgoAAAANSUhEUgAAABIAAAASCAYAAABWzo5XAAABaUlEQVR4nO2UvUoDQRSFz8yqBBu1"
+        "S2khiWDhjmVikXSWvoH6BOYBBEfwAfQJjG9gaWdE3TaxEGIQtEyZSoK4M579G1yMi4plPlju3cuZ"
+        "s3f+VqCAbm3Nt164wDRm46Z/zTARwecL3c3VBow9A+wyPiMwgp1tquChx7cck43qlTYstuFhF1aO"
+        "WEow5oJD2ip4bPEtR2zUbfiLNhyve0asGIkhTHjMMj1kboAw5oQBkN6BNCiH0j4Jr3SvOr1RYlSr"
+        "aACHfP7CkQoGOjFiR3gf+2z9CgLnUnqXLHOZ7JDBIYUoM1AWbnHqO5CyiZlSz3WUwc4sQ/wFFECd"
+        "BmdAnRvvkggKnFHc5dvrPubmT1lDlkdfp07jx0bxEeBUo/Yj0lzd9jvUaUyN/tEo2bUWdyo5zWn+"
+        "611DAdRpFBtVX1h5tlJoFCCM1byJS+pu4CMlb1SvtmAjEdw/6Hvkngr6baTkjDLihS4ivV/MHB+I"
+        "vvcTRHkS0AAAAABJRU5ErkJggg=="
     ),
 }

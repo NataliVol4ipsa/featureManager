@@ -998,20 +998,31 @@ class ActionTabBase(ttk.Frame):
         # let the user configure the run parameters (all but the environment
         # deployment toggles), pre-filled from the template. Cancelling any of
         # these dialogs aborts the whole batch.
+        custom_parameter_repos = [
+            entry for entry in to_run
+            if has_custom_pipeline_parameters(entry[1])
+        ]
         extra_params_by_name = {}
-        for name, path, _branch in to_run:
-            if not has_custom_pipeline_parameters(path):
-                continue
+        decision_index = 0
+        while decision_index < len(custom_parameter_repos):
+            name, path, _branch = custom_parameter_repos[decision_index]
             params = configurable_pipeline_parameters(path)
+            previous_selection = extra_params_by_name.get(name, {})
             for param in params:
-                param["value"] = param["default"]
-            configured = ask_pipeline_parameters(
-                self, name, params, context_label=env_label
+                param["value"] = previous_selection.get(
+                    param["name"], param["default"]
+                )
+            decision = ask_pipeline_parameters(
+                self, name, params, context_label=env_label,
+                decision_index=decision_index + 1,
+                decision_count=len(custom_parameter_repos),
             )
-            if configured is None:
+            if decision is None:
                 self.progress.show_repos([])
                 return
+            action, configured = decision
             extra_params_by_name[name] = configured
+            decision_index += -1 if action == "previous" else 1
 
         urls = {}
         run_infos = {}

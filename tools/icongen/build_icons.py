@@ -48,7 +48,7 @@ There are two theme-specific sets: ACTION_ICON_DARK and ACTION_ICON_LIGHT.
 toolbar._image_for() picks one via theme.load_dark_preference(). The icons are
 Lucide (https://lucide.dev, ISC licence - see licenses/lucide-LICENSE.txt),
 rasterised to 18px PNG, recoloured per action group (blue=workspace/branch,
-red=git, brown=packages, green=pipelines, yellow=open); the light set uses
+red=git, brown=packages, green=pipelines, yellow=open/cleanup); the light set uses
 darker/more saturated tones so they read on the light toolbar. The private-feed
 bump is a package+padlock composite. The VS Code and Git Bash entries are the
 products' own logos (shared by both sets). MISC_ICON_DARK / MISC_ICON_LIGHT hold
