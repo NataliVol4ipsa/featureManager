@@ -1601,11 +1601,6 @@ def get_pipeline_stage_statuses(run_info):
         for key, record in stage_records.items()
     }
 
-    # Full granular node tree (stage -> phase -> job -> task) of this live run,
-    # keyed identically to the cached profile so the estimator can match each
-    # running/pending node to its historical average without extra API calls.
-    _run_start_iso, live_nodes = _walk_timeline_nodes(timeline)
-
     # A stage that never appears in this run's timeline is not part of its
     # pipeline (e.g. a master run with no Development deployment). Once Build
     # has finished, treat any still-absent stage as skipped so the monitor
@@ -1716,7 +1711,6 @@ def get_pipeline_stage_statuses(run_info):
         "stage_identifiers": stage_identifiers,
         "stage_progress": stage_progress,
         "stage_times": stage_times,
-        "nodes": live_nodes,
         "approval_target": approval_target,
         "autoapproved": autoapproved,
         "autoapproved_target": autoapproved_target,

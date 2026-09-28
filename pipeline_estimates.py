@@ -255,7 +255,7 @@ def stage_time_left(avg_seconds, state, start_iso, now=None):
 
 
 # --------------------------------------------------------------------------- #
-# Granular estimation (matches a live run's actual stage/job/task structure)
+# Estimation (per-stage wall-clock average, matched to the live run's stages)
 # --------------------------------------------------------------------------- #
 
 def _elapsed_seconds(start_iso, now):
@@ -266,106 +266,14 @@ def _elapsed_seconds(start_iso, now):
     return (now - start).total_seconds()
 
 
-def _stage_jobs(nodes, stage_key):
-    """Return {key: node} for every job the *stage* historically ran."""
-    return {
-        key: node for key, node in nodes.items()
-        if node.get("stage") == stage_key and node.get("type") == "job"
-    }
-
-
-def _job_tasks(nodes, job_key):
-    """Return {key: node} for every task the *job* historically ran, in order."""
-    tasks = {
-        key: node for key, node in nodes.items()
-        if node.get("parent") == job_key and node.get("type") == "task"
-    }
-    return dict(sorted(tasks.items(), key=lambda kv: kv[1].get("order") or 0))
-
-
-def _running_job_remaining(job_key, job, nodes, live_nodes, job_live, now):
-    """Estimate seconds left in a running job from its (sequential) tasks.
-
-    Tasks inside a job run one after another, so the remaining time is the sum
-    of each unfinished task's remaining time. A task that has not appeared in
-    the live timeline yet is still going to run, so it counts its full average;
-    a task the run skipped (present but skipped) counts zero. Falls back to the
-    job's own wall-clock average minus elapsed when no task profile exists.
-    """
-    tasks = _job_tasks(nodes, job_key)
-    if not tasks:
-        elapsed = _elapsed_seconds((job_live or {}).get("start"), now)
-        avg = job.get("avg") or 0.0
-        return max(0.0, avg - elapsed) if elapsed is not None else avg
-
-    total = 0.0
-    for task_key, task in tasks.items():
-        live = (live_nodes or {}).get(task_key)
-        state = (live or {}).get("state")
-        avg = task.get("avg") or 0.0
-        if state in _DONE_STATES:
-            continue
-        if state == "running":
-            elapsed = _elapsed_seconds((live or {}).get("start"), now)
-            total += max(0.0, avg - elapsed) if elapsed is not None else avg
-        else:
-            # Waiting, or not yet materialised in the timeline: it will still run.
-            total += avg
-    return total
-
-
-def _running_stage_remaining(stage_key, profile, live_nodes, stage_times, now):
-    """Estimate seconds left in a running stage from its jobs, or None.
-
-    Jobs inside a stage can run in parallel (each on its own agent), so the
-    stage finishes when its last job finishes - the maximum projected finish
-    over the jobs, not their sum. Each job is placed at its historical start
-    offset (relative to the stage start), which lets sequential jobs stack while
-    concurrent jobs overlap. A job the run dropped (absent from the live
-    timeline) contributes nothing, so skipping jobs via pipeline parameters is
-    reflected automatically. Returns None (fall back to the stage average) when
-    the stage has no job profile or has not actually started.
-    """
-    nodes = profile.get("nodes") or {}
-    jobs = _stage_jobs(nodes, stage_key)
-    stage_start = pipelines._parse_iso_utc((stage_times.get(stage_key) or {}).get("start"))
-    if not jobs or stage_start is None:
-        return None
-    stage_elapsed = (now - stage_start).total_seconds()
-    stage_offset = (nodes.get(stage_key) or {}).get("avg_offset", 0.0)
-
-    present = 0
-    max_finish = 0.0  # projected finish, relative to the stage start
-    for job_key, job in jobs.items():
-        live = (live_nodes or {}).get(job_key)
-        if live is None:
-            # The job is not part of this run (skipped via parameters): ignore.
-            continue
-        present += 1
-        state = live.get("state")
-        if state in _DONE_STATES:
-            continue
-        # Historical start offset of the job relative to the stage start.
-        job_offset = max(0.0, (job.get("avg_offset", stage_offset)) - stage_offset)
-        if state == "running":
-            finish = stage_elapsed + _running_job_remaining(
-                job_key, job, nodes, live_nodes, live, now
-            )
-        else:
-            # Waiting job: it starts at its historical offset, or now if we are
-            # already past that offset, then runs for its average.
-            finish = max(job_offset, stage_elapsed) + (job.get("avg") or 0.0)
-        if finish > max_finish:
-            max_finish = finish
-
-    if present == 0:
-        # No live job data yet: let the caller use the stage-level average.
-        return None
-    return max(0.0, max_finish - stage_elapsed)
-
-
 def _stage_avg_remaining(stage_key, stage_avgs, stage_times, now):
-    """Return a stage's remaining time from its wall-clock average alone."""
+    """Return a stage's remaining time from its wall-clock average.
+
+    A running stage subtracts its elapsed time from the historical average
+    (clamped at zero); anything else that has not completed counts the full
+    average. This is the single source of truth for a stage's time left, so the
+    monitor's per-stage circle and this run total always agree.
+    """
     avg = stage_avgs.get(stage_key)
     if avg is None:
         return 0.0
@@ -373,17 +281,18 @@ def _stage_avg_remaining(stage_key, stage_avgs, stage_times, now):
     return max(0.0, avg - elapsed) if elapsed is not None else avg
 
 
-def total_time_left(profile, stages_state, stage_times, live_nodes=None,
+def total_time_left(profile, stages_state, stage_times,
                     environment=None, visible_stages=None, now=None):
     """Return estimated total seconds left for a run, excluding Production.
 
-    The estimate is built from the run's *actual* structure: each stage's
-    remaining time is refined by its live jobs and tasks (granular), and only
-    the stages the run actually includes are combined. A Development run is
-    Build+Development, an Acceptance run Build+Acceptance, and a master run is
-    Build+max(dev, acc) when Acceptance overlaps Development, else
-    Build+Development+Acceptance. Stages or jobs skipped via pipeline parameters
-    simply do not appear in the live timeline, so they add nothing.
+    Only the stages the run actually includes are combined, so stages skipped
+    via pipeline parameters (absent from the live timeline) add nothing. A
+    Development run is Build+Development, an Acceptance run Build+Acceptance, and
+    a master run is Build+max(dev, acc) when Acceptance overlaps Development,
+    else Build+Development+Acceptance. Each stage's remaining time comes from
+    :func:`_stage_avg_remaining`, the same value the monitor's circle shows, so
+    a run with a single remaining stage reports the identical time left in both
+    places.
     """
     if not profile:
         return None
@@ -397,11 +306,6 @@ def total_time_left(profile, stages_state, stage_times, live_nodes=None,
         if state in _DONE_STATES:
             return 0.0
         if state == "running":
-            refined = _running_stage_remaining(
-                key, profile, live_nodes, stage_times, now
-            )
-            if refined is not None:
-                return refined
             return _stage_avg_remaining(key, stage_avgs, stage_times, now)
         # Waiting / approval / ready / not-yet-started: full historical average.
         return stage_avgs.get(key) or 0.0

@@ -2236,6 +2236,80 @@ def ask_solutions_to_open(parent, entries):
     return result["value"]
 
 
+def ask_repositories_to_cleanup(parent):
+    """Modal to choose which repositories to clean (wipe their bin/obj folders).
+
+    Lists every repository - service folders first, then the shared NuGet
+    folders - each with a checkbox ticked by default. The list shows about 15
+    rows and scrolls beyond that so the dialog stays within the screen. Returns
+    the list of selected ``(name, path)`` pairs on confirm, or ``None`` if
+    cancelled.
+    """
+    names, paths = _addable_repositories()
+    entries = [(name, paths[name]) for name in names]
+
+    dialog = _new_modal(parent, "ask_repositories_to_cleanup")
+    dialog.title("Cleanup repositories")
+    dialog.transient(parent.winfo_toplevel())
+    dialog.resizable(False, False)
+
+    tk.Label(
+        dialog,
+        text="Select the repositories to clean. The content of every bin and "
+             "obj build folder in each selected repository will be deleted.",
+        justify="left", wraplength=460,
+    ).pack(padx=16, pady=(16, 8), anchor="w")
+
+    scroll = _ScrollableList(dialog, threshold=15)
+    scroll.pack(padx=16, fill="x")
+    box = scroll.inner
+
+    checks = []  # (name, path, var)
+    for name, path in entries:
+        var = tk.BooleanVar(value=True)
+        row = ttk.Frame(box)
+        row.pack(anchor="w", fill="x", pady=1)
+        GlyphCheck(row, variable=var, mark="check").pack(side="left")
+        label = tk.Label(row, text=name, cursor="hand2")
+        label.pack(side="left", padx=(4, 0))
+        label.bind("<Button-1>", lambda _e, v=var: v.set(not v.get()))
+        checks.append((name, path, var))
+    scroll.finalize(len(checks))
+
+    def _set_all(value):
+        for _name, _path, var in checks:
+            var.set(value)
+
+    toggle_bar = ttk.Frame(dialog)
+    toggle_bar.pack(padx=16, pady=(8, 0), anchor="w")
+    ttk.Button(toggle_bar, text="Select all",
+               command=lambda: _set_all(True)).pack(side="left", padx=(0, 4))
+    ttk.Button(toggle_bar, text="Select none",
+               command=lambda: _set_all(False)).pack(side="left", padx=4)
+
+    result = {"value": None}
+
+    def _ok():
+        result["value"] = [(name, path) for name, path, var in checks
+                           if var.get()]
+        dialog.destroy()
+
+    def _cancel():
+        result["value"] = None
+        dialog.destroy()
+
+    bar = ttk.Frame(dialog)
+    bar.pack(padx=16, pady=12)
+    ttk.Button(bar, text="OK", command=_ok).pack(side="left", padx=4)
+    ttk.Button(bar, text="Cancel", command=_cancel).pack(side="left", padx=4)
+
+    dialog.protocol("WM_DELETE_WINDOW", _cancel)
+    _center_over_parent(dialog, parent)
+    dialog.grab_set()
+    parent.wait_window(dialog)
+    return result["value"]
+
+
 def ask_packages_to_bump(parent, entries, feed_label):
     """Modal to choose which package updates to apply.
 

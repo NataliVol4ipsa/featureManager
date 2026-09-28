@@ -24,9 +24,11 @@ from workspaces_tab import WorkspacesTab
 from dialogs import (
     edit_synonyms, edit_pipeline_ids, edit_ado_identity_cache,
     edit_nuget_feed_cache, ask_pipeline_poll_seconds, confirm_force_close,
+    show_report, ask_repositories_to_cleanup,
 )
 from toolbar import build_action_toolbar
 import deployment_status
+import gitutils
 import packages
 import pipeline_estimates
 import pipeline_history
@@ -85,6 +87,12 @@ def main():
     history_item = tk.Label(menubar, text="Pipeline history", padx=10, pady=3,
                             background=theme.BG_PANEL, foreground=theme.FG)
     history_item.pack(side="left")
+
+    # "Tools" opens a dropdown of one-off utilities (e.g. generate a clone
+    # script for every local repository).
+    tools_item = tk.Label(menubar, text="Tools", padx=10, pady=3,
+                          background=theme.BG_PANEL, foreground=theme.FG)
+    tools_item.pack(side="left")
 
     # Text button on the far right that re-execs the process (picks up code
     # changes). Packed into the existing menu bar so nothing else shifts.
@@ -248,6 +256,107 @@ def main():
     )
     history_item.bind(
         "<Leave>", lambda _e: history_item.config(background=theme.BG_PANEL)
+    )
+
+    def _generate_clone_script():
+        """Build the clone-all script off the UI thread, then show it."""
+        _log_estimate("Generating clone script for all local repositories\u2026")
+
+        def _worker():
+            script = gitutils.generate_clone_script()
+            root.after(
+                0,
+                lambda: show_report(app, script, title="Clone all repositories"),
+            )
+
+        threading.Thread(target=_worker, daemon=True).start()
+
+    def _cleanup_repositories():
+        """Wipe bin/obj folders of the repositories the user selects."""
+        selected = ask_repositories_to_cleanup(app)
+        if not selected:
+            return
+        _log_estimate(
+            f"Cleaning bin/obj folders of {len(selected)} repositor"
+            f"{'y' if len(selected) == 1 else 'ies'}\u2026"
+        )
+
+        def _worker():
+            lines = []
+            total_removed = 0
+            for name, path in selected:
+                removed, errors = gitutils.cleanup_bin_obj(path)
+                total_removed += removed
+                if errors:
+                    lines.append(
+                        f"{name}: removed {removed} folder(s), "
+                        f"{len(errors)} error(s)"
+                    )
+                    lines.extend(f"    ! {folder}: {reason}"
+                                 for folder, reason in errors)
+                else:
+                    lines.append(f"{name}: removed {removed} folder(s)")
+            summary = (
+                f"Deleted {total_removed} bin/obj folder(s) across "
+                f"{len(selected)} repositor"
+                f"{'y' if len(selected) == 1 else 'ies'}.\n\n"
+            )
+            report = summary + "\n".join(lines) + "\n"
+            root.after(
+                0,
+                lambda: show_report(app, report, title="Cleanup repositories"),
+            )
+
+        threading.Thread(target=_worker, daemon=True).start()
+
+    def _tools_entries():
+        # Flat list of (label, command) utilities. Add new tools here.
+        return [
+            ("Generate clone script\u2026", _generate_clone_script),
+            ("Cleanup repositories\u2026", _cleanup_repositories),
+        ]
+
+    def _post_tools(_event=None):
+        popup = tk.Toplevel(root)
+        popup.overrideredirect(True)  # no OS title bar / border
+        popup.configure(background=theme.BORDER)  # shows as a 1px border
+        popup.geometry(
+            f"+{tools_item.winfo_rootx()}"
+            f"+{tools_item.winfo_rooty() + tools_item.winfo_height()}"
+        )
+        inner = tk.Frame(popup, background=theme.BG_PANEL)
+        inner.pack(padx=1, pady=1)
+
+        def _dismiss(_e=None):
+            if popup.winfo_exists():
+                popup.destroy()
+
+        for label, command in _tools_entries():
+            entry = tk.Label(
+                inner, text="     " + label, anchor="w",
+                background=theme.BG_PANEL, foreground=theme.FG, padx=12, pady=5,
+            )
+            entry.pack(fill="x")
+            entry.bind("<Enter>",
+                       lambda _e, w=entry: w.config(background=theme.ACCENT))
+            entry.bind("<Leave>",
+                       lambda _e, w=entry: w.config(background=theme.BG_PANEL))
+            entry.bind("<Button-1>",
+                       lambda _e, c=command: (_dismiss(), c()))
+        popup.update_idletasks()  # re-fit the borderless window to content
+
+        # A click anywhere else (grabbed) or losing focus closes the menu.
+        popup.bind("<Escape>", _dismiss)
+        popup.bind("<FocusOut>", _dismiss)
+        popup.grab_set()
+        popup.focus_set()
+
+    tools_item.bind("<Button-1>", _post_tools)
+    tools_item.bind(
+        "<Enter>", lambda _e: tools_item.config(background=theme.BG_RAISED)
+    )
+    tools_item.bind(
+        "<Leave>", lambda _e: tools_item.config(background=theme.BG_PANEL)
     )
 
     restart_item.bind("<Button-1>", lambda _e: _relaunch())

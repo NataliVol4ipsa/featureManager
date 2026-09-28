@@ -594,7 +594,6 @@ class PipelineMonitorWindow(tk.Toplevel):
                 "stage_progress": {},
                 "running_hitboxes": [],
                 "stage_times": {},
-                "nodes": {},
                 "estimate": estimate,
                 "estimate_label": estimate_label,
                 "environment": info.get("environment"),
@@ -1035,14 +1034,15 @@ class PipelineMonitorWindow(tk.Toplevel):
             x = start_x + slot * gap
             state = stages.get(key, "waiting")
             style = _STAGE_STYLE.get(state, _STAGE_STYLE["waiting"])
-            # A running stage with known progress is drawn as a circular bar: a
-            # blue pie sweeping clockwise from 12 o'clock over a track, filling
-            # by the stage's completion percent. Everything else is a plain dot.
+            # A running stage is drawn as a circular bar: a blue pie sweeping
+            # clockwise from 12 o'clock over a track, filling by elapsed vs.
+            # estimated time (never reaching a full circle until the stage is
+            # actually done). Everything else is a plain dot.
             percent = None
             if state == "running":
-                percent = ((row.get("stage_progress") or {}).get(key) or {}).get(
-                    "percent"
-                )
+                fill = self._stage_time_fill(row, key)
+                if fill is not None:
+                    percent = fill["percent"]
             if state == "running" and percent is not None and percent < 100:
                 canvas.create_oval(
                     x - 10, y - 10, x + 10, y + 10,
@@ -1084,7 +1084,8 @@ class PipelineMonitorWindow(tk.Toplevel):
                     canvas.create_text(
                         x, y, text="\u21bb", fill="white", font=("", 13, "bold"),
                     )
-            # A running stage shows its current step + completion % on hover.
+            # A running stage shows its current step, estimated time and time
+            # left (or how far it is overdue) on hover.
             if state == "running":
                 running_hitboxes.append((key, x, y))
         row["retry_hitboxes"] = retry_hitboxes
@@ -1096,6 +1097,44 @@ class PipelineMonitorWindow(tk.Toplevel):
             if (px - cx) ** 2 + (py - cy) ** 2 <= 12 ** 2:
                 return key
         return None
+
+    def _stage_time_fill(self, row, key, now=None):
+        """Return the time-based fill for a running stage's circle, or None.
+
+        Uses the stage's historical average as a stable "estimated time" and
+        the elapsed wall-clock since the stage started. The circle is filled by
+        ``elapsed / estimated`` but capped below a full circle so it never reads
+        as complete while the stage is still running - even after the estimate
+        has been exceeded, in which case the stage is reported as overdue.
+        Returns ``{percent, estimated, left, overdue, overdue_by}`` or None when
+        no estimate or start time is available.
+        """
+        estimate = row.get("estimate")
+        if not estimate:
+            return None
+        estimated = (estimate.get("stages") or {}).get(key)
+        if not estimated or estimated <= 0:
+            return None
+        start = ((row.get("stage_times") or {}).get(key) or {}).get("start")
+        now = now or datetime.datetime.now(datetime.timezone.utc)
+        elapsed = pipeline_estimates._elapsed_seconds(start, now)
+        if elapsed is None:
+            return None
+        elapsed = max(0.0, elapsed)
+        percent = int(min(99, max(0, round(elapsed / estimated * 100))))
+        return {
+            "percent": percent,
+            "estimated": estimated,
+            "left": max(0.0, estimated - elapsed),
+            "overdue": elapsed > estimated,
+            "overdue_by": max(0.0, elapsed - estimated),
+        }
+
+    def _row_has_running_stage(self, row):
+        """Return True when any of the row's stages is currently running."""
+        return any(
+            value == "running" for value in (row.get("stages") or {}).values()
+        )
 
     def _update_estimate_label(self, repo):
         """Refresh a row's estimated total time-left column (excludes Production)."""
@@ -1117,7 +1156,6 @@ class PipelineMonitorWindow(tk.Toplevel):
             estimate,
             row.get("stages") or {},
             row.get("stage_times") or {},
-            row.get("nodes") or {},
             environment=row.get("environment"),
             visible_stages=row.get("configured_stages"),
         )
@@ -1136,6 +1174,11 @@ class PipelineMonitorWindow(tk.Toplevel):
             return
         for repo in list(self._rows):
             self._update_estimate_label(repo)
+            # Advance the time-based running-stage circle every second so its
+            # fill grows smoothly between polls instead of only when refreshed.
+            row = self._rows.get(repo)
+            if row and self._row_has_running_stage(row):
+                self._draw_row(repo)
         self.after(1000, self._tick_estimates)
 
     def _on_stage_motion(self, event, repo):
@@ -1185,24 +1228,25 @@ class PipelineMonitorWindow(tk.Toplevel):
         if not key:
             return
         progress = (row.get("stage_progress") or {}).get(key)
-        if not progress:
-            return
-        current = progress.get("current") or ""
-        percent = progress.get("percent")
-        text = f"{percent}% {current}".strip() if percent is not None else current
-        # Append the estimated time left for this stage (never for Production).
+        # The current step name still comes from the timeline; the completion is
+        # no longer step-count based - it is estimated time vs. time left.
+        current = (progress or {}).get("current") or ""
+        lines = []
+        if current:
+            lines.append(current)
         if self._estimates_enabled and key != "production":
-            estimate = row.get("estimate")
-            if estimate:
-                avg = (estimate.get("stages") or {}).get(key)
-                start = ((row.get("stage_times") or {}).get(key) or {}).get("start")
-                left = pipeline_estimates.stage_time_left(avg, "running", start)
-                if left is not None:
-                    extra = (
-                        "Est. time left: "
-                        + pipeline_estimates.fmt_mmss(left)
+            fill = self._stage_time_fill(row, key)
+            if fill is not None:
+                if fill["overdue"]:
+                    lines.append(
+                        "Overdue by "
+                        + pipeline_estimates.fmt_mmss(fill["overdue_by"])
                     )
-                    text = f"{text}\n{extra}" if text else extra
+                else:
+                    lines.append(
+                        "Time left: " + pipeline_estimates.fmt_mmss(fill["left"])
+                    )
+        text = "\n".join(lines)
         if not text:
             return
         canvas = row["graph"]
@@ -1479,9 +1523,6 @@ class PipelineMonitorWindow(tk.Toplevel):
             )
             self._rows[repo]["stage_times"] = (
                 payload.get("stage_times") or {}
-            )
-            self._rows[repo]["nodes"] = (
-                payload.get("nodes") or {}
             )
             self._poll_latest_timestamp = payload.get(
                 "updated_at", self._poll_latest_timestamp
