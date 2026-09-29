@@ -710,6 +710,28 @@ def remote_branch_exists(repo_path, branch):
     return ok and bool(out.strip())
 
 
+def checkout_branch(repo_path, branch):
+    """Check out *branch*, falling back to a new origin-tracking branch."""
+    if git_branch_exists(repo_path, branch):
+        return run_git(repo_path, ["checkout", branch])
+
+    ok, out = run_git(
+        repo_path,
+        ["fetch", "origin", f"refs/heads/{branch}:refs/remotes/origin/{branch}"],
+    )
+    if not ok:
+        return False, out
+    ok, out = run_git(repo_path, ["checkout", "-b", branch, f"origin/{branch}"])
+    if not ok:
+        return False, out
+    ok, out = run_git(repo_path, ["config", f"branch.{branch}.remote", "origin"])
+    if not ok:
+        return False, out
+    return run_git(
+        repo_path, ["config", f"branch.{branch}.merge", f"refs/heads/{branch}"]
+    )
+
+
 def remote_branch_head(repo_path, branch):
     """Return the commit sha at the tip of origin/*branch*, or '' on failure.
 

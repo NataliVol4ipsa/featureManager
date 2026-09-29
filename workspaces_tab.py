@@ -9,7 +9,7 @@ from tkinter import ttk
 from config import WORKSPACES_ROOT, REPOS_ROOT, NUGETS_ROOT
 from gitutils import (
     list_workspaces_detailed, read_workspace_repos,
-    run_git, is_git_repo, git_branch_exists,
+    run_git, is_git_repo, git_branch_exists, checkout_branch,
     save_uncommitted, has_savepos, restore_uncommitted,
     git_current_branch, create_feature_branch, rebase_on_master,
     open_in_vscode, list_solutions, open_solutions, get_nuget_folders,
@@ -203,7 +203,9 @@ class WorkspacesTab(ActionTabBase):
                 "feature branch (by default 'feature/<workspace>', or a per-repo "
                 "name set via 'Manage workspace branches'). Repos flagged as "
                 "skipped are still listed but left on their own branch. If a "
-                "repo's branch is missing it is marked skipped. Uncommitted "
+                "repo's branch exists only on origin, a local tracking branch "
+                "is created as a fallback; if it is missing locally and "
+                "remotely, the repo is marked skipped. Uncommitted "
                 "changes are handled per repository (commit, delete, or abort).",
             ),
             (
@@ -641,8 +643,11 @@ class WorkspacesTab(ActionTabBase):
                 return "ignore git (keeps its own branch)"
             if not is_git_repo(path):
                 return "not a git repository"
-            if not git_branch_exists(path, target):
-                return f"branch '{target}' does not exist"
+            if (
+                not git_branch_exists(path, target)
+                and not remote_branch_exists(path, target)
+            ):
+                return f"branch '{target}' does not exist locally or on origin"
             return None
 
         reasons = run_in_parallel(all_repos, _classify)
@@ -697,7 +702,7 @@ class WorkspacesTab(ActionTabBase):
             )
             if not ok:
                 return False, f"{name}: {out}"
-            ok, out = run_git(path, ["checkout", target])
+            ok, out = self._checkout_workspace_branch(name, path, target)
             if not ok:
                 return False, f"{name}: {out}"
             ok, out = run_git(path, ["stash", "pop"])
@@ -720,10 +725,25 @@ class WorkspacesTab(ActionTabBase):
             if not ok:
                 return False, f"{name}: {out}"
 
-        ok, out = run_git(path, ["checkout", target])
+        ok, out = self._checkout_workspace_branch(name, path, target)
         if not ok:
             return False, f"{name}: {out}"
         return True, ""
+
+    def _checkout_workspace_branch(self, name, path, target):
+        """Check out the target and report when the origin fallback was used."""
+        had_local_branch = git_branch_exists(path, target)
+        ok, out = checkout_branch(path, target)
+        if ok and not had_local_branch:
+            self.after(
+                0,
+                self.errors.add,
+                f"{name}: pulled remote branch '{target}' from origin and "
+                "created a local tracking branch.",
+                False,
+                True,
+            )
+        return ok, out
 
     # -- Restore state before switch --------------------------------------- #
     def _action_restore(self):
