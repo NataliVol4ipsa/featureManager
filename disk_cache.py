@@ -17,9 +17,11 @@ class JsonDiskCache:
     """A dict-like JSON file cache with a lock and atomic writes."""
 
     def __init__(self, filename):
-        self._path = os.path.join(
-            os.path.dirname(os.path.abspath(__file__)), filename
+        data_dir = os.path.join(
+            os.path.dirname(os.path.abspath(__file__)), "data"
         )
+        os.makedirs(data_dir, exist_ok=True)
+        self._path = os.path.join(data_dir, filename)
         self._lock = threading.Lock()
 
     def _load(self):

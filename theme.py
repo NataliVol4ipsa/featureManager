@@ -71,8 +71,11 @@ LIGHT = {
 globals().update(DARK)
 
 
-_PREFS_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                           "ui_prefs.json")
+# All local-only settings / caches / transient session files live under data/.
+_DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
+os.makedirs(_DATA_DIR, exist_ok=True)
+
+_PREFS_PATH = os.path.join(_DATA_DIR, "ui_prefs.json")
 
 # Pipeline monitor polling interval (seconds).
 PIPELINE_POLL_MIN_SECONDS = 10
@@ -101,9 +104,7 @@ def _save_prefs(data):
 
 # Transient snapshot of open pipeline monitors, written just before a
 # theme-change relaunch and consumed (then deleted) on the next startup.
-_MONITOR_SESSION_PATH = os.path.join(
-    os.path.dirname(os.path.abspath(__file__)), "monitor_session.json"
-)
+_MONITOR_SESSION_PATH = os.path.join(_DATA_DIR, "monitor_session.json")
 
 
 def save_monitor_session(sessions):
@@ -133,7 +134,7 @@ def pop_monitor_session():
 # before a relaunch and consumed (then deleted) on the next startup, mirroring
 # the pipeline-monitor session above.
 _DEPLOYMENT_STATUS_SESSION_PATH = os.path.join(
-    os.path.dirname(os.path.abspath(__file__)), "deployment_status_session.json"
+    _DATA_DIR, "deployment_status_session.json"
 )
 
 
@@ -162,9 +163,7 @@ def pop_deployment_status_session():
 
 # Transient flag marking that the pipeline history window was open at relaunch,
 # so it can be reopened on the next startup (deleted once consumed).
-_HISTORY_FLAG_PATH = os.path.join(
-    os.path.dirname(os.path.abspath(__file__)), "history_window.flag"
-)
+_HISTORY_FLAG_PATH = os.path.join(_DATA_DIR, "history_window.flag")
 
 
 def save_history_window_open(is_open, geometry=""):
@@ -202,9 +201,7 @@ def pop_history_window_open():
 # Transient snapshot of the main window geometry ("WxH+X+Y"), written just
 # before a relaunch and consumed (then deleted) on the next startup so the
 # restarted app reappears at the same position/size instead of a random spot.
-_RESTART_GEOMETRY_PATH = os.path.join(
-    os.path.dirname(os.path.abspath(__file__)), "restart_geometry.json"
-)
+_RESTART_GEOMETRY_PATH = os.path.join(_DATA_DIR, "restart_geometry.json")
 
 
 def save_restart_geometry(geometry):
@@ -573,7 +570,7 @@ def enable_dark_titlebar(window, dark=None):
 
 def apply_window_icon(window):
     """Apply the app icon to a Tk window, including small title-bar variants."""
-    base = os.path.dirname(os.path.abspath(__file__))
+    base = _DATA_DIR
     ico_candidates = [
         os.path.join(base, "icon2.ico"),
         os.path.join(base, "icon.ico"),

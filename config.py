@@ -1,9 +1,9 @@
 """Configuration for Feature Manager.
 
-Settings are read from ``config.json`` (next to this file) so the folders and
+Settings are read from ``data/config.json`` so the folders and
 exclusions can be changed without editing code. If the file is missing or a key
-is absent, the built-in defaults below are used. Edit ``config.json`` to point
-the app at your local folders.
+is absent, the built-in defaults below are used. Edit ``data/config.json`` to
+point the app at your local folders.
 """
 
 import os
@@ -48,7 +48,7 @@ _DEFAULTS = {
 }
 
 _CONFIG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                            "config.json")
+                            "data", "config.json")
 
 
 def _load_config():

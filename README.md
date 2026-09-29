@@ -34,32 +34,34 @@ is absent, built-in defaults are used.
 - `exclusions.repos` / `.nugets` / `.workspaces` — folder/workspace names to hide
   from each list (case-insensitive).
 
-## Local-only configuration (secrets.json, repo_synonyms.json)
+## Local-only configuration (data/secrets.json, data/repo_synonyms.json)
 
 Two files hold machine-specific / sensitive data and are **git-ignored** (never
-committed). Templates with a `.example` suffix are committed so a fresh checkout
-knows the expected shape — copy each one and drop the `.example` part:
+committed). They live in the `data/` folder alongside their committed `.example`
+templates, so a fresh checkout knows the expected shape — copy each one and drop
+the `.example` part:
 
 ```powershell
-Copy-Item secrets.example.json secrets.json
-Copy-Item repo_synonyms.example.json repo_synonyms.json
+Copy-Item data/secrets.example.json data/secrets.json
+Copy-Item data/repo_synonyms.example.json data/repo_synonyms.json
 ```
 
-- `secrets.json` — Azure DevOps connection details used by **Create workspace
-  from PBI**:
+- `data/secrets.json` — Azure DevOps connection details used by **Create
+  workspace from PBI**:
   - `ado_organization_url` — e.g. `https://dev.azure.com/your-org`.
   - `ado_project` — your project name.
 
   The PAT used to authenticate is **not** stored here — it is reused from the
   `ADO_PAT` environment variable (see *Work item linking* below), falling back to
   the stored Git credential for the org host.
-- `repo_synonyms.json` — maps each repository folder to the alternative names
-  that may appear in a PBI (e.g. `AlgorithmConfiguration` → `algoconfig`, `acg`,
-  `ac`). Edit it from **Settings → Repository synonyms…**, or it is extended
-  automatically when you map an unrecognised service while creating a workspace.
+- `data/repo_synonyms.json` — maps each repository folder to the alternative
+  names that may appear in a PBI (e.g. `AlgorithmConfiguration` → `algoconfig`,
+  `acg`, `ac`). Edit it from **Settings → Repository synonyms…**, or it is
+  extended automatically when you map an unrecognised service while creating a
+  workspace.
 
-> `secrets.json` only holds your org URL and project name; the PAT lives solely
-> in the `ADO_PAT` environment variable. Keep both out of version control.
+> `data/secrets.json` only holds your org URL and project name; the PAT lives
+> solely in the `ADO_PAT` environment variable. Keep both out of version control.
 
 ## Create workspace from PBI
 
@@ -68,7 +70,7 @@ feature workspace from a work item:
 
 1. Enter the PBI number; the work item is downloaded from Azure DevOps.
 2. The repositories listed in the PBI's **WBS** section are extracted and mapped
-   to local folders via `repo_synonyms.json`.
+   to local folders via `data/repo_synonyms.json`.
 3. Any unrecognised service is shown in red — pick its local folder. The new
    mapping is remembered. You cannot continue while a service is unmapped.
 4. Name the workspace (pre-filled from the PBI number and title) and the

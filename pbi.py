@@ -10,8 +10,9 @@ This module contains no UI. It handles:
   * mapping those free-text service names to local repository folders using the
     synonyms dictionary, and persisting newly learned mappings.
 
-Both JSON files live next to this module. Templates with a ``.example`` suffix
-are committed so a fresh checkout knows the expected shape.
+Both JSON files live in the ``data/`` folder next to this module. Templates
+with a ``.example`` suffix are committed so a fresh checkout knows the expected
+shape.
 """
 
 import os
@@ -29,8 +30,10 @@ import ado_auth
 
 
 _BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-_SECRETS_PATH = os.path.join(_BASE_DIR, "secrets.json")
-_SYNONYMS_PATH = os.path.join(_BASE_DIR, "repo_synonyms.json")
+_DATA_DIR = os.path.join(_BASE_DIR, "data")
+os.makedirs(_DATA_DIR, exist_ok=True)
+_SECRETS_PATH = os.path.join(_DATA_DIR, "secrets.json")
+_SYNONYMS_PATH = os.path.join(_DATA_DIR, "repo_synonyms.json")
 
 # Bold labels that mark the end of the WBS section in a work item description.
 _SECTION_BREAK_WORDS = (

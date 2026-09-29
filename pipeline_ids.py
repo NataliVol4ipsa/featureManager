@@ -23,8 +23,9 @@ import threading
 
 
 _CACHE_PATH = os.path.join(
-    os.path.dirname(os.path.abspath(__file__)), "pipeline_ids.json"
+    os.path.dirname(os.path.abspath(__file__)), "data", "pipeline_ids.json"
 )
+os.makedirs(os.path.dirname(_CACHE_PATH), exist_ok=True)
 
 _lock = threading.Lock()
 

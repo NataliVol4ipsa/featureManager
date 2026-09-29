@@ -20,8 +20,9 @@ import pipelines
 
 
 _CACHE_PATH = os.path.join(
-    os.path.dirname(os.path.abspath(__file__)), "pipeline_estimates.json"
+    os.path.dirname(os.path.abspath(__file__)), "data", "pipeline_estimates.json"
 )
+os.makedirs(os.path.dirname(_CACHE_PATH), exist_ok=True)
 
 # How long a cached average stays valid before it is refreshed from ADO.
 CACHE_TTL_DAYS = 7

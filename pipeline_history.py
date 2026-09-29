@@ -31,8 +31,9 @@ from widgets import Tooltip
 
 
 _HISTORY_PATH = os.path.join(
-    os.path.dirname(os.path.abspath(__file__)), "pipeline_history.json"
+    os.path.dirname(os.path.abspath(__file__)), "data", "pipeline_history.json"
 )
+os.makedirs(os.path.dirname(_HISTORY_PATH), exist_ok=True)
 
 # Cap the stored history so the file cannot grow without bound.
 _MAX_SESSIONS = 200
