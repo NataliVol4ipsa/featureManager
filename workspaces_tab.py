@@ -693,6 +693,7 @@ class WorkspacesTab(ActionTabBase):
             skip_fn=lambda n, _p: (
                 f"Skipped: {skip_reasons[n]}" if n in skip_reasons else False
             ),
+            parallel=True,
         )
 
     def _switch_one(self, name, path, target, decision):
