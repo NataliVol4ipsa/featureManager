@@ -175,13 +175,14 @@ def status_message():
     return "Pipeline time-left estimates: cache up to date;" + suffix
 
 
-def refresh_all(force=False, log=None):
+def refresh_all(force=False, log=None, error_log=None):
     """Refresh cached estimates for every service and nuget repository.
 
     Entries are keyed by folder name, so the freshness check needs no git/ADO
     call - only repos that actually need fetching resolve their remote (inside
     ``pipelines.get_master_pipeline_profile``). Callers must run this on a
-    background (daemon) thread. *log*, when given, receives info messages.
+    background (daemon) thread. *log* receives info messages and *error_log*
+    receives per-repository failures.
     """
     from parallel import run_in_parallel
 
@@ -211,6 +212,8 @@ def refresh_all(force=False, log=None):
         # (ok is False) are left uncached to retry next time.
         if ok:
             _store(name, result)
+        elif error_log:
+            error_log(str(result))
         return bool(ok)
 
     cached = sum(1 for ok in run_in_parallel(targets, _fetch) if ok)

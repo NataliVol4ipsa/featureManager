@@ -35,6 +35,32 @@ import pipeline_history
 import theme
 
 
+def _reload_persisted_pat():
+    """Refresh ADO_PAT from the persisted Windows environment.
+
+    ``setx`` writes the token to the registry, but a running process keeps the
+    value it started with - so an in-app Restart (``os.execv`` reuses the current
+    environment) would otherwise never see a newly set or rotated PAT. Machine
+    scope is read first so a User-scoped value takes precedence.
+    """
+    try:
+        import winreg
+    except ImportError:
+        return
+    for root_key, sub in (
+        (winreg.HKEY_LOCAL_MACHINE,
+         r"SYSTEM\CurrentControlSet\Control\Session Manager\Environment"),
+        (winreg.HKEY_CURRENT_USER, "Environment"),
+    ):
+        try:
+            with winreg.OpenKey(root_key, sub) as key:
+                value, _ = winreg.QueryValueEx(key, "ADO_PAT")
+        except OSError:
+            continue
+        if value:
+            os.environ["ADO_PAT"] = value
+
+
 class FeatureManagerApp(ttk.Notebook):
     """Top-level notebook holding the Workspaces and Repositories tabs."""
 
@@ -119,6 +145,9 @@ def main():
         theme.save_history_window_open(
             history_open, history_win.geometry() if history_open else ""
         )
+        # Pick up a PAT set via setx after this process started (execv keeps the
+        # current environment, so re-read the persisted value first).
+        _reload_persisted_pat()
         os.execv(sys.executable, [sys.executable, *sys.argv])
 
     def _toggle_theme():
@@ -146,7 +175,9 @@ def main():
         # a still-valid cache is kept as-is and we just report the next refresh.
         if pipeline_estimates.needs_refresh():
             threading.Thread(
-                target=lambda: pipeline_estimates.refresh_all(log=_log_estimate),
+                target=lambda: pipeline_estimates.refresh_all(
+                    log=_log_estimate, error_log=_log_estimate_error,
+                ),
                 daemon=True,
             ).start()
         else:
@@ -413,6 +444,15 @@ def main():
                 panel.add(message, info=True)
         root.after(0, _append)
 
+    def _log_estimate_error(message):
+        """Append a cache-refresh failure to the active tab's Errors area."""
+        def _append():
+            active = app.nametowidget(app.select())
+            panel = getattr(active, "errors", None)
+            if panel is not None:
+                panel.add(message)
+        root.after(0, _append)
+
     def _on_close():
         open_monitors = [
             win
@@ -459,7 +499,9 @@ def main():
     # background (only stale/missing repos actually hit Azure DevOps).
     if theme.load_pipeline_estimates_enabled():
         threading.Thread(
-            target=lambda: pipeline_estimates.refresh_all(log=_log_estimate),
+            target=lambda: pipeline_estimates.refresh_all(
+                log=_log_estimate, error_log=_log_estimate_error,
+            ),
             daemon=True,
         ).start()
 

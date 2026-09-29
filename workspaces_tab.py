@@ -404,7 +404,13 @@ class WorkspacesTab(ActionTabBase):
         if not stages:
             return
         self.show_repos_async([(n, p) for n, p, _b in active], with_status=True)
-        DeploymentStatusWindow(self, active, stages, on_progress=self.progress.status)
+
+        def _on_progress(name, state, tooltip=None):
+            self.progress.status(name, state, tooltip)
+            if state == "error":
+                self.errors.add(tooltip or f"{name}: deployment status lookup failed")
+
+        DeploymentStatusWindow(self, active, stages, on_progress=_on_progress)
 
     def _open_actions(self):
         return [
