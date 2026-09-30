@@ -274,6 +274,13 @@ class ProgressPanel(ttk.Frame):
                 )
                 self._link_labels[name] = link_label
 
+        # Reset the scroll offset and region so a panel that was scrolled down
+        # starts fresh at the top; otherwise a shorter new list keeps the old
+        # offset (leaving blank space) and the scrollbar its old size.
+        self._canvas.update_idletasks()
+        self._canvas.configure(scrollregion=self._canvas.bbox("all"))
+        self._canvas.yview_moveto(0)
+
     # Backwards-compatible alias: a plain name list with no branch/status.
     def set_repos(self, names):
         """Build a status-less table from bare repo *names* (no branch info)."""

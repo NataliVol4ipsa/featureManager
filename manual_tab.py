@@ -8,7 +8,7 @@ from gitutils import (
     get_service_folders, get_nuget_folders, write_workspace,
     run_git, is_git_repo, git_current_branch, git_has_changes,
     save_uncommitted, create_feature_branch, rebase_on_master,
-    list_solutions, open_solutions, SAVEPOS_MSG,
+    list_solutions, open_solutions, open_in_vscode, SAVEPOS_MSG,
 )
 from widgets import FolderTab
 from tab_base import ActionTabBase
@@ -247,6 +247,12 @@ class ManualTab(ActionTabBase):
     def _open_actions(self):
         return [
             (
+                "Open workspace in VS Code",
+                self._action_open_workspace,
+                "For every selected repository: opens its folder in a separate "
+                "VS Code window.",
+            ),
+            (
                 "Open solutions in Visual Studio",
                 self._action_open_visual_studio,
                 "For every selected repository: opens each Visual Studio solution "
@@ -453,6 +459,14 @@ class ManualTab(ActionTabBase):
     # -- Open in Git Bash tabs --------------------------------------------- #
     def _action_open_terminals(self):
         self.open_terminals(self._all_selected_repos())
+
+    # -- Open workspace in VS Code ----------------------------------------- #
+    def _action_open_workspace(self):
+        self.errors.clear()
+        for name, path in self._all_selected_repos():
+            ok, message = open_in_vscode(path)
+            if not ok:
+                self.errors.add(f"{name}: {message}")
 
     # -- Open solutions in Visual Studio ----------------------------------- #
     def _action_open_visual_studio(self):

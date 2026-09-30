@@ -410,14 +410,14 @@ def open_in_vscode(path):
     """Open *path* (a folder or .code-workspace file) in VS Code.
 
     On Windows a .code-workspace file is associated with VS Code, so
-    ``os.startfile`` launches it directly; otherwise the ``code`` launcher on
-    PATH is used as a fallback. Returns (ok, error_message).
+    ``os.startfile`` launches it directly; folders use the ``code`` launcher
+    to open a separate VS Code window. Returns (ok, error_message).
     """
     if not os.path.exists(path):
         return False, f"path does not exist: {path}"
 
     startfile = getattr(os, "startfile", None)
-    if startfile is not None:
+    if startfile is not None and not os.path.isdir(path):
         try:
             startfile(path)
             return True, ""
@@ -428,7 +428,7 @@ def open_in_vscode(path):
     if not code:
         return False, "VS Code 'code' launcher not found on PATH"
     try:
-        subprocess.Popen([code, path], creationflags=NO_WINDOW)
+        subprocess.Popen([code, "--new-window", path], creationflags=NO_WINDOW)
         return True, ""
     except OSError as exc:
         return False, f"could not open VS Code: {exc}"
