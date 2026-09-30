@@ -1573,6 +1573,7 @@ class PipelineMonitorWindow(tk.Toplevel):
             return
 
         self._poll_in_progress = False
+        first_poll = not self._first_poll_done
         self._first_poll_done = True
         latest_timestamp = self._poll_latest_timestamp
         if latest_timestamp:
@@ -1591,6 +1592,10 @@ class PipelineMonitorWindow(tk.Toplevel):
             self.title("Pipeline monitor")
         self._refresh_completed_visibility()
         self._update_scrollregion_and_scrollbar()
+        # The initial fit ran before any stage data existed; re-fit once the
+        # first stats (and hide/show-completed state) are actually known.
+        if first_poll:
+            self.after_idle(self._fit_to_content)
         self._schedule_next_poll()
 
     def _schedule_next_poll(self):
