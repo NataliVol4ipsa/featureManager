@@ -31,7 +31,7 @@ class ManualTab(ActionTabBase):
     # -- Layout ------------------------------------------------------------ #
     def _build_left(self):
         # Fixed (slightly narrow) width so the Details table gets more room.
-        left = ttk.Frame(self._top, width=230)
+        left = ttk.Frame(self._top, width=340)
         left.pack(side="left", fill="y")
         left.pack_propagate(False)
 

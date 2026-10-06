@@ -595,7 +595,8 @@ class GlyphCheck(tk.Canvas):
             return
         if glyph == "check":
             self.create_line(
-                s * 0.26, s * 0.52, s * 0.43, s * 0.69, s * 0.74, s * 0.30,
+                *(coordinate for point in _checkmark_points(s)
+                  for coordinate in point),
                 fill=mark_color, width=2, capstyle="round", joinstyle="round",
             )
         elif glyph == "dash":
@@ -610,6 +611,14 @@ class GlyphCheck(tk.Canvas):
                              fill=mark_color, width=2, capstyle="round")
 
 
+def _checkmark_points(size):
+    return (
+        (size * 0.26, size * 0.52),
+        (size * 0.43, size * 0.69),
+        (size * 0.74, size * 0.30),
+    )
+
+
 class CheckboxList(ttk.Frame):
     """A scrollable list of checkboxes.
 
@@ -620,62 +629,117 @@ class CheckboxList(ttk.Frame):
     def __init__(self, master, items, on_change=None, **kwargs):
         super().__init__(master, **kwargs)
 
-        # Called (no args) whenever the set of checked items changes.
         self._on_change = on_change
-
-        # Maps folder name -> BooleanVar holding its checked state.
         self.vars = {}
+        self._item_ids = {}
+        self._names_by_id = {}
+        self._check_images = {
+            False: self._make_check_image(False),
+            True: self._make_check_image(True),
+        }
 
-        # Canvas + inner frame + scrollbar give us a vertically scrollable area.
-        self._canvas = tk.Canvas(self, highlightthickness=0)
+        style = ttk.Style(self)
+        style.configure("Service.Treeview", rowheight=28, padding=(2, 0, 0, 0))
+        style.layout("Service.Treeview.Item", [
+            ("Treeitem.padding", {"sticky": "nswe", "children": [
+                ("Treeitem.image", {"side": "left", "sticky": ""}),
+                ("Treeitem.text", {"sticky": "nswe"}),
+            ]}),
+        ])
+        self._tree = ttk.Treeview(
+            self, show="tree", selectmode="none", style="Service.Treeview"
+        )
         self._scrollbar = ttk.Scrollbar(
-            self, orient="vertical", command=self._canvas.yview
+            self, orient="vertical", command=self._tree.yview
         )
-        self._inner = ttk.Frame(self._canvas)
-
-        self._inner.bind(
-            "<Configure>",
-            lambda e: self._canvas.configure(scrollregion=self._canvas.bbox("all")),
-        )
-        self._canvas.create_window((0, 0), window=self._inner, anchor="nw")
-        self._canvas.configure(yscrollcommand=self._scrollbar.set)
-
-        self._canvas.pack(side="left", fill="both", expand=True)
+        self._tree.configure(yscrollcommand=self._scrollbar.set, cursor="hand2")
+        self._tree.column("#0", anchor="w", stretch=True)
+        self._tree.bind("<Button-1>", self._toggle_item)
+        self._tree.pack(side="left", fill="both", expand=True)
         self._scrollbar.pack(side="right", fill="y")
-
-        # Mouse-wheel scrolling while hovering the list.
-        self._canvas.bind("<Enter>", self._bind_mousewheel)
-        self._canvas.bind("<Leave>", self._unbind_mousewheel)
 
         self.set_items(items)
 
+    def _make_check_image(self, checked):
+        size = GlyphCheck._SIZE
+        fill = theme.SUCCESS if checked else theme.BG_INPUT
+        outline = fill if checked else theme.BORDER
+        base_image = _rounded_box_image(size, fill, outline, theme.BG_INPUT)
+        image = tk.PhotoImage(master=self, width=28, height=22)
+        image.tk.call(str(image), "copy", str(base_image), "-to", 0, 2)
+        if checked:
+            points = _checkmark_points(size)
+            segments = tuple(zip(points, points[1:]))
+            for pixel_x in range(size):
+                for pixel_y in range(size):
+                    coverage = 0
+                    for offset_x in (0.25, 0.75):
+                        for offset_y in (0.25, 0.75):
+                            point_x = pixel_x + offset_x
+                            point_y = pixel_y + offset_y
+                            for start, end in segments:
+                                delta_x = end[0] - start[0]
+                                delta_y = end[1] - start[1]
+                                length = delta_x * delta_x + delta_y * delta_y
+                                position = max(0, min(1, (
+                                    (point_x - start[0]) * delta_x
+                                    + (point_y - start[1]) * delta_y
+                                ) / length))
+                                nearest_x = start[0] + position * delta_x
+                                nearest_y = start[1] + position * delta_y
+                                if ((point_x - nearest_x) ** 2
+                                        + (point_y - nearest_y) ** 2 <= 1):
+                                    coverage += 1
+                                    break
+                    if coverage:
+                        red, green, blue = image.get(pixel_x, pixel_y + 2)
+                        blend = coverage / 4
+                        image.put(
+                            "#%02x%02x%02x" % (
+                                round(red + (255 - red) * blend),
+                                round(green + (255 - green) * blend),
+                                round(blue + (255 - blue) * blend),
+                            ),
+                            (pixel_x, pixel_y + 2),
+                        )
+        return image
+
     def set_items(self, items):
         """(Re)build the checkbox rows from *items* while preserving prior state."""
-        for child in self._inner.winfo_children():
-            child.destroy()
-
+        self._tree.delete(*self._tree.get_children())
         new_vars = {}
-        for name in items:
-            # Reuse an existing BooleanVar so a rescan keeps the user's choices.
+        self._item_ids = {}
+        self._names_by_id = {}
+        for index, name in enumerate(items):
             var = self.vars.get(name, tk.BooleanVar(value=False))
             new_vars[name] = var
-            row = ttk.Frame(self._inner)
-            row.pack(anchor="w", fill="x", padx=4, pady=1)
-            GlyphCheck(row, variable=var, mark="check",
-                       command=self._notify).pack(side="left")
-            label = tk.Label(row, text=name, cursor="hand2")
-            label.pack(side="left", padx=(4, 0))
-            # Clicking the name toggles the row too (matches a Checkbutton label).
-            label.bind(
-                "<Button-1>",
-                lambda _e, v=var: (v.set(not v.get()), self._notify()),
+            item_id = f"service_{index}"
+            self._tree.insert(
+                "", "end", iid=item_id, text=name,
+                image=self._check_images[var.get()],
             )
+            self._item_ids[name] = item_id
+            self._names_by_id[item_id] = name
         self.vars = new_vars
+
+    def _toggle_item(self, event):
+        item_id = self._tree.identify_row(event.y)
+        name = self._names_by_id.get(item_id)
+        if name is None:
+            return
+        var = self.vars[name]
+        var.set(not var.get())
+        self._tree.item(item_id, image=self._check_images[var.get()])
+        self._notify()
+        return "break"
 
     def set_all(self, value):
         """Check (True) or uncheck (False) every item."""
-        for var in self.vars.values():
+        for name, var in self.vars.items():
             var.set(value)
+            self._tree.item(
+                self._item_ids[name], image=self._check_images[bool(value)]
+            )
         self._notify()
 
     def _notify(self):
@@ -686,17 +750,6 @@ class CheckboxList(ttk.Frame):
     def get_selected(self):
         """Return the list of currently checked item names."""
         return [name for name, var in self.vars.items() if var.get()]
-
-    # -- internal mouse-wheel handling ------------------------------------- #
-    def _bind_mousewheel(self, _event):
-        self._canvas.bind_all("<MouseWheel>", self._on_mousewheel)
-
-    def _unbind_mousewheel(self, _event):
-        self._canvas.unbind_all("<MouseWheel>")
-
-    def _on_mousewheel(self, event):
-        self._canvas.yview_scroll(int(-event.delta / 120), "units")
-
 
 class FolderTab(ttk.Frame):
     """A single notebook tab: Select-All / Deselect-All buttons + a CheckboxList.
