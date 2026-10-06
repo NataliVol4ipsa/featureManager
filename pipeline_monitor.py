@@ -21,6 +21,7 @@ from pipelines import (
     rerun_failed_stage,
     rerun_pipeline_from_latest_commit,
     cancel_pipeline_run,
+    approve_pipeline_stage,
     has_custom_pipeline_parameters,
     configurable_pipeline_parameters,
 )
@@ -586,6 +587,9 @@ class PipelineMonitorWindow(tk.Toplevel):
                 },
                 "stage_identifiers": {},
                 "retry_hitboxes": [],
+                "approval_hitboxes": [],
+                "pending_approval_ids": [],
+                "approve_in_progress": False,
                 "hover_stage": None,
                 "retry_in_progress": False,
                 "rerun_button": rerun_button,
@@ -999,6 +1003,7 @@ class PipelineMonitorWindow(tk.Toplevel):
         stages = row["stages"]
         canvas.delete("all")
         retry_hitboxes = []
+        approval_hitboxes = []
         running_hitboxes = []
 
         stage_order = [
@@ -1084,16 +1089,36 @@ class PipelineMonitorWindow(tk.Toplevel):
                     canvas.create_text(
                         x, y, text="\u21bb", fill="white", font=("", 13, "bold"),
                     )
+            # A stage paused at its approval gate (yellow) can be approved
+            # manually: on hover draw a dark checkmark and an action hint.
+            elif state == "approval" and row.get("pending_approval_ids"):
+                approval_hitboxes.append((key, x, y))
+                if row.get("hover_stage") == key:
+                    canvas.create_text(
+                        x, y, text="\u2713", fill="#222222", font=("", 13, "bold"),
+                    )
+                    canvas.create_text(
+                        x + 13, y, text="Approve", anchor="w",
+                        fill="#222222", font=("", 8, "bold"),
+                    )
             # A running stage shows its current step, estimated time and time
             # left (or how far it is overdue) on hover.
             if state == "running":
                 running_hitboxes.append((key, x, y))
         row["retry_hitboxes"] = retry_hitboxes
+        row["approval_hitboxes"] = approval_hitboxes
         row["running_hitboxes"] = running_hitboxes
 
     def _stage_at(self, row, px, py):
         """Return the retryable stage key at (px, py), or None."""
         for key, cx, cy in row.get("retry_hitboxes") or []:
+            if (px - cx) ** 2 + (py - cy) ** 2 <= 12 ** 2:
+                return key
+        return None
+
+    def _approval_stage_at(self, row, px, py):
+        """Return the approvable stage key at (px, py), or None."""
+        for key, cx, cy in row.get("approval_hitboxes") or []:
             if (px - cx) ** 2 + (py - cy) ** 2 <= 12 ** 2:
                 return key
         return None
@@ -1182,20 +1207,29 @@ class PipelineMonitorWindow(tk.Toplevel):
         self.after(1000, self._tick_estimates)
 
     def _on_stage_motion(self, event, repo):
-        """Show the rerun icon while hovering a failed stage circle."""
+        """Show the rerun/approve icon while hovering an actionable stage circle."""
         row = self._rows.get(repo)
         if not row:
             return
         self._update_progress_tip(repo, row, event.x, event.y)
-        hit = self._stage_at(row, event.x, event.y)
+        retry_hit = self._stage_at(row, event.x, event.y)
+        approval_hit = (
+            None if retry_hit else self._approval_stage_at(row, event.x, event.y)
+        )
+        hit = retry_hit or approval_hit
         if hit == row.get("hover_stage"):
             return
         row["hover_stage"] = hit
         row["graph"].configure(cursor="hand2" if hit else "")
-        if hit:
-            stage_label = dict(_STAGE_ORDER).get(hit, hit)
+        if retry_hit:
+            stage_label = dict(_STAGE_ORDER).get(retry_hit, retry_hit)
             self.title(
                 f"Pipeline monitor - click to rerun failed {stage_label} jobs"
+            )
+        elif approval_hit:
+            stage_label = dict(_STAGE_ORDER).get(approval_hit, approval_hit)
+            self.title(
+                f"Pipeline monitor - click to approve {stage_label}"
             )
         else:
             self.title("Pipeline monitor")
@@ -1286,6 +1320,10 @@ class PipelineMonitorWindow(tk.Toplevel):
         key = self._stage_at(row, event.x, event.y)
         if key:
             self._retry_stage(repo, key)
+            return
+        key = self._approval_stage_at(row, event.x, event.y)
+        if key:
+            self._approve_stage(repo, key)
 
     def _retry_stage(self, repo, key):
         """Rerun the failed or canceled jobs of *key* stage on a worker thread."""
@@ -1320,6 +1358,49 @@ class PipelineMonitorWindow(tk.Toplevel):
             self.title(f"Pipeline monitor - {repo} {stage_label} rerun queued")
         else:
             self.title(f"Pipeline monitor - rerun failed: {err}")
+
+    def _approve_stage(self, repo, key):
+        """Approve the pending deployment gate of *key* stage on a worker thread."""
+        row = self._rows.get(repo)
+        info = self._run_infos.get(repo)
+        if not row or not info or row.get("approve_in_progress"):
+            return
+        approval_ids = list(row.get("pending_approval_ids") or [])
+        if not approval_ids:
+            return
+        stage_label = dict(_STAGE_ORDER).get(key, key)
+        row["approve_in_progress"] = True
+        self.title(f"Pipeline monitor - approving {repo} {stage_label}...")
+
+        def _work():
+            ok, err = approve_pipeline_stage(info, approval_ids)
+            self.after(0, self._on_approve_done, repo, key, approval_ids, ok, err)
+
+        threading.Thread(target=_work, daemon=True).start()
+
+    def _on_approve_done(self, repo, key, approval_ids, ok, err):
+        if self._closed:
+            return
+        row = self._rows.get(repo)
+        if row:
+            row["approve_in_progress"] = False
+        info = self._run_infos.get(repo)
+        stage_label = dict(_STAGE_ORDER).get(key, key)
+        if ok:
+            # Remember the approved ids so the auto-approve path never re-hits
+            # them before ADO finishes processing the gate.
+            if info is not None:
+                already = info.setdefault("_approved_approval_ids", [])
+                already.extend(a for a in approval_ids if a not in already)
+            if row:
+                row["stages"][key] = "running"
+                row["hover_stage"] = None
+                row["pending_approval_ids"] = []
+                row["graph"].configure(cursor="")
+                self._draw_row(repo)
+            self.title(f"Pipeline monitor - {repo} {stage_label} approved")
+        else:
+            self.title(f"Pipeline monitor - approval failed: {err}")
 
     def _rerun_from_latest(self, repo):
         """Queue a fresh run from the branch tip and follow it in this row."""
@@ -1523,6 +1604,9 @@ class PipelineMonitorWindow(tk.Toplevel):
             )
             self._rows[repo]["stage_times"] = (
                 payload.get("stage_times") or {}
+            )
+            self._rows[repo]["pending_approval_ids"] = (
+                payload.get("pending_approval_ids") or []
             )
             self._poll_latest_timestamp = payload.get(
                 "updated_at", self._poll_latest_timestamp

@@ -1520,7 +1520,8 @@ def _pending_approvals_for_build(org, project, build_id, auth):
     return approvals
 
 
-def _approve_pending_approvals(org, project, approval_ids, auth):
+def _approve_pending_approvals(org, project, approval_ids, auth,
+                              comment="Auto-approved by Feature Manager"):
     """Approve all *approval_ids*. Returns (ok, error_message)."""
     if not approval_ids:
         return True, ""
@@ -1533,7 +1534,7 @@ def _approve_pending_approvals(org, project, approval_ids, auth):
         {
             "approvalId": approval_id,
             "status": "approved",
-            "comment": "Auto-approved by Feature Manager",
+            "comment": comment,
         }
         for approval_id in approval_ids
     ]
@@ -1541,9 +1542,31 @@ def _approve_pending_approvals(org, project, approval_ids, auth):
         _api_patch(url, body, auth)
         return True, ""
     except urllib.error.HTTPError as exc:
-        return False, f"auto-approval failed ({exc.code}): {_http_error_detail(exc)}"
+        return False, f"approval failed ({exc.code}): {_http_error_detail(exc)}"
     except (urllib.error.URLError, OSError, ValueError) as exc:
-        return False, f"auto-approval failed: {exc}"
+        return False, f"approval failed: {exc}"
+
+
+def approve_pipeline_stage(run_info, approval_ids):
+    """Manually approve the pending deployment gate of a run. Returns (ok, error).
+
+    *approval_ids* are the pending approval ids reported for the run's current
+    gate (see ``pending_approval_ids`` in ``get_pipeline_stage_statuses``).
+    """
+    if not approval_ids:
+        return False, "no pending approval to approve"
+    org = run_info.get("org")
+    project = run_info.get("project")
+    host = run_info.get("host")
+    if not org or not project or not host:
+        return False, "run info is missing org/project/host"
+    auth, err = _auth_for_host(host, org)
+    if err:
+        return False, err
+    return _approve_pending_approvals(
+        org, project, list(approval_ids), auth,
+        comment="Approved via Feature Manager",
+    )
 
 
 def get_pipeline_stage_statuses(run_info):
@@ -1712,6 +1735,7 @@ def get_pipeline_stage_statuses(run_info):
         "stage_progress": stage_progress,
         "stage_times": stage_times,
         "approval_target": approval_target,
+        "pending_approval_ids": pending_approval_ids,
         "autoapproved": autoapproved,
         "autoapproved_target": autoapproved_target,
         "autoapprove_error": autoapprove_error,
