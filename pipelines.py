@@ -1450,7 +1450,7 @@ def _stage_progress(records, stage_id, auth):
             f"(waiting in queue: {position})" if position is not None
             else "(waiting for agent)"
         )
-        return {"current": current, "percent": percent}
+        return {"current": current, "percent": percent, "waiting_for_agent": True}
 
     return {"current": "", "percent": 100}
 

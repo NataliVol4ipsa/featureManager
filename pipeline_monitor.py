@@ -600,6 +600,7 @@ class PipelineMonitorWindow(tk.Toplevel):
                 "stage_progress": {},
                 "running_hitboxes": [],
                 "stage_times": {},
+                "agent_wait": {},
                 "estimate": estimate,
                 "estimate_label": estimate_label,
                 "environment": info.get("environment"),
@@ -1044,11 +1045,18 @@ class PipelineMonitorWindow(tk.Toplevel):
             # A running stage is drawn as a circular bar: a blue pie sweeping
             # clockwise from 12 o'clock over a track, filling by elapsed vs.
             # estimated time (never reaching a full circle until the stage is
-            # actually done). Everything else is a plain dot.
+            # actually done). Once a stage runs past its estimate it is overdue,
+            # so the time-based fill is abandoned and the circle falls back to
+            # the count-based completion pie (jobs/phases done, respecting the
+            # stage hierarchy). Everything else is a plain dot.
             percent = None
             if state == "running":
                 fill = self._stage_time_fill(row, key)
-                if fill is not None:
+                if fill is not None and fill["overdue"]:
+                    percent = (
+                        (row.get("stage_progress") or {}).get(key) or {}
+                    ).get("percent")
+                elif fill is not None:
                     percent = fill["percent"]
             if state == "running" and percent is not None and percent < 100:
                 canvas.create_oval(
@@ -1129,8 +1137,10 @@ class PipelineMonitorWindow(tk.Toplevel):
         ``elapsed / estimated`` but capped below a full circle so it never reads
         as complete while the stage is still running - even after the estimate
         has been exceeded, in which case the stage is reported as overdue.
-        Returns ``{percent, estimated, left, overdue, overdue_by}`` or None when
-        no estimate or start time is available.
+        Time the stage spent queued waiting for an agent is excluded from the
+        elapsed, so that idle period neither advances the circle nor pushes the
+        stage overdue. Returns ``{percent, estimated, left, overdue,
+        overdue_by}`` or None when no estimate or start time is available.
         """
         estimate = row.get("estimate")
         if not estimate:
@@ -1143,7 +1153,7 @@ class PipelineMonitorWindow(tk.Toplevel):
         elapsed = pipeline_estimates._elapsed_seconds(start, now)
         if elapsed is None:
             return None
-        elapsed = max(0.0, elapsed)
+        elapsed = max(0.0, elapsed - self._agent_wait_seconds(row, key, now))
         percent = int(min(99, max(0, round(elapsed / estimated * 100))))
         return {
             "percent": percent,
@@ -1152,6 +1162,46 @@ class PipelineMonitorWindow(tk.Toplevel):
             "overdue": elapsed > estimated,
             "overdue_by": max(0.0, elapsed - estimated),
         }
+
+    def _update_agent_wait(self, repo):
+        """Accumulate per-stage time spent queued waiting for an agent.
+
+        Called after each poll refreshes ``stage_progress``. While a stage
+        reports ``waiting_for_agent`` the clock is paused (its ``since`` mark is
+        set); once it stops waiting the paused span is folded into the stage's
+        accumulated idle total. ``_agent_wait_seconds`` later subtracts this from
+        the stage's elapsed so queueing never counts as execution time.
+        """
+        row = self._rows.get(repo)
+        if not row:
+            return
+        waits = row.setdefault("agent_wait", {})
+        progress = row.get("stage_progress") or {}
+        stages = row.get("stages") or {}
+        now = datetime.datetime.now(datetime.timezone.utc)
+        for key in set(waits) | set(progress):
+            entry = waits.setdefault(key, {"accumulated": 0.0, "since": None})
+            waiting = (
+                stages.get(key) == "running"
+                and bool((progress.get(key) or {}).get("waiting_for_agent"))
+            )
+            if waiting:
+                if entry["since"] is None:
+                    entry["since"] = now
+            elif entry["since"] is not None:
+                entry["accumulated"] += (now - entry["since"]).total_seconds()
+                entry["since"] = None
+
+    def _agent_wait_seconds(self, row, key, now):
+        """Return seconds *key* has spent waiting for an agent (incl. ongoing)."""
+        entry = (row.get("agent_wait") or {}).get(key)
+        if not entry:
+            return 0.0
+        total = entry.get("accumulated") or 0.0
+        since = entry.get("since")
+        if since is not None:
+            total += (now - since).total_seconds()
+        return max(0.0, total)
 
     def _row_has_running_stage(self, row):
         """Return True when any of the row's stages is currently running."""
@@ -1644,6 +1694,7 @@ class PipelineMonitorWindow(tk.Toplevel):
             self._rows[repo]["stage_times"] = (
                 payload.get("stage_times") or {}
             )
+            self._update_agent_wait(repo)
             self._rows[repo]["pending_approval_ids"] = (
                 payload.get("pending_approval_ids") or []
             )
