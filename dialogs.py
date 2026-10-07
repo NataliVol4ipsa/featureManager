@@ -1954,63 +1954,6 @@ def edit_branch_overrides(parent, workspace_name, entries):
     return result["value"]
 
 
-def ask_include_skipped(parent, action_label, names):
-    """Modal offering each skipped repo an "Include" checkbox (default off).
-
-    *names* is the list of repo folder names flagged as skipped. The repos are
-    normally left out of *action_label*; ticking a checkbox opts that repo back
-    in for this run only. Returns the set of names the user chose to include, or
-    None if the dialog is cancelled.
-    """
-    dialog = _new_modal(parent, "ask_include_skipped")
-    dialog.title(f"Include skipped repositories - {action_label}")
-    dialog.transient(parent.winfo_toplevel())
-    dialog.resizable(False, False)
-
-    tk.Label(
-        dialog,
-        text=f"These repositories are flagged as skipped and are normally left "
-             f"out of \"{action_label}\". Tick any you want to include this time.",
-        justify="left", wraplength=420,
-    ).pack(padx=16, pady=(16, 8), anchor="w")
-
-    scroll = _ScrollableList(dialog)
-    scroll.pack(padx=16, fill="x")
-    box = scroll.inner
-    checks = {}
-    for name in names:
-        var = tk.BooleanVar(value=False)
-        row = ttk.Frame(box)
-        row.pack(anchor="w", fill="x", pady=1)
-        GlyphCheck(row, variable=var, mark="check").pack(side="left")
-        label = tk.Label(row, text=name, cursor="hand2")
-        label.pack(side="left", padx=(4, 0))
-        label.bind("<Button-1>", lambda _e, v=var: v.set(not v.get()))
-        checks[name] = var
-    scroll.finalize(len(names))
-
-    result = {"value": None}
-
-    def _ok():
-        result["value"] = {name for name, var in checks.items() if var.get()}
-        dialog.destroy()
-
-    def _cancel():
-        result["value"] = None
-        dialog.destroy()
-
-    bar = ttk.Frame(dialog)
-    bar.pack(padx=16, pady=12)
-    ttk.Button(bar, text="Continue", command=_ok).pack(side="left", padx=4)
-    ttk.Button(bar, text="Cancel", command=_cancel).pack(side="left", padx=4)
-
-    dialog.protocol("WM_DELETE_WINDOW", _cancel)
-    _center_over_parent(dialog, parent)
-    dialog.grab_set()
-    parent.wait_window(dialog)
-    return result["value"]
-
-
 # Ordered (stage_key, display label) pairs offered by ask_deployment_status_stages.
 # Build is intentionally excluded - it is not a deployment target.
 DEPLOYMENT_STATUS_STAGES = (

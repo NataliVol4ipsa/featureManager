@@ -24,7 +24,7 @@ from widgets import WorkspaceList, Tooltip
 from tab_base import ActionTabBase
 from dialogs import (
     ask_branch_name, ask_pbi_number, resolve_pbi_repos, edit_branch_overrides,
-    ask_include_skipped, ask_solutions_to_open, ask_branches_to_delete,
+    ask_solutions_to_open, ask_branches_to_delete,
     ask_deployment_status_stages,
 )
 import pbi
@@ -763,20 +763,9 @@ class WorkspacesTab(ActionTabBase):
         if not entries:
             return
 
-        # Non-ignored repos are always restored. Repos flagged "ignore git" keep
-        # their own branch, so they are offered as opt-in checkboxes (default
-        # off): the user can include a specific ignored repo when its savepos
-        # should be restored too.
+        # Repos flagged "ignore git" keep their own branch and are silently
+        # skipped, consistent with the rest of the app.
         repos = [(e["name"], e["path"]) for e in entries if not e["ignoreGit"]]
-        ignored = [(e["name"], e["path"]) for e in entries if e["ignoreGit"]]
-        if ignored:
-            included = ask_include_skipped(
-                self, "Restore state before switch", [n for n, _ in ignored]
-            )
-            if included is None:
-                return
-            repos += [(n, p) for n, p in ignored if n in included]
-
         if not repos:
             return
 
