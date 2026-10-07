@@ -238,9 +238,9 @@ class WorkspacesTab(ActionTabBase):
                 self._action_rebase_on_master,
                 "For the selected workspace's repositories (excluding skipped "
                 "repos): updates master (checkout + pull), returns to the "
-                "feature branch and rebases it onto master. Uncommitted changes "
-                "are committed first (with confirmation) and restored afterwards "
-                "(staged/unstaged preserved) on a clean rebase.",
+                "current feature branch and rebases it onto master. Repos "
+                "configured to use master are only pulled. Uncommitted changes "
+                "are checked first and handled according to your choice.",
             ),
             (
                 "Commit all changes",
@@ -805,26 +805,30 @@ class WorkspacesTab(ActionTabBase):
 
     # -- Rebase current branch on master ----------------------------------- #
     def _action_rebase_on_master(self):
-        ok, workspace, repos = self._selected_active_repos()
+        ok, workspace, entries = self._selected_entries()
         self.errors.clear()
         if not ok:
             if workspace is not None:
-                self.errors.add(repos)
+                self.errors.add(entries)
             return
+        active_entries = [e for e in entries if not e["ignoreGit"]]
+        repos = [(e["name"], e["path"]) for e in active_entries]
         if not repos:
             return
+        pull_only = {
+            e["name"]: e["branch"] == "master" for e in active_entries
+        }
 
         self.show_repos_async(repos, with_status=True)
 
-        # Ask per dirty repo what to do with its changes. A rebase needs the
-        # changes committed first, so "commit" (leave committed) and
-        # "commit & restore" (restore the working state afterwards) are offered.
+        # Always scan for dirty work. Repos on master can only delete or abort;
+        # feature branches can also commit, optionally restoring afterwards.
         decisions = self.collect_change_decisions(
             repos, restore_option=True,
-            note="A rebase requires committing the changes first. 'Commit "
-                 "changes' leaves them committed on the branch; 'Commit & "
-                 "restore' puts the same changes back as uncommitted work after "
-                 "the rebase.",
+            note="Uncommitted changes must be handled before pulling or "
+                 "rebasing. On a feature branch, 'Commit changes' leaves them "
+                 "committed; 'Commit & restore' puts them back as uncommitted "
+                 "work afterwards.",
         )
         if decisions is None:
             self.progress.set_repos([])
@@ -832,8 +836,10 @@ class WorkspacesTab(ActionTabBase):
 
         self.run_repo_action(
             repos,
-            lambda n, p: rebase_on_master(n, p, REBASE_SAVE_MSG, decisions.get(n)),
-            "All repositories rebased successfully.",
+            lambda n, p: rebase_on_master(
+                n, p, REBASE_SAVE_MSG, decisions.get(n), pull_only[n]
+            ),
+            "All repositories updated successfully.",
             parallel=True,
         )
 

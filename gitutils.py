@@ -2066,7 +2066,7 @@ def restore_uncommitted(repo_path, base_msg):
     return False, "no app savepos commit at HEAD to restore"
 
 
-def rebase_on_master(name, path, save_msg, decision):
+def rebase_on_master(name, path, save_msg, decision, pull_only=False):
     """Rebase one repo's feature branch onto an updated master. Returns (ok, error).
 
     *decision* (set only for dirty repos) is one of:
@@ -2076,6 +2076,9 @@ def rebase_on_master(name, path, save_msg, decision):
       * "commit_restore" - same as "commit" but the saved working state is
         restored exactly after a clean rebase.
       * "delete" - uncommitted work is discarded before the rebase.
+
+    When *pull_only* is true, the repo must already be on master; its uncommitted
+    work is handled as usual, then master is pulled without starting a rebase.
     """
     if not is_git_repo(path):
         return False, f"{name}: not a git repository"
@@ -2087,7 +2090,12 @@ def rebase_on_master(name, path, save_msg, decision):
         )
 
     branch = git_current_branch(path)
-    if not branch or branch == "master":
+    if pull_only and branch != "master":
+        return False, (
+            f"{name}: configured for master but currently on "
+            f"'{branch or '?'}'; switch to master before pulling"
+        )
+    if not pull_only and (not branch or branch == "master"):
         return False, (
             f"{name}: not on a feature branch (currently '{branch or '?'}'); "
             f"nothing to rebase onto master"
@@ -2102,14 +2110,30 @@ def rebase_on_master(name, path, save_msg, decision):
             ok, out = run_git(path, ["reset", "--hard"])
             if not ok:
                 return False, f"{name}: {out}"
-            ok, out = run_git(path, ["clean", "-fd"])
+            ok, out = run_git(path, ["clean", "-ffd"])
             if not ok:
                 return False, f"{name}: {out}"
+            if git_has_changes(path):
+                _, remaining = run_git(path, ["status", "--short"])
+                return False, (
+                    f"{name}: could not delete all uncommitted changes; "
+                    f"remaining changes:\n{remaining}"
+                )
         else:
             ok, out = save_uncommitted(path, save_msg)
             if not ok:
                 return False, f"{name}: {out}"
             restore_after = decision == "commit_restore"
+
+    if pull_only:
+        ok, out = run_git(path, ["pull"])
+        if not ok:
+            return False, f"{name}: {out}"
+        if restore_after:
+            ok, out = restore_uncommitted(path, save_msg)
+            if not ok:
+                return False, f"{name}: {out}"
+        return True, ""
 
     ok, out = run_git(path, ["checkout", "master"])
     if not ok:

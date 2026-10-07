@@ -417,6 +417,37 @@ def _check_rebase_on_master(work):
                  cwd=work)
     check(rc == 0, "master should be an ancestor of the rebased feature branch")
 
+    _run(["git", "checkout", "master"], cwd=work)
+    with open(os.path.join(work, "m2.txt"), "w", encoding="utf-8") as handle:
+        handle.write("m2\n")
+    _run(["git", "add", "-A"], cwd=work)
+    _run(["git", "commit", "-m", "M2"], cwd=work)
+    _run(["git", "push", "origin", "master"], cwd=work)
+    _run(["git", "reset", "--hard", "HEAD~1"], cwd=work)
+    with open(os.path.join(work, "dirty.txt"), "w", encoding="utf-8") as handle:
+        handle.write("uncommitted\n")
+    nested_repo = os.path.join(work, "nested-repo")
+    os.makedirs(nested_repo)
+    _run(["git", "init", "--quiet", nested_repo])
+
+    ok, err = gitutils.rebase_on_master(
+        "repo", work, "save changes before rebase", "delete", pull_only=True
+    )
+    check(ok, f"pull-only on master failed: {err}")
+    check(gitutils.git_current_branch(work) == "master",
+          "pull-only should leave the repo on master")
+    check(os.path.isfile(os.path.join(work, "m2.txt")),
+          "pull-only should fetch the latest master commit")
+    check(not os.path.exists(os.path.join(work, "dirty.txt")),
+          "pull-only should apply the selected uncommitted-change decision")
+    check(not os.path.exists(nested_repo),
+          "delete should remove an untracked nested git repository")
+    check(not gitutils.git_has_changes(work),
+          "delete should leave the worktree clean before pulling")
+    rc, _ = _run(["git", "merge-base", "--is-ancestor", "master", "feature/rb"],
+                 cwd=work)
+    check(rc != 0, "pull-only should not rebase the feature branch")
+
 
 def _check_workspace_and_overrides(base, repos):
     """Exercise write/read workspace + branch-override round-trip (ignore-git)."""
