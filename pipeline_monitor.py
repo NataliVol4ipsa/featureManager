@@ -197,6 +197,8 @@ class PipelineMonitorWindow(tk.Toplevel):
         self._pan_anchor = None
         self._progress_tip = None
         self._progress_tip_target = None
+        self._approve_tip = None
+        self._approve_tip_target = None
         self._acc_locked_by_master = False
         self._prod_locked_by_master = False
         # A fresh monitor defaults to the last value the user toggled in any
@@ -1097,10 +1099,6 @@ class PipelineMonitorWindow(tk.Toplevel):
                     canvas.create_text(
                         x, y, text="\u2713", fill="#222222", font=("", 13, "bold"),
                     )
-                    canvas.create_text(
-                        x + 13, y, text="Approve", anchor="w",
-                        fill="#222222", font=("", 8, "bold"),
-                    )
             # A running stage shows its current step, estimated time and time
             # left (or how far it is overdue) on hover.
             if state == "running":
@@ -1216,6 +1214,7 @@ class PipelineMonitorWindow(tk.Toplevel):
         approval_hit = (
             None if retry_hit else self._approval_stage_at(row, event.x, event.y)
         )
+        self._update_approve_tip(repo, row, approval_hit)
         hit = retry_hit or approval_hit
         if hit == row.get("hover_stage"):
             return
@@ -1237,6 +1236,7 @@ class PipelineMonitorWindow(tk.Toplevel):
 
     def _on_stage_leave(self, _event, repo):
         self._hide_progress_tip()
+        self._hide_approve_tip()
         row = self._rows.get(repo)
         if not row or row.get("hover_stage") is None:
             return
@@ -1312,6 +1312,45 @@ class PipelineMonitorWindow(tk.Toplevel):
         if self._progress_tip is not None:
             self._progress_tip.destroy()
             self._progress_tip = None
+
+    def _update_approve_tip(self, repo, row, key):
+        """Show/hide the "Approve" hint for a hovered approval-gate circle.
+
+        Rendered as a Toplevel (not canvas text) so it may extend past the
+        narrow graph column instead of being clipped to it.
+        """
+        target = (repo, key) if key else None
+        if target == self._approve_tip_target:
+            return
+        self._approve_tip_target = target
+        self._hide_approve_tip()
+        if not key:
+            return
+        canvas = row["graph"]
+        center = next(
+            ((cx, cy) for k, cx, cy in row.get("approval_hitboxes") or []
+             if k == key),
+            None,
+        )
+        if center is None:
+            return
+        x = canvas.winfo_rootx() + center[0] + 16
+        y = canvas.winfo_rooty() + center[1] - 8
+        tip = tk.Toplevel(self)
+        tip.wm_overrideredirect(True)
+        tip.wm_attributes("-topmost", True)
+        tip.wm_geometry(f"+{x}+{y}")
+        tk.Label(
+            tip, text="Approve", background=theme.TOOLTIP_BG,
+            foreground=theme.TOOLTIP_FG, relief="solid", borderwidth=1,
+            padx=6, pady=3, font=("", 8, "bold"),
+        ).pack()
+        self._approve_tip = tip
+
+    def _hide_approve_tip(self):
+        if self._approve_tip is not None:
+            self._approve_tip.destroy()
+            self._approve_tip = None
 
     def _on_stage_press(self, event, repo):
         row = self._rows.get(repo)
@@ -1696,6 +1735,7 @@ class PipelineMonitorWindow(tk.Toplevel):
     def _on_close(self):
         self._closed = True
         self._hide_progress_tip()
+        self._hide_approve_tip()
         # Persist the latest run infos + window geometry so the history viewer
         # can reopen this monitor looking as it did before.
         if self.history_session_id:
