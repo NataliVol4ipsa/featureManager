@@ -255,6 +255,19 @@ def save_deployment_status_geometry(geometry):
     _save_prefs(data)
 
 
+def load_pr_status_geometry():
+    """Return the persisted PR-status window geometry, or "" if none."""
+    geometry = _load_prefs().get("pr_status_geometry")
+    return geometry if isinstance(geometry, str) else ""
+
+
+def save_pr_status_geometry(geometry):
+    """Persist the PR-status window geometry across app restarts."""
+    data = _load_prefs()
+    data["pr_status_geometry"] = geometry or ""
+    _save_prefs(data)
+
+
 def load_pipeline_poll_seconds():
     """Return pipeline monitor polling interval in seconds.
 

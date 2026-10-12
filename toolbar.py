@@ -84,6 +84,7 @@ GLYPHS = {
     "View merged master pipelines": "\U0001f440",       # eyes
     "Redeploy latest master commit": "\U0001f9f9",      # broom (redeploy)
     "View deployment status": "\U0001f4ca",             # bar chart (status grid)
+    "View PR status": "\U0001f4ac",                     # speech balloon (comments)
     # Open
     "Open in Git Bash tabs": "\U0001f5a5",              # desktop computer
     "Open repositories (master)": "\U0001f310",         # globe

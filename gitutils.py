@@ -1495,6 +1495,290 @@ def get_ado_pr_url(name, path, target="master", branch=None):
     return True, web_url
 
 
+# Azure DevOps reviewer vote -> short human label (see fetch_pr_status).
+PR_VOTE_LABELS = {
+    10: "approved",
+    5: "approved with suggestions",
+    0: "no vote",
+    -5: "waiting for author",
+    -10: "rejected",
+}
+
+
+def _pr_rest_context(name, path, target="master", branch=None):
+    """Resolve the Azure DevOps REST context for one repo's PR calls.
+
+    Returns (ok, ctx_or_err). *ctx* carries everything the follow-up PR calls
+    (threads, policy) need so they never re-derive the credential: org, project,
+    repo, host, the Basic *auth* token (base64, no "Basic " prefix), branch and
+    target.
+    """
+    if not is_git_repo(path):
+        return False, f"{name}: not a git repository"
+    branch = branch or git_current_branch(path)
+    if not branch:
+        return False, f"{name}: not on a branch (detached HEAD)"
+    remote_url = git_remote_url(path)
+    parsed = parse_ado_remote(remote_url)
+    if not parsed:
+        return False, f"{name}: remote is not an Azure DevOps repository"
+    org, project, repo, host = parsed
+    username, password = get_git_credential(host, remote_url)
+    if not password:
+        return False, f"{name}: no stored Git credential for {host}"
+    auth = base64.b64encode(
+        f"{username or ''}:{password}".encode("utf-8")
+    ).decode("ascii")
+    return True, {
+        "name": name, "org": org, "project": project, "repo": repo,
+        "host": host, "auth": auth, "branch": branch, "target": target,
+    }
+
+
+def fetch_pr_status(name, path, target="master", branch=None):
+    """Fetch the latest pull request (any status) for *branch* -> *target*.
+
+    One REST call. Returns (ok, info_or_err). *info* is a dict with the summary
+    fields the PR-status table needs and a reusable ``ctx`` (credential + ids)
+    so the threads/policy follow-ups make no extra credential lookups:
+
+      pr_id, web_url, title, is_draft, status ('active'|'abandoned'|'completed'),
+      merge_status, has_conflicts, reviewers (list of {name, vote, label,
+      required, voted}), vote_summary, project_id, repo_id, ctx.
+
+    ``info`` is None (ok True) when the repo simply has no PR for the branch.
+    """
+    ok, ctx = _pr_rest_context(name, path, target, branch)
+    if not ok:
+        return False, ctx
+    org, project, repo = ctx["org"], ctx["project"], ctx["repo"]
+    query = urllib.parse.urlencode({
+        "searchCriteria.sourceRefName": f"refs/heads/{ctx['branch']}",
+        "searchCriteria.targetRefName": f"refs/heads/{target}",
+        "searchCriteria.status": "all",
+        "$top": "20",
+        "api-version": "7.1",
+    })
+    url = (
+        f"https://dev.azure.com/{urllib.parse.quote(org)}/"
+        f"{urllib.parse.quote(project)}/_apis/git/repositories/"
+        f"{urllib.parse.quote(repo)}/pullrequests?{query}"
+    )
+    ok, data = _ado_get_json(url, ctx["auth"])
+    if not ok:
+        return False, f"{name}: pull request lookup failed {data}"
+
+    prs = data.get("value") or []
+    if not prs:
+        return True, None
+    # Newest first - ADO returns active before abandoned/completed, but sort by
+    # creation date so the genuinely latest PR wins regardless of status.
+    prs.sort(key=lambda p: p.get("creationDate") or "", reverse=True)
+    pr = prs[0]
+
+    pr_id = pr.get("pullRequestId")
+    repo_info = pr.get("repository") or {}
+    project_info = repo_info.get("project") or {}
+    project_name = project_info.get("name") or project
+    repo_name = repo_info.get("name") or repo
+    web_url = (
+        f"https://dev.azure.com/{urllib.parse.quote(org)}/"
+        f"{urllib.parse.quote(project_name)}/_git/"
+        f"{urllib.parse.quote(repo_name)}/pullrequest/{pr_id}"
+    )
+
+    reviewers = []
+    for reviewer in pr.get("reviewers") or []:
+        vote = int(reviewer.get("vote") or 0)
+        reviewers.append({
+            "name": reviewer.get("displayName") or "",
+            "vote": vote,
+            "label": PR_VOTE_LABELS.get(vote, str(vote)),
+            "required": bool(reviewer.get("isRequired")),
+            # Container (team) reviewers vote on behalf of a group - skip them
+            # when deciding the overall vote so a team's 0 does not mask people.
+            "is_container": bool(reviewer.get("isContainer")),
+            "voted": vote != 0,
+        })
+
+    merge_status = (pr.get("mergeStatus") or "").lower()
+    ctx["pr_id"] = pr_id
+    ctx["project_id"] = project_info.get("id")
+    ctx["repo_id"] = repo_info.get("id")
+    info = {
+        "pr_id": pr_id,
+        "web_url": web_url,
+        "title": pr.get("title") or "",
+        "is_draft": bool(pr.get("isDraft")),
+        "status": (pr.get("status") or "").lower(),
+        "merge_status": merge_status,
+        "has_conflicts": merge_status == "conflicts",
+        "reviewers": reviewers,
+        "vote_summary": _summarise_votes(reviewers),
+        "project_id": project_info.get("id"),
+        "repo_id": repo_info.get("id"),
+        "ctx": ctx,
+    }
+    return True, info
+
+
+def _summarise_votes(reviewers):
+    """Reduce a PR's reviewer votes to one overall label for the table cell."""
+    votes = [r["vote"] for r in reviewers if not r["is_container"]]
+    if not votes:
+        return "no reviewers"
+    if any(v == -10 for v in votes):
+        return "rejected"
+    if any(v == -5 for v in votes):
+        return "waiting for author"
+    approvals = [v for v in votes if v >= 5]
+    if approvals and all(v >= 5 for v in votes):
+        return "approved"
+    if approvals:
+        return "approved (partial)"
+    return "no votes"
+
+
+def fetch_pr_threads(ctx):
+    """Fetch the PR's comment threads using the reusable *ctx* from fetch_pr_status.
+
+    One REST call. Returns (ok, threads_or_err) where each simplified thread is
+    ``{id, status, resolved, is_system, file_path, line_range, comments:[...]}``
+    and each comment is ``{id, parent_id, author, date, content, is_system}``.
+    The same list backs both the summary counts and the row details, so the
+    details view makes no further call.
+    """
+    org, project, repo = ctx["org"], ctx["project"], ctx["repo"]
+    pr_id = ctx.get("pr_id")
+    if not pr_id:
+        return False, "no pull request id in context"
+    url = (
+        f"https://dev.azure.com/{urllib.parse.quote(org)}/"
+        f"{urllib.parse.quote(project)}/_apis/git/repositories/"
+        f"{urllib.parse.quote(repo)}/pullRequests/{pr_id}/threads?api-version=7.1"
+    )
+    ok, data = _ado_get_json(url, ctx["auth"])
+    if not ok:
+        return False, f"thread lookup failed {data}"
+
+    threads = []
+    for thread in data.get("value") or []:
+        if thread.get("isDeleted"):
+            continue
+        comments = []
+        for comment in thread.get("comments") or []:
+            if comment.get("isDeleted"):
+                continue
+            ctype = (comment.get("commentType") or "text").lower()
+            comments.append({
+                "id": comment.get("id"),
+                "parent_id": comment.get("parentCommentId") or 0,
+                "author": (comment.get("author") or {}).get("displayName") or "",
+                "date": comment.get("publishedDate") or "",
+                "content": comment.get("content") or "",
+                "is_system": ctype == "system",
+            })
+        if not comments:
+            continue
+        status = (thread.get("status") or "").lower()
+        context = thread.get("threadContext") or {}
+        file_path = context.get("filePath") or ""
+        line_range = _thread_line_range(context)
+        threads.append({
+            "id": thread.get("id"),
+            "status": status,
+            # Resolved statuses per the ADO comment-thread model.
+            "resolved": status in ("fixed", "wontfix", "closed", "bydesign"),
+            # A thread a person started has a non-system first comment; purely
+            # system threads (votes, ref updates, policy notes) are excluded.
+            "is_system": comments[0]["is_system"],
+            "file_path": file_path,
+            "line_range": line_range,
+            "comments": comments,
+        })
+    return True, threads
+
+
+def _thread_line_range(context):
+    """Human line range like 'L12' or 'L12-18' from a thread's file context."""
+    start = (context.get("rightFileStart") or context.get("leftFileStart") or {})
+    end = (context.get("rightFileEnd") or context.get("leftFileEnd") or {})
+    start_line = start.get("line")
+    end_line = end.get("line")
+    if not start_line:
+        return ""
+    if end_line and end_line != start_line:
+        return f"L{start_line}-{end_line}"
+    return f"L{start_line}"
+
+
+def fetch_pr_policy(ctx):
+    """Fetch a PR's branch-policy evaluations using the reusable *ctx*.
+
+    One REST call per PR during the initial status scan. Returns
+    (ok, dict_or_err) with: ``build_state`` ('succeeded'|'failed'|'running'|
+    'none'), ``build_id``, ``build_url``, ``rejected``, ``pending`` and
+    ``policies`` (a [{name, status}] list for display). Build-error *text* is a
+    separate lazy call (pipelines.get_build_errors) only when build_state failed.
+    """
+    org, project = ctx["org"], ctx["project"]
+    project_id, pr_id = ctx.get("project_id"), ctx.get("pr_id")
+    if not (project_id and pr_id):
+        return False, "missing project/pull-request id"
+    artifact = f"vstfs:///CodeReview/CodeReviewId/{project_id}/{pr_id}"
+    query = urllib.parse.urlencode({
+        "artifactId": artifact,
+        "api-version": "7.1-preview.1",
+    })
+    url = (
+        f"https://dev.azure.com/{urllib.parse.quote(org)}/"
+        f"{urllib.parse.quote(project)}/_apis/policy/evaluations?{query}"
+    )
+    ok, data = _ado_get_json(url, ctx["auth"])
+    if not ok:
+        return False, f"policy lookup failed {data}"
+
+    build_state = "none"
+    build_id = None
+    rejected = False
+    pending = False
+    policies = []
+    for evaluation in data.get("value") or []:
+        status = (evaluation.get("status") or "").lower()
+        config = evaluation.get("configuration") or {}
+        type_name = ((config.get("type") or {}).get("displayName") or "").strip()
+        policies.append({"name": type_name or "policy", "status": status})
+        if status in ("rejected", "broken"):
+            rejected = True
+        if status in ("queued", "running"):
+            pending = True
+        if "build" in type_name.lower():
+            context = evaluation.get("context") or {}
+            bid = context.get("buildId") or context.get("lastBuildId")
+            if bid:
+                build_id = bid
+            if status in ("rejected", "broken"):
+                build_state = "failed"
+            elif status in ("queued", "running") and build_state != "failed":
+                build_state = "running"
+            elif status == "approved" and build_state == "none":
+                build_state = "succeeded"
+    build_url = ""
+    if build_id:
+        build_url = (
+            f"https://dev.azure.com/{urllib.parse.quote(org)}/"
+            f"{urllib.parse.quote(project)}/_build/results?buildId={build_id}"
+        )
+    return True, {
+        "build_state": build_state,
+        "build_id": build_id,
+        "build_url": build_url,
+        "rejected": rejected,
+        "pending": pending,
+        "policies": policies,
+    }
+
+
 # Merge strategies accepted by the Azure DevOps PR completion API.
 PR_MERGE_STRATEGIES = ("noFastForward", "squash", "rebase", "rebaseMerge")
 
@@ -1578,7 +1862,7 @@ def _pr_policy_state(org, project, project_id, pr_id, auth):
     artifact = f"vstfs:///CodeReview/CodeReviewId/{project_id}/{pr_id}"
     query = urllib.parse.urlencode({
         "artifactId": artifact,
-        "api-version": "7.1",
+        "api-version": "7.1-preview.1",
     })
     url = (
         f"https://dev.azure.com/{urllib.parse.quote(org)}/"

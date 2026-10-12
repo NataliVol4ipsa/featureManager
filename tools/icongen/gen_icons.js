@@ -53,6 +53,7 @@ const MAP = {
   "git-branch": "Open remote branches",
   "git-pull-request-arrow": "Open pull requests",
   "table-2": "View deployment status",
+  "messages-square": "View PR status",
 };
 
 // Action label -> group name (drives the colour).
@@ -76,7 +77,7 @@ grp("brown", [
 grp("green", ["Run dev pipelines", "Run acc pipelines", "View merged master pipelines", "Redeploy latest master commit"]);
 grp("yellow", [
   "Open repositories (master)", "Open remote branches", "Open pull requests",
-  "View deployment status", "Delete remote branches",
+  "View deployment status", "View PR status", "Delete remote branches",
 ]);
 
 // Non-action ("misc") icons keyed by a stable name, each with its own colour.

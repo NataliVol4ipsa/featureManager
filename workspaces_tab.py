@@ -29,6 +29,7 @@ from dialogs import (
 )
 import pbi
 from deployment_status import DeploymentStatusWindow
+from pr_status import PrStatusWindow
 
 # Base message for the savepos commits created when switching workspaces.
 SWITCH_SAVE_MSG = "savepos before workspace switch"
@@ -412,6 +413,31 @@ class WorkspacesTab(ActionTabBase):
 
         DeploymentStatusWindow(self, active, stages, on_progress=_on_progress)
 
+    def _action_view_pr_status(self):
+        """Open the pull-request status window for the active repositories."""
+        self.errors.clear()
+        ok, workspace, entries = self._selected_entries()
+        if not ok:
+            self.errors.add(entries)
+            return
+
+        active = [
+            (e["name"], e["path"], e["branch"]) for e in entries if not e["ignoreGit"]
+        ]
+        if not active:
+            self.errors.add(
+                "this workspace has no repositories to check PR status for"
+            )
+            return
+        self.show_repos_async([(n, p) for n, p, _b in active], with_status=True)
+
+        def _on_progress(name, state, tooltip=None):
+            self.progress.status(name, state, tooltip)
+            if state == "error":
+                self.errors.add(tooltip or f"{name}: PR status lookup failed")
+
+        PrStatusWindow(self, active, on_progress=_on_progress)
+
     def _open_actions(self):
         return [
             (
@@ -476,6 +502,22 @@ class WorkspacesTab(ActionTabBase):
                 "the Runs list. Hover a commit to see its message, click it to "
                 "open the run. Results are cached briefly and the window "
                 "remembers its position across restarts.",
+            ),
+            (
+                "View PR status",
+                self._action_view_pr_status,
+                "For the selected workspace's non-skipped repositories: opens a "
+                "table of each repo's latest pull request (current branch → "
+                "master) - draft flag, reviewer vote (approved / waiting for "
+                "author / rejected), whether it was aborted, has merge "
+                "conflicts, and the number of human comment threads with how "
+                "many are still unresolved. Click a service to see who voted "
+                "what, the build / merge-readiness verdict (with build error "
+                "text when a build failed), and every comment thread expandable "
+                "to its full reply chain. Fetched in parallel without blocking "
+                "the UI; the Build and Ready columns are filled when you open a "
+                "row. Needs a stored Git credential (and ADO_PAT for build "
+                "error details).",
             ),
             (
                 "Delete remote branches",

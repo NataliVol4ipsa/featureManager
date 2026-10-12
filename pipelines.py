@@ -1484,6 +1484,35 @@ def _api_build_timeline(org, project, build_id, auth):
     return _api_get(url, auth)
 
 
+def get_build_errors(org, project, host, build_id):
+    """Return (ok, [error_message, ...]) for a build's failed timeline tasks.
+
+    Lazy helper for the PR-status details view: only called when a PR's build
+    policy is failed. Reads the build timeline once and collects every ``error``
+    issue recorded against a timeline record (prefixed with the record name so
+    the failing step is identifiable). Uses the Build-scope PAT (ado_auth), not
+    the PR Code-scope Git credential.
+    """
+    auth, err = _auth_for_host(host, org)
+    if err:
+        return False, err
+    try:
+        timeline = _api_build_timeline(org, project, int(build_id), auth)
+    except urllib.error.HTTPError as exc:
+        return False, f"build log lookup failed ({exc.code}): {_http_error_detail(exc)}"
+    except (urllib.error.URLError, OSError, ValueError) as exc:
+        return False, f"build log lookup failed: {exc}"
+
+    errors = []
+    for record in timeline.get("records") or []:
+        for issue in record.get("issues") or []:
+            if (issue.get("type") or "").lower() == "error":
+                name = record.get("name") or record.get("identifier") or ""
+                message = (issue.get("message") or "").strip()
+                errors.append(f"{name}: {message}" if name else message)
+    return True, errors
+
+
 def _pending_approvals_for_build(org, project, build_id, auth):
     """Return pending approvals for *build_id* as [{"id", "partially_approved"}].
 

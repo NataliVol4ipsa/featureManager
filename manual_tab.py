@@ -14,6 +14,7 @@ from widgets import FolderTab
 from tab_base import ActionTabBase
 from dialogs import ask_branch_name, ask_solutions_to_open, ask_deployment_status_stages
 from deployment_status import DeploymentStatusWindow
+from pr_status import PrStatusWindow
 
 # Base message for the rebase savepos commits (see gitutils.save_uncommitted).
 REBASE_SAVE_MSG = "save changes before rebase"
@@ -305,6 +306,21 @@ class ManualTab(ActionTabBase):
                 "are cached briefly and the window remembers its position "
                 "across restarts.",
             ),
+            (
+                "View PR status",
+                self._action_view_pr_status,
+                "For every selected repository: opens a table of each repo's "
+                "latest pull request (current branch → master) - draft flag, "
+                "reviewer vote (approved / waiting for author / rejected), "
+                "whether it was aborted, has merge conflicts, and the number of "
+                "human comment threads with how many are still unresolved. Click "
+                "a service to see who voted what, the build / merge-readiness "
+                "verdict (with build error text when a build failed), and every "
+                "comment thread expandable to its full reply chain. Fetched in "
+                "parallel without blocking the UI; the Build and Ready columns "
+                "are filled when you open a row. Needs a stored Git credential "
+                "(and ADO_PAT for build error details).",
+            ),
         ]
 
     # -- Selection helper -------------------------------------------------- #
@@ -567,6 +583,16 @@ class ManualTab(ActionTabBase):
             return
         self.show_repos_async(repos, with_status=True)
         DeploymentStatusWindow(self, active, stages, on_progress=self.progress.status)
+
+    def _action_view_pr_status(self):
+        """Open the pull-request status window for the selected repositories."""
+        self.errors.clear()
+        repos = self._all_selected_repos()
+        if not repos:
+            return
+        active = [(name, path, git_current_branch(path)) for name, path in repos]
+        self.show_repos_async(repos, with_status=True)
+        PrStatusWindow(self, active, on_progress=self.progress.status)
 
     # -- Open on the remote host ------------------------------------------- #
     def _action_open_repos_master(self):
