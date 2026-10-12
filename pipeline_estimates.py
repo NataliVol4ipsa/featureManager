@@ -270,7 +270,7 @@ def _elapsed_seconds(start_iso, now):
     return (now - start).total_seconds()
 
 
-def _stage_avg_remaining(stage_key, stage_avgs, stage_times, now):
+def _stage_avg_remaining(stage_key, stage_avgs, stage_times, now, stage_wait=None):
     """Return a stage's remaining time from its wall-clock average.
 
     A running stage subtracts its elapsed time from the historical average
@@ -282,11 +282,15 @@ def _stage_avg_remaining(stage_key, stage_avgs, stage_times, now):
     if avg is None:
         return 0.0
     elapsed = _elapsed_seconds((stage_times.get(stage_key) or {}).get("start"), now)
-    return max(0.0, avg - elapsed) if elapsed is not None else avg
+    if elapsed is None:
+        return avg
+    elapsed = max(0.0, elapsed - (stage_wait or {}).get(stage_key, 0.0))
+    return max(0.0, avg - elapsed)
 
 
 def total_time_left(profile, stages_state, stage_times,
-                    environment=None, visible_stages=None, now=None):
+                    environment=None, visible_stages=None, now=None,
+                    stage_wait=None):
     """Return estimated total seconds left for a run, excluding Production.
 
     Only the stages the run actually includes are combined, so stages skipped
@@ -310,7 +314,8 @@ def total_time_left(profile, stages_state, stage_times,
         if state in _DONE_STATES:
             return 0.0
         if state == "running":
-            return _stage_avg_remaining(key, stage_avgs, stage_times, now)
+            return _stage_avg_remaining(
+                key, stage_avgs, stage_times, now, stage_wait)
         # Waiting / approval / ready / not-yet-started: full historical average.
         return stage_avgs.get(key) or 0.0
 

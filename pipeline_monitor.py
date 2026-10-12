@@ -1225,12 +1225,18 @@ class PipelineMonitorWindow(tk.Toplevel):
         if not estimate:
             label.configure(text="")
             return
+        now = datetime.datetime.now(datetime.timezone.utc)
         total = pipeline_estimates.total_time_left(
             estimate,
             row.get("stages") or {},
             row.get("stage_times") or {},
             environment=row.get("environment"),
             visible_stages=row.get("configured_stages"),
+            stage_wait={
+                k: self._agent_wait_seconds(row, k, now)
+                for k in (row.get("agent_wait") or {})
+            },
+            now=now,
         )
         if total is None:
             label.configure(text="")
