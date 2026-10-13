@@ -274,15 +274,18 @@ class WorkspacesTab(ActionTabBase):
                 "each new PR is shown.",
             ),
             (
-                "Complete pull request",
-                self._action_complete_pr,
+                "View PR status",
+                self._action_view_pr_status,
                 "For the selected workspace's repositories (excluding skipped "
-                "repos): completes (merges) each repo's open Azure DevOps pull "
-                "request (current branch \u2192 master). You choose the merge "
-                "strategy and how to handle PRs that are not ready: publish "
-                "drafts, queue a missing build, and set auto-complete when the "
-                "build or policies are still running. Repos with no open PR or a "
-                "rejected policy are listed in the Errors panel.",
+                "repos): opens a table of each repo's latest pull request "
+                "(current branch \u2192 master) - build status, reviewer vote, "
+                "merge conflicts, overall merge readiness and the resolved / "
+                "total comment thread counts. Each row has a Complete button and "
+                "a PR link; a Complete all button appears when every PR is ready. "
+                "Click a row for reviewer votes, comment threads and the build / "
+                "merge-readiness details. Fetched in parallel without blocking "
+                "the UI. Needs a stored Git credential (and ADO_PAT for build "
+                "error details).",
             ),
             (
                 "Copy PR links",
@@ -502,22 +505,6 @@ class WorkspacesTab(ActionTabBase):
                 "the Runs list. Hover a commit to see its message, click it to "
                 "open the run. Results are cached briefly and the window "
                 "remembers its position across restarts.",
-            ),
-            (
-                "View PR status",
-                self._action_view_pr_status,
-                "For the selected workspace's non-skipped repositories: opens a "
-                "table of each repo's latest pull request (current branch → "
-                "master) - draft flag, reviewer vote (approved / waiting for "
-                "author / rejected), whether it was aborted, has merge "
-                "conflicts, and the number of human comment threads with how "
-                "many are still unresolved. Click a service to see who voted "
-                "what, the build / merge-readiness verdict (with build error "
-                "text when a build failed), and every comment thread expandable "
-                "to its full reply chain. Fetched in parallel without blocking "
-                "the UI; the Build and Ready columns are filled when you open a "
-                "row. Needs a stored Git credential (and ADO_PAT for build "
-                "error details).",
             ),
             (
                 "Delete remote branches",
@@ -933,16 +920,6 @@ class WorkspacesTab(ActionTabBase):
         repos = [(e["name"], e["path"]) for e in active]
         branches = {e["name"]: e["branch"] for e in active if e.get("branch")}
         self.copy_pr_links(repos, branches=branches)
-
-    # -- Complete pull request --------------------------------------------- #
-    def _action_complete_pr(self):
-        ok, workspace, repos = self._selected_active_repos()
-        self.errors.clear()
-        if not ok:
-            if workspace is not None:
-                self.errors.add(repos)
-            return
-        self.complete_prs(repos)
 
     # -- Delete remote branches -------------------------------------------- #
     def _action_delete_remote_branches(self):

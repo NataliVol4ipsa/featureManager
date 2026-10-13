@@ -136,15 +136,17 @@ class ManualTab(ActionTabBase):
                 "\u2192 feature(123) My desc). A link to each new PR is shown.",
             ),
             (
-                "Complete pull request",
-                self._action_complete_pr,
-                "For every selected repository: completes (merges) each repo's "
-                "open Azure DevOps pull request (current branch \u2192 master). "
-                "You choose the merge strategy and how to handle PRs that are "
-                "not ready: publish drafts, queue a missing build, and set "
-                "auto-complete when the build or policies are still running. "
-                "Repos with no open PR or a rejected policy are listed in the "
-                "Errors panel.",
+                "View PR status",
+                self._action_view_pr_status,
+                "For every selected repository: opens a table of each repo's "
+                "latest pull request (current branch \u2192 master) - build "
+                "status, reviewer vote, merge conflicts, overall merge "
+                "readiness and the resolved / total comment thread counts. Each "
+                "row has a Complete button and a PR link; a Complete all button "
+                "appears when every PR is ready. Click a row for reviewer votes, "
+                "comment threads and the build / merge-readiness details. "
+                "Fetched in parallel without blocking the UI. Needs a stored "
+                "Git credential (and ADO_PAT for build error details).",
             ),
             (
                 "Copy PR links",
@@ -305,21 +307,6 @@ class ManualTab(ActionTabBase):
                 "commit to see its message, click it to open the run. Results "
                 "are cached briefly and the window remembers its position "
                 "across restarts.",
-            ),
-            (
-                "View PR status",
-                self._action_view_pr_status,
-                "For every selected repository: opens a table of each repo's "
-                "latest pull request (current branch → master) - draft flag, "
-                "reviewer vote (approved / waiting for author / rejected), "
-                "whether it was aborted, has merge conflicts, and the number of "
-                "human comment threads with how many are still unresolved. Click "
-                "a service to see who voted what, the build / merge-readiness "
-                "verdict (with build error text when a build failed), and every "
-                "comment thread expandable to its full reply chain. Fetched in "
-                "parallel without blocking the UI; the Build and Ready columns "
-                "are filled when you open a row. Needs a stored Git credential "
-                "(and ADO_PAT for build error details).",
             ),
         ]
 
@@ -514,10 +501,6 @@ class ManualTab(ActionTabBase):
     # -- Copy PR links ----------------------------------------------------- #
     def _action_copy_pr_links(self):
         self.copy_pr_links(self._all_selected_repos())
-
-    # -- Complete pull request --------------------------------------------- #
-    def _action_complete_pr(self):
-        self.complete_prs(self._all_selected_repos())
 
     # -- Bump NuGet packages ----------------------------------------------- #
     def _action_bump_public(self):

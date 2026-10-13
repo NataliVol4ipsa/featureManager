@@ -42,6 +42,7 @@ import packages
 import pipeline_history
 from parallel import run_in_parallel
 from pipeline_monitor import PipelineMonitorWindow
+from pr_status import PrStatusWindow
 
 
 class ActionTabBase(ttk.Frame):
@@ -522,10 +523,22 @@ class ActionTabBase(ttk.Frame):
                 for name, _ in ok_repos if name in pr_urls
             )
 
+        def _on_complete(all_ok):
+            if pr_urls:
+                entries = [
+                    (name, path, branch_map.get(name) or git_current_branch(path))
+                    for name, path in repos
+                ]
+                existing = getattr(self, "_pr_status_window", None)
+                if existing is not None and existing.winfo_exists():
+                    existing.destroy()
+                self._pr_status_window = PrStatusWindow(self, entries)
+
         self.run_repo_action(
             repos,
             _create,
             "All pull requests created successfully.",
+            on_complete=_on_complete,
             link_fn=lambda n, p: pr_urls.get(n, ""),
             link_text="View PR",
             link_header="Pull request",
@@ -596,15 +609,16 @@ class ActionTabBase(ttk.Frame):
         )
 
 
-    def complete_prs(self, repos):
+    def complete_prs(self, repos, branches=None):
         """Complete (merge) each selected repo's open Azure DevOps pull request.
 
         Asks once for the merge options (strategy, delete source branch,
         transition work items), then completes the active PR of each repo's
-        current branch to master on a background thread. Each successfully
-        merged PR adds a clickable link to it in the Details table. Repos with
-        no open PR, or whose merge is rejected (unmet policies, conflicts,
-        pending approvals), are reported in the Errors panel.
+        branch (the *branches* map by repo name, else the current branch) to
+        master on a background thread. Each successfully merged PR adds a
+        clickable link to it in the Details table. Repos with no open PR, or
+        whose merge is rejected (unmet policies, conflicts, pending approvals),
+        are reported in the Errors panel.
         """
         self.errors.clear()
         if not repos:
@@ -616,6 +630,7 @@ class ActionTabBase(ttk.Frame):
         if options is None:
             return
 
+        branches = branches or {}
         pr_urls = {}
         self._last_pr_urls = pr_urls
 
@@ -628,6 +643,7 @@ class ActionTabBase(ttk.Frame):
                 publish_draft=options["publish_draft"],
                 queue_build=options["queue_build"],
                 auto_complete_when_not_ready=options["auto_complete_when_not_ready"],
+                branch=branches.get(name),
             )
             if ok:
                 pr_urls[name] = result

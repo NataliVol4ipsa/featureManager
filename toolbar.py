@@ -72,7 +72,7 @@ GLYPHS = {
     "Git push": "\u2b06",                               # up arrow
     "Create pull request": "\U0001f4e4",                # outbox (submit request)
     "Copy PR links": "\U0001f517",                      # link
-    "Complete pull request": "\U0001f500",              # twisted arrows (merge)
+    "View PR status": "\U0001f4ac",                     # speech balloon (comments)
     # Packages
     "Bump NuGet packages (public)": "\U0001f4e6",       # package
     "Bump NuGet packages (private)": "\U0001f510",      # locked with key
@@ -84,7 +84,6 @@ GLYPHS = {
     "View merged master pipelines": "\U0001f440",       # eyes
     "Redeploy latest master commit": "\U0001f9f9",      # broom (redeploy)
     "View deployment status": "\U0001f4ca",             # bar chart (status grid)
-    "View PR status": "\U0001f4ac",                     # speech balloon (comments)
     # Open
     "Open in Git Bash tabs": "\U0001f5a5",              # desktop computer
     "Open repositories (master)": "\U0001f310",         # globe

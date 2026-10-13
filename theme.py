@@ -41,6 +41,7 @@ DARK = {
     "SUCCESS":      "#5cba5c",  # done / mapped (green)
     "WARNING":      "#e0a23c",  # in-progress / warnings (amber)
     "READY":        "#8fc4f2",  # ready (partial approval done) - light blue
+    "COMPLETED":    "#b180f0",  # completed / merged PR - purple
     "TOOLTIP_BG":   "#2c323c",  # tooltip background
     "TOOLTIP_FG":   "#dfe3e8",  # tooltip text
 }
@@ -62,6 +63,7 @@ LIGHT = {
     "SUCCESS":      "#1a9e1a",
     "WARNING":      "#d98c00",
     "READY":        "#3d7fbf",  # ready - kept visible on the light background
+    "COMPLETED":    "#6b46c1",  # completed / merged PR - purple
     "TOOLTIP_BG":   "#ffffe0",
     "TOOLTIP_FG":   "#1e2226",
 }

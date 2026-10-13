@@ -36,9 +36,11 @@ _COLUMNS = (
     ("service", "Service", 24),
     ("build", "Build", 10),
     ("vote", "Vote", 20),
-    ("ready", "Ready", 7),
+    ("ready", "Ready", 11),
     ("comments", "Comments", 17),
     ("conflicts", "Conflicts", 10),
+    ("complete", "", 9),
+    ("prlink", "", 10),
 )
 
 
@@ -80,9 +82,15 @@ class PrStatusWindow(tk.Toplevel):
 
         self._entries = entries
         self._on_progress = on_progress
+        self._tab = parent
+        self._path_by_name = {name: path for name, path, _branch in entries}
+        self._branch_by_name = {name: branch for name, _path, branch in entries}
+        self._show_complete = True
         self._row_index = {}
         self._row_data = {}        # name -> fetched PR, policy and comment data
         self._service_cells = {}
+        self._row_exclude = {}     # name -> widgets that keep their own click
+        self._detail_windows = {}  # name -> open PrDetailWindow
 
         self._build_ui()
         self.protocol("WM_DELETE_WINDOW", self._on_close)
@@ -109,6 +117,14 @@ class PrStatusWindow(tk.Toplevel):
         )
         self._refresh_button.pack(side="right")
         Tooltip(self._refresh_button, "Re-check Azure DevOps now.")
+        self._complete_all_button = ttk.Button(
+            header, text="Complete all", command=self._complete_all
+        )
+        Tooltip(
+            self._complete_all_button,
+            "Complete (merge) every listed pull request - shown only when they "
+            "are all ready to merge.",
+        )
 
         tk.Frame(self, height=1, background=theme.BORDER).pack(side="top", fill="x")
 
@@ -149,23 +165,33 @@ class PrStatusWindow(tk.Toplevel):
         for child in self._inner.winfo_children():
             child.destroy()
 
+    def _columns(self):
+        if self._show_complete:
+            return _COLUMNS
+        return tuple(col for col in _COLUMNS if col[0] != "complete")
+
     def _build_header(self):
-        for col, (_key, label, width) in enumerate(_COLUMNS):
+        cols = self._columns()
+        for col, (_key, label, width) in enumerate(cols):
             tk.Label(
                 self._inner, text=label, background=theme.BG, foreground=theme.FG,
                 font=("", 9, "bold"), width=width, anchor="w",
             ).grid(row=0, column=col, padx=(4, 8), pady=4, sticky="w")
         tk.Frame(self._inner, height=1, background=theme.BORDER).grid(
-            row=1, column=0, columnspan=len(_COLUMNS), sticky="ew", pady=(0, 2),
+            row=1, column=0, columnspan=len(cols), sticky="ew", pady=(0, 2),
         )
 
     def _load(self, force):
+        self._show_complete = True
         self._refresh_button.configure(state="disabled")
         self._clear_inner()
         self._row_index = {}
         self._row_data = {}
         self._service_cells = {}
+        self._row_exclude = {}
+        self._complete_all_button.pack_forget()
         self._build_header()
+        cols = self._columns()
         for row, (name, _path, _branch) in enumerate(self._entries, start=2):
             service = tk.Frame(self._inner, background=theme.BG, cursor="hand2")
             service.grid(row=row, column=0, padx=(4, 8), pady=2, sticky="ew")
@@ -175,7 +201,7 @@ class PrStatusWindow(tk.Toplevel):
             ).pack(side="left")
             self._service_cells[name] = service
             self._row_index[name] = row
-            for col, (_key, _label, width) in enumerate(_COLUMNS[1:], start=1):
+            for col, (_key, _label, width) in enumerate(cols[1:], start=1):
                 tk.Label(
                     self._inner, text="\u2026", background=theme.BG,
                     foreground=theme.FG_MUTED, width=width, anchor="w",
@@ -228,43 +254,63 @@ class PrStatusWindow(tk.Toplevel):
         row = self._row_index.get(name)
         if row is None:
             return
-        # Clear the placeholders while keeping the service-name frame.
-        for child in self._inner.grid_slaves(row=row):
-            if int(child.grid_info()["column"]) != 0:
-                child.destroy()
 
-        if not ok:
-            cell = tk.Label(
-                self._inner, text="error", background=theme.BG,
-                foreground=theme.ERROR, width=_COLUMNS[1][2], anchor="w",
-            )
-            cell.grid(row=row, column=1, padx=(0, 8), pady=2, sticky="w")
-            Tooltip(cell, str(info))
-            self._bind_row(name)
-            self.after_idle(self._fit_to_content)
-            return
-
-        if not info:
-            cell = tk.Label(
-                self._inner, text="no PR", background=theme.BG,
-                foreground=theme.FG_MUTED, width=_COLUMNS[1][2], anchor="w",
-            )
-            cell.grid(row=row, column=1, padx=(0, 8), pady=2, sticky="w")
-            self.after_idle(self._fit_to_content)
-            return
-
-        human_threads = [t for t in threads if not t["is_system"]]
+        human_threads = [t for t in threads if not t["is_system"]] if threads else []
         resolved = sum(1 for t in human_threads if t["resolved"])
         unresolved = len(human_threads) - resolved
         self._row_data[name] = {
-            "info": info, "threads": threads, "unresolved": unresolved,
+            "ok": ok, "info": info, "threads": threads, "unresolved": unresolved,
             "resolved": resolved, "policy_ok": policy_ok,
             "policy": policy, "build_errors": build_errors,
             "thread_error": terr,
         }
 
+        # Clear every cell except the service name (column 0) before refilling.
+        for child in self._inner.grid_slaves(row=row):
+            if int(child.grid_info()["column"]) != 0:
+                child.destroy()
+
+        self._fill_row_cells(name, row)
+        self.after_idle(self._fit_to_content)
+
+    def _fill_row_cells(self, name, row):
+        data = self._row_data.get(name)
+        if not data:
+            return
+        cols = self._columns()
+
+        if not data["ok"]:
+            cell = tk.Label(
+                self._inner, text="error", background=theme.BG,
+                foreground=theme.ERROR, width=cols[1][2], anchor="w",
+            )
+            cell.grid(row=row, column=1, padx=(0, 8), pady=2, sticky="w")
+            Tooltip(cell, str(data["info"]))
+            self._bind_row(name)
+            return
+
+        info = data["info"]
+        if not info:
+            cell = tk.Label(
+                self._inner, text="no PR", background=theme.BG,
+                foreground=theme.FG_MUTED, width=cols[1][2], anchor="w",
+            )
+            cell.grid(row=row, column=1, padx=(0, 8), pady=2, sticky="w")
+            self._bind_row(name)
+            return
+
+        threads = data["threads"]
+        human_threads = [t for t in threads if not t["is_system"]] if threads else []
+        resolved = data["resolved"]
+        unresolved = data["unresolved"]
+        terr = data["thread_error"]
+        policy_ok = data["policy_ok"]
+        policy = data["policy"]
+
         service = self._service_cells.get(name)
         if service:
+            for child in service.winfo_children()[1:]:
+                child.destroy()
             if info["status"] == "abandoned":
                 status_label = "aborted"
             elif info["is_draft"]:
@@ -287,8 +333,28 @@ class PrStatusWindow(tk.Toplevel):
             ),
             "conflicts": ("conflicts" if info["has_conflicts"] else "", "ERROR"),
         }
-        for col, (key, _label, width) in enumerate(_COLUMNS):
+        for col, (key, _label, width) in enumerate(cols):
             if key == "service":
+                continue
+            if key == "complete":
+                if info["status"] == "active":
+                    btn = ttk.Button(
+                        self._inner, text="complete", width=width,
+                        command=lambda n=name: self._complete_one(n),
+                    )
+                    btn.grid(row=row, column=col, padx=(0, 8), pady=1, sticky="w")
+                    self._row_exclude.setdefault(name, []).append(btn)
+                continue
+            if key == "prlink":
+                link = tk.Label(
+                    self._inner, text=f"#{info['pr_id']}", background=theme.BG,
+                    foreground=theme.LINK, cursor="hand2", width=width, anchor="w",
+                )
+                link.grid(row=row, column=col, padx=(0, 8), pady=2, sticky="w")
+                link.bind("<Button-1>",
+                          lambda _e, u=info["web_url"]: webbrowser.open(u, new=2))
+                Tooltip(link, info["web_url"])
+                self._row_exclude.setdefault(name, []).append(link)
                 continue
             if key == "comments":
                 count_cell = tk.Frame(self._inner, background=theme.BG, cursor="hand2")
@@ -318,19 +384,49 @@ class PrStatusWindow(tk.Toplevel):
             )
             cell.grid(row=row, column=col, padx=(0, 8), pady=2, sticky="w")
         self._bind_row(name)
-        self.after_idle(self._fit_to_content)
+
+    def _redraw_table(self):
+        self._clear_inner()
+        self._row_index = {}
+        self._service_cells = {}
+        self._row_exclude = {}
+        self._build_header()
+        for row, (name, _path, _branch) in enumerate(self._entries, start=2):
+            self._row_index[name] = row
+            service = tk.Frame(self._inner, background=theme.BG, cursor="hand2")
+            service.grid(row=row, column=0, padx=(4, 8), pady=2, sticky="ew")
+            tk.Label(
+                service, text=name, background=theme.BG, foreground=theme.FG,
+                width=_COLUMNS[0][2], anchor="w", cursor="hand2",
+            ).pack(side="left")
+            self._service_cells[name] = service
+            self._fill_row_cells(name, row)
 
     def _open_details(self, name):
         data = self._row_data.get(name)
         if not data:
             return
-        PrDetailWindow(self, name, data)
+        existing = self._detail_windows.get(name)
+        if existing is not None and existing.winfo_exists():
+            existing.deiconify()
+            existing.lift()
+            existing.focus_force()
+            return
+        win = PrDetailWindow(self, name, data)
+        self._detail_windows[name] = win
+        win.protocol("WM_DELETE_WINDOW", lambda: self._close_detail(name, win))
+
+    def _close_detail(self, name, win):
+        self._detail_windows.pop(name, None)
+        if win.winfo_exists():
+            win.destroy()
 
     def _bind_row(self, name):
         """Make each visible widget in a PR row open the same details window."""
         row = self._row_index.get(name)
         if row is None:
             return
+        exclude = set(self._row_exclude.get(name, []))
         widgets = list(self._inner.grid_slaves(row=row))
         service = self._service_cells.get(name)
         if service:
@@ -338,9 +434,59 @@ class PrStatusWindow(tk.Toplevel):
         pending = list(widgets)
         while pending:
             widget = pending.pop()
+            if widget in exclude:
+                continue
             pending.extend(widget.winfo_children())
             widget.configure(cursor="hand2")
             widget.bind("<Button-1>", lambda _e, n=name: self._open_details(n))
+
+    def _completable(self):
+        """(name, path, data) for every repo with an active pull request."""
+        items = []
+        for name in self._row_index:
+            data = self._row_data.get(name)
+            if data and data["info"] and data["info"]["status"] == "active":
+                items.append((name, self._path_by_name.get(name), data))
+        return items
+
+    def _is_ready(self, data):
+        text, _color = self._ready_summary(
+            data["info"], data["policy_ok"], data["policy"],
+            data["unresolved"], threads_ok=data["thread_error"] is None,
+        )
+        return text == "yes"
+
+    def _all_ready(self):
+        """True when every PR is ready to merge or already completed, and at
+        least one is still completable (an all-completed set hides the button).
+        """
+        prs = [self._row_data.get(n) for n in self._row_index]
+        prs = [d for d in prs if d and d["info"]]
+        if not prs:
+            return False
+        to_complete = 0
+        for data in prs:
+            status = data["info"]["status"]
+            if status == "completed":
+                continue
+            if status == "active" and self._is_ready(data):
+                to_complete += 1
+                continue
+            return False
+        return to_complete > 0
+
+    def _complete_one(self, name):
+        path = self._path_by_name.get(name)
+        if path:
+            self._tab.complete_prs(
+                [(name, path)], branches={name: self._branch_by_name.get(name)}
+            )
+
+    def _complete_all(self):
+        repos = [(name, path) for name, path, _d in self._completable()]
+        if repos:
+            branches = {name: self._branch_by_name.get(name) for name, _p in repos}
+            self._tab.complete_prs(repos, branches=branches)
 
     @staticmethod
     def _build_summary(policy_ok, policy):
@@ -355,6 +501,8 @@ class PrStatusWindow(tk.Toplevel):
 
     @staticmethod
     def _ready_summary(info, policy_ok, policy, unresolved, threads_ok=True):
+        if info.get("status") == "completed":
+            return "completed", "COMPLETED"
         if not policy_ok or not threads_ok:
             return "?", "FG_MUTED"
         ready = (
@@ -373,6 +521,18 @@ class PrStatusWindow(tk.Toplevel):
         if not self.winfo_exists():
             return
         self._refresh_button.configure(state="normal")
+        has_any_complete = any(
+            d and d.get("info") and d["info"].get("status") == "active"
+            for d in self._row_data.values()
+        )
+        if not has_any_complete and self._show_complete:
+            self._show_complete = False
+            self._redraw_table()
+
+        if self._all_ready():
+            self._complete_all_button.pack(side="right", padx=(0, 6))
+        else:
+            self._complete_all_button.pack_forget()
         self.after_idle(self._fit_to_content)
 
     def _fit_to_content(self):
@@ -391,6 +551,10 @@ class PrStatusWindow(tk.Toplevel):
 
     def _on_close(self):
         theme.save_pr_status_geometry(self.geometry())
+        for win in list(self._detail_windows.values()):
+            if win.winfo_exists():
+                win.destroy()
+        self._detail_windows.clear()
         self.destroy()
 
 
@@ -589,8 +753,12 @@ class PrDetailWindow(tk.Toplevel):
             build_line.bind("<Button-1>",
                             lambda _e: webbrowser.open(policy["build_url"]))
 
+        if ready_text == "completed":
+            ready_label = "Ready to merge: completed"
+        else:
+            ready_label = "Ready to merge: yes" if ready else "Ready to merge: no"
         tk.Label(
-            container, text=("Ready to merge: yes" if ready else "Ready to merge: no"),
+            container, text=ready_label,
             background=theme.BG, foreground=getattr(theme, ready_color),
             anchor="w",
         ).pack(side="top", fill="x", anchor="w")

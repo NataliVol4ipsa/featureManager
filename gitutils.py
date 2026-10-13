@@ -1747,6 +1747,10 @@ def fetch_pr_policy(ctx):
         status = (evaluation.get("status") or "").lower()
         config = evaluation.get("configuration") or {}
         type_name = ((config.get("type") or {}).get("displayName") or "").strip()
+        # "Require a merge strategy" only constrains HOW a PR merges, never
+        # whether it can be completed - keep it out of the readiness verdict.
+        if "merge strategy" in type_name.lower():
+            continue
         policies.append({"name": type_name or "policy", "status": status})
         if status in ("rejected", "broken"):
             rejected = True
@@ -1880,6 +1884,10 @@ def _pr_policy_state(org, project, project_id, pr_id, auth):
         status = (evaluation.get("status") or "").lower()
         config = evaluation.get("configuration") or {}
         type_name = ((config.get("type") or {}).get("displayName") or "").lower()
+        # "Require a merge strategy" is satisfied by the completion itself, so
+        # its pre-merge "rejected" state must not block completing the PR.
+        if "merge strategy" in type_name:
+            continue
         is_build = "build" in type_name
         if status in ("queued", "running"):
             pending = True
@@ -1907,13 +1915,13 @@ def _requeue_policy_evaluation(org, project, evaluation_id, auth):
 def complete_ado_pr(name, path, target="master", merge_strategy="noFastForward",
                     delete_source_branch=True, transition_work_items=True,
                     publish_draft=True, auto_complete_when_not_ready=True,
-                    queue_build=True):
-    """Complete (merge) the open Azure DevOps PR for the repo's current branch.
+                    queue_build=True, branch=None):
+    """Complete (merge) the open Azure DevOps PR for the repo's *branch*.
 
     Returns (ok, url_or_err, warning). Looks up the active pull request that
-    goes from the repo's current branch to *target* (master) and tries to merge
-    it with the given options. Authentication reuses the Git credential stored
-    for the host (no prompts).
+    goes from *branch* (the repo's current branch when not given) to *target*
+    (master) and tries to merge it with the given options. Authentication
+    reuses the Git credential stored for the host (no prompts).
 
     The PR state is inspected and remediations are applied when enabled:
 
@@ -1932,7 +1940,7 @@ def complete_ado_pr(name, path, target="master", merge_strategy="noFastForward",
     """
     if not is_git_repo(path):
         return False, f"{name}: not a git repository", ""
-    branch = git_current_branch(path)
+    branch = branch or git_current_branch(path)
     if not branch:
         return False, f"{name}: not on a branch (detached HEAD)", ""
     if branch == target:

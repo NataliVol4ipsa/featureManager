@@ -40,7 +40,7 @@ const MAP = {
   "upload": "Git push",
   "git-pull-request": "Create pull request",
   "link": "Copy PR links",
-  "git-merge": "Complete pull request",
+  "messages-square": "View PR status",
   "git-branch-minus": "Delete remote branches",
   "package": "Bump NuGet packages (public)",
   "boxes": "Bump all NuGet packages",
@@ -68,7 +68,7 @@ grp("blue", [
 grp("red", [
   "Rebase current branch on master", "Commit all changes",
   "Git push", "Create pull request", "Copy PR links",
-  "Complete pull request",
+  "View PR status",
 ]);
 grp("brown", [
   "Bump NuGet packages (public)", "Bump NuGet packages (private)",
@@ -77,7 +77,7 @@ grp("brown", [
 grp("green", ["Run dev pipelines", "Run acc pipelines", "View merged master pipelines", "Redeploy latest master commit"]);
 grp("yellow", [
   "Open repositories (master)", "Open remote branches", "Open pull requests",
-  "View deployment status", "View PR status", "Delete remote branches",
+  "View deployment status", "Delete remote branches",
 ]);
 
 // Non-action ("misc") icons keyed by a stable name, each with its own colour.
