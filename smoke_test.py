@@ -21,11 +21,14 @@ import stat
 import subprocess
 import tempfile
 import tkinter as tk
+from tkinter import ttk
+from unittest.mock import patch
 
 import gitutils
 import manual_tab
 import packages
 import pbi
+import pr_status
 import theme
 from tab_base import ActionTabBase
 from manual_tab import ManualTab
@@ -516,41 +519,134 @@ def _check_git_integration():
         _rmtree(base)
 
 
+def _check_pr_status(root):
+      with patch.object(pr_status.PrStatusWindow, "_load"):
+            window = pr_status.PrStatusWindow(
+                  root, [("RepoA", "fake/A", "feature/a"),
+                           ("RepoB", "fake/B", "feature/b")],
+            )
+      try:
+            window._build_header()
+            policy = dict(build_state="succeeded", rejected=False, pending=False)
+            for row, name in enumerate(("RepoA", "RepoB"), start=2):
+                  window._row_index[name] = row
+                  service = tk.Frame(window._inner)
+                  service.grid(row=row, column=0)
+                  tk.Label(service, text=name).pack()
+                  window._service_cells[name] = service
+                  ctx = dict(org="org", project="My Project", repo=name,
+                                 pr_id=row, auth="test")
+                  info = dict(status="active", is_draft=True, has_conflicts=False,
+                                    vote_summary="approved", ctx=ctx, pr_id=row,
+                                    web_url="https://example.invalid")
+                  window._render_row(name, True, info, [], None, True, policy, None)
+            root.update()
+            draft_col = next(index for index, column in enumerate(window._columns())
+                                     if column[:2] == ("draft", "Draft"))
+            cell = window._inner.grid_slaves(row=2, column=draft_col)[0]
+            label = next(child for child in cell.winfo_children()
+                               if isinstance(child, tk.Label))
+            button = next(child for child in cell.winfo_children()
+                                if isinstance(child, ttk.Button))
+            size = (cell.winfo_width(), cell.winfo_height())
+            label.event_generate("<Enter>")
+            root.update()
+            check(button.winfo_manager() == "place", "Draft hover did not show toggle")
+            check((cell.winfo_width(), cell.winfo_height()) == size,
+                    "Draft hover changed the cell size")
+            button.event_generate("<Leave>")
+            root.update()
+            check(not button.winfo_manager(), "Draft toggle did not hide on leave")
+
+            class ImmediateThread:
+                  def __init__(self, target, daemon):
+                        self.target = target
+
+                  def start(self):
+                        self.target()
+
+            with patch.object(pr_status.threading, "Thread", ImmediateThread), \
+                        patch.object(pr_status, "fetch_pr_policy", return_value=(True, policy)), \
+                        patch.object(gitutils, "_ado_send_json", return_value=(True, {})) as send:
+                  for draft in (False, True):
+                        window._toggle_draft("RepoA")
+                        check("RepoA" in window._draft_updates,
+                                "Draft update was not marked pending")
+                        window._toggle_draft("RepoA")
+                        root.update()
+                        send.assert_called_with(
+                              "https://dev.azure.com/org/My%20Project/_apis/git/"
+                              "repositories/RepoA/pullrequests/2?api-version=7.1",
+                              "test", {"isDraft": draft}, "PATCH",
+                        )
+                        check(window._row_data["RepoA"]["info"]["is_draft"] == draft,
+                                "Draft state did not update")
+                        check(window._row_data["RepoB"]["info"]["is_draft"],
+                                "Draft toggle changed another row")
+                        complete = next(widget for widget in window._inner.grid_slaves(row=2)
+                                                if isinstance(widget, ttk.Button))
+                        check(complete.instate(["disabled"]) == draft,
+                                "Complete button did not follow draft readiness")
+                  check(send.call_count == 2, "Pending toggle allowed duplicate requests")
+            with patch.object(pr_status.threading, "Thread", ImmediateThread), \
+                        patch.object(pr_status, "set_pr_draft", return_value=(False, "denied")), \
+                        patch.object(pr_status.messagebox, "showerror") as error:
+                  window._toggle_draft("RepoA")
+                  root.update()
+                  check(error.called, "Draft failure was not reported")
+                  check(window._row_data["RepoA"]["info"]["is_draft"],
+                          "Failed draft toggle changed local state")
+                  check(not window._draft_updates, "Failed draft toggle stayed pending")
+            data = window._row_data["RepoA"]
+            data["info"]["is_draft"] = False
+            for state in ("running", "failed"):
+                  data["policy"] = dict(policy, build_state=state)
+                  check(not window._is_ready(data), f"{state} build was ready to complete")
+            data["policy_ok"] = False
+            check(not window._is_ready(data), "Unknown policy was ready to complete")
+            with patch.object(window, "_tab") as tab:
+                  window._complete_one("RepoA")
+                  check(not tab.complete_prs.called, "Unready PR completion was dispatched")
+      finally:
+            window.destroy()
+
+
 def main():
-    root = tk.Tk()
-    root.withdraw()  # no visible window
-    theme.apply_theme(root)
+      root = tk.Tk()
+      root.withdraw()  # no visible window
+      theme.apply_theme(root)
 
-    try:
-        workspaces_tab = WorkspacesTab(root)
-        repo_tab = ManualTab(root)
+      try:
+            workspaces_tab = WorkspacesTab(root)
+            repo_tab = ManualTab(root)
 
-        _validate_sections(workspaces_tab, "Workspaces")
-        repo_labels = _validate_sections(repo_tab, "Repositories")
+            _validate_sections(workspaces_tab, "Workspaces")
+            repo_labels = _validate_sections(repo_tab, "Repositories")
 
-        leaked = FORBIDDEN_REPO_LABELS & repo_labels
-        check(not leaked,
-              f"Repositories tab leaked workspace-only actions: {sorted(leaked)}")
+            leaked = FORBIDDEN_REPO_LABELS & repo_labels
+            check(not leaked,
+                    f"Repositories tab leaked workspace-only actions: {sorted(leaked)}")
 
-        missing = REQUIRED_REPO_LABELS - repo_labels
-        check(not missing,
-              f"Repositories tab is missing ported actions: {sorted(missing)}")
+            missing = REQUIRED_REPO_LABELS - repo_labels
+            check(not missing,
+                    f"Repositories tab is missing ported actions: {sorted(missing)}")
 
-        _check_base_methods()
-        _check_repo_delegation(repo_tab)
-        _check_pure_logic()
-    finally:
-        root.destroy()
+            _check_base_methods()
+            _check_repo_delegation(repo_tab)
+            _check_pure_logic()
+            _check_pr_status(root)
+      finally:
+            root.destroy()
 
-    _check_git_integration()
+      _check_git_integration()
 
-    if _failures:
-        print("SMOKE TEST FAILED:")
-        for failure in _failures:
-            print(f"  - {failure}")
-        return 1
-    print("SMOKE TEST OK")
-    return 0
+      if _failures:
+            print("SMOKE TEST FAILED:")
+            for failure in _failures:
+                  print(f"  - {failure}")
+            return 1
+      print("SMOKE TEST OK")
+      return 0
 
 
 if __name__ == "__main__":

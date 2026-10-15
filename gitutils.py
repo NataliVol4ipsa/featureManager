@@ -1622,6 +1622,16 @@ def fetch_pr_status(name, path, target="master", branch=None):
     return True, info
 
 
+def set_pr_draft(ctx, draft):
+    """Set the draft flag on the exact PR identified by a fetched context."""
+    url = (
+        f"https://dev.azure.com/{urllib.parse.quote(ctx['org'])}/"
+        f"{urllib.parse.quote(ctx['project'])}/_apis/git/repositories/"
+        f"{urllib.parse.quote(ctx['repo'])}/pullrequests/{ctx['pr_id']}?api-version=7.1"
+    )
+    return _ado_send_json(url, ctx["auth"], {"isDraft": bool(draft)}, "PATCH")
+
+
 def _summarise_votes(reviewers):
     """Reduce a PR's reviewer votes to one overall label for the table cell."""
     votes = [r["vote"] for r in reviewers if not r["is_container"]]
