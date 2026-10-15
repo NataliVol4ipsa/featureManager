@@ -71,7 +71,6 @@ GLYPHS = {
     # Remote
     "Git push": "\u2b06",                               # up arrow
     "Create pull request": "\U0001f4e4",                # outbox (submit request)
-    "Copy PR links": "\U0001f517",                      # link
     "View PR status": "\U0001f4ac",                     # speech balloon (comments)
     # Packages
     "Bump NuGet packages (public)": "\U0001f4e6",       # package

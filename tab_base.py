@@ -549,66 +549,6 @@ class ActionTabBase(ttk.Frame):
         )
 
 
-    def copy_pr_links(self, repos, branches=None):
-        """Look up each selected repo's open pull request and copy the links.
-
-        Queries Azure DevOps for the active PR of every repo's branch (no
-        reliance on PRs created in this session), lists a clickable link per
-        repo in the Details table, and copies all "repo name - pr link" lines to
-        the clipboard. Repos without an open PR are reported in the Errors panel.
-        *branches* optionally maps repo name to the branch whose PR to look up
-        (the workspace feature branch); without it the repo's current git branch
-        is used.
-        """
-        self.errors.clear()
-        if not repos:
-            return
-
-        self.show_repos_async(repos, with_status=False)
-
-        branch_map = dict(branches or {})
-        pr_urls = {}
-        self._last_pr_urls = pr_urls
-
-        def _lookup(name, path):
-            ok, result = get_ado_pr_url(name, path, branch=branch_map.get(name))
-            if ok:
-                pr_urls[name] = result
-                return True, ""
-            return False, result
-
-        def _copy_text(ok_repos):
-            return "\n".join(
-                f"{name} - {pr_urls[name]}"
-                for name, _ in ok_repos if name in pr_urls
-            )
-
-        # Copy to the clipboard as soon as the lookups finish, even if some
-        # repos had no open PR (the ones that were found are still useful).
-        def _on_complete(_all_ok):
-            if not pr_urls:
-                return
-            text = "\n".join(f"{n} - {u}" for n, u in pr_urls.items())
-            self.clipboard_clear()
-            self.clipboard_append(text)
-            self.progress.show_completion(
-                "Pull request links copied to clipboard.", text
-            )
-
-        self.run_repo_action(
-            repos,
-            _lookup,
-            "Pull request links copied to clipboard.",
-            link_fn=lambda n, p: pr_urls.get(n, ""),
-            link_text="View PR",
-            link_header="Pull request",
-            show_branch=False,
-            completion_copy_fn=_copy_text,
-            on_complete=_on_complete,
-            parallel=True,
-        )
-
-
     def complete_prs(self, repos, branches=None):
         """Complete (merge) each selected repo's open Azure DevOps pull request.
 

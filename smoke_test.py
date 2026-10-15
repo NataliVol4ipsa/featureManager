@@ -48,7 +48,6 @@ FORBIDDEN_REPO_LABELS = {
 
 # Actions that must have been ported onto the Repositories tab.
 REQUIRED_REPO_LABELS = {
-    "Copy PR links",
     "Bump NuGet packages (public)",
     "Bump NuGet packages (private)",
     "Bump all NuGet packages",
@@ -64,7 +63,7 @@ REQUIRED_REPO_LABELS = {
 # Shared helpers that must live on the base class after the refactor.
 BASE_SHARED_METHODS = [
     "bump_packages", "run_pipelines", "open_repos_master", "open_branches",
-    "open_prs", "show_master_pipeline_monitor_for_merged_prs", "copy_pr_links",
+            "open_prs", "show_master_pipeline_monitor_for_merged_prs",
     "open_terminals", "push_all", "create_prs", "commit_all_changes",
 ]
 
@@ -100,6 +99,8 @@ def _validate_sections(tab, tab_name):
             check(isinstance(hint, str) and hint.strip(),
                   f"{tab_name}/{title}/{label}: missing hint")
             labels.add(label)
+    check("Copy PR links" not in labels,
+          f"{tab_name}: Copy PR links still appears as a standalone action")
     return labels
 
 
@@ -118,7 +119,6 @@ def _check_repo_delegation(repo_tab):
 
     # Stub every heavy base method on the instance so nothing external runs.
     for name in ("bump_packages", "restore_packages", "run_pipelines",
-                 "copy_pr_links",
                  "open_repos_master", "open_branches", "open_prs",
                  "show_master_pipeline_monitor_for_merged_prs",
                  "open_terminals", "push_all", "create_prs",
@@ -135,11 +135,6 @@ def _check_repo_delegation(repo_tab):
     try:
         def last():
             return calls[-1] if calls else (None, None, None)
-
-        repo_tab._action_copy_pr_links()
-        name, args, _ = last()
-        check(name == "copy_pr_links" and args == (FAKE_REPOS,),
-              f"Copy PR links did not delegate correctly: {last()!r}")
 
         repo_tab._action_bump_public()
         name, args, _ = last()
@@ -538,9 +533,38 @@ def _check_pr_status(root):
                                  pr_id=row, auth="test")
                   info = dict(status="active", is_draft=True, has_conflicts=False,
                                     vote_summary="approved", ctx=ctx, pr_id=row,
+                                    reviewers=[
+                                          dict(vote=10, is_container=False),
+                                          dict(vote=5, is_container=False),
+                                          dict(vote=0, is_container=False),
+                                          dict(vote=-10, is_container=False),
+                                          dict(vote=10, is_container=True),
+                                    ],
                                     web_url="https://example.invalid")
                   window._render_row(name, True, info, [], None, True, policy, None)
             root.update()
+            vote_col = next(index for index, column in enumerate(window._columns())
+                                    if column[0] == "vote")
+            for row in (2, 3):
+                  vote_cell = window._inner.grid_slaves(row=row, column=vote_col)[0]
+                  check(vote_cell.cget("text") == "approved(2)",
+                          "Vote cell did not show the status and individual approver count")
+            check(window._copy_links_button.winfo_x() < window._refresh_button.winfo_x(),
+                    "Copy PR links button was not left of Refresh")
+            with patch.object(window, "clipboard_clear") as clear, \
+                        patch.object(window, "clipboard_append") as append:
+                  window._copy_links_button.invoke()
+                  clear.assert_called_once()
+                  append.assert_called_once_with(
+                        "RepoA - https://example.invalid\nRepoB - https://example.invalid"
+                  )
+                  window._row_data["RepoA"]["ok"] = False
+                  window._row_data["RepoB"]["info"] = None
+                  window._copy_links_button.invoke()
+                  check(clear.call_count == 1,
+                          "Empty PR links cleared the clipboard")
+                  window._row_data["RepoA"]["ok"] = True
+                  window._row_data["RepoB"]["info"] = dict(info)
             draft_col = next(index for index, column in enumerate(window._columns())
                                      if column[:2] == ("draft", "Draft"))
             cell = window._inner.grid_slaves(row=2, column=draft_col)[0]

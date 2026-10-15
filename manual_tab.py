@@ -148,14 +148,6 @@ class ManualTab(ActionTabBase):
                 "Fetched in parallel without blocking the UI. Needs a stored "
                 "Git credential (and ADO_PAT for build error details).",
             ),
-            (
-                "Copy PR links",
-                self._action_copy_pr_links,
-                "For every selected repository: looks up each repo's open Azure "
-                "DevOps pull request (current branch \u2192 master) and copies "
-                "all 'repo name - pr link' lines to the clipboard. Repos without "
-                "an open PR are listed in the Errors panel.",
-            ),
         ]
 
     def _package_actions(self):
@@ -497,10 +489,6 @@ class ManualTab(ActionTabBase):
         if len(entries) == 1:
             return [entries[0][1]]
         return ask_solutions_to_open(self, entries)
-
-    # -- Copy PR links ----------------------------------------------------- #
-    def _action_copy_pr_links(self):
-        self.copy_pr_links(self._all_selected_repos())
 
     # -- Bump NuGet packages ----------------------------------------------- #
     def _action_bump_public(self):

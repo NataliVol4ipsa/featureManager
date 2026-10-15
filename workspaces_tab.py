@@ -287,15 +287,6 @@ class WorkspacesTab(ActionTabBase):
                 "the UI. Needs a stored Git credential (and ADO_PAT for build "
                 "error details).",
             ),
-            (
-                "Copy PR links",
-                self._action_copy_pr_links,
-                "For the selected workspace's repositories (excluding skipped "
-                "repos): looks up each repo's open Azure DevOps pull request "
-                "(current branch \u2192 master) and copies all 'repo name - pr "
-                "link' lines to the clipboard. Repos without an open PR are "
-                "listed in the Errors panel.",
-            ),
         ]
 
     def _pipeline_actions(self):
@@ -905,21 +896,6 @@ class WorkspacesTab(ActionTabBase):
         repos = [(e["name"], e["path"]) for e in active]
         branches = {e["name"]: e["branch"] for e in active if e.get("branch")}
         self.create_prs(repos, branches=branches)
-
-    # -- Copy PR links ----------------------------------------------------- #
-    def _action_copy_pr_links(self):
-        ok, workspace, entries = self._selected_entries()
-        self.errors.clear()
-        if not ok:
-            if workspace is not None:
-                self.errors.add(entries)
-            return
-        # Look up each PR by the workspace's feature branch for the repo, not
-        # whatever branch happens to be checked out locally right now.
-        active = [e for e in entries if not e["ignoreGit"]]
-        repos = [(e["name"], e["path"]) for e in active]
-        branches = {e["name"]: e["branch"] for e in active if e.get("branch")}
-        self.copy_pr_links(repos, branches=branches)
 
     # -- Delete remote branches -------------------------------------------- #
     def _action_delete_remote_branches(self):

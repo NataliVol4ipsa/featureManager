@@ -120,6 +120,15 @@ class PrStatusWindow(tk.Toplevel):
         )
         self._refresh_button.pack(side="right")
         Tooltip(self._refresh_button, "Re-check Azure DevOps now.")
+        self._copy_links_button = ttk.Button(
+            header, text="Copy PR links", command=self._copy_pr_links
+        )
+        self._copy_links_button.pack(side="right", padx=(0, 6))
+        Tooltip(
+            self._copy_links_button,
+            "Copy the loaded pull requests as 'repo name - pr link' lines "
+            "to the clipboard.",
+        )
         self._complete_all_button = ttk.Button(
             header, text="Complete all", command=self._complete_all
         )
@@ -163,6 +172,18 @@ class PrStatusWindow(tk.Toplevel):
 
     def _refresh(self):
         self._load(force=True)
+
+    def _copy_pr_links(self):
+        lines = []
+        for name, _path, _branch in self._entries:
+            data = self._row_data.get(name)
+            if data and data["ok"] and data["info"]:
+                url = data["info"].get("web_url")
+                if url:
+                    lines.append(f"{name} - {url}")
+        if lines:
+            self.clipboard_clear()
+            self.clipboard_append("\n".join(lines))
 
     def _clear_inner(self):
         for child in self._inner.winfo_children():
@@ -327,8 +348,13 @@ class PrStatusWindow(tk.Toplevel):
                     cursor="hand2",
                 ).pack(side="left", padx=(6, 0))
 
+        approver_count = sum(
+            reviewer["vote"] >= 5
+            for reviewer in info.get("reviewers", [])
+            if not reviewer["is_container"]
+        )
         values = {
-            "vote": ("" if info["is_draft"] else info["vote_summary"],
+            "vote": (f"{info['vote_summary']}({approver_count})",
                      _vote_color(info["vote_summary"])),
             "build": self._build_summary(policy_ok, policy),
             "ready": self._ready_summary(
@@ -392,6 +418,8 @@ class PrStatusWindow(tk.Toplevel):
                 cursor="hand2",
             )
             cell.grid(row=row, column=col, padx=4, pady=2, sticky="w")
+            if key == "vote":
+                Tooltip(cell, info["vote_summary"])
         self._bind_row(name)
 
     def _build_draft_cell(self, name, row, col, width, info):
