@@ -6,6 +6,7 @@ import webbrowser
 from datetime import datetime
 from tkinter import ttk
 
+import messages
 import theme
 
 
@@ -370,8 +371,7 @@ class ProgressPanel(ttk.Frame):
 
     def _do_copy(self, _event=None):
         """Copy the stored payload to the clipboard and confirm on the button."""
-        self.clipboard_clear()
-        self.clipboard_append(self._copy_payload)
+        messages.copy_message(self, self._copy_payload)
         self._copy_button.config(text="Copied!")
 
     def _do_open(self, _event=None):

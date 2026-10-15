@@ -2939,6 +2939,72 @@ def confirm_force_close(parent, monitor_count):
     return result["value"]
 
 
+def ask_list_numbering(parent, enabled, threshold):
+    """Modal for numbering lists in copied messages.
+
+    Returns (enabled, threshold) or None if cancelled.
+    """
+    dialog = _new_modal(parent, "ask_list_numbering")
+    dialog.title("Numbered lists")
+    dialog.transient(parent.winfo_toplevel())
+    dialog.resizable(False, False)
+
+    tk.Label(
+        dialog,
+        text=(
+            "Number the list items of copied messages (links, release "
+            "message services) once the list has at least the threshold "
+            "number of items. Titles and other extras are never numbered."
+        ),
+        justify="left", wraplength=420,
+    ).pack(padx=16, pady=(16, 8), anchor="w")
+
+    enabled_var = tk.BooleanVar(value=enabled)
+    toggle_row = ttk.Frame(dialog)
+    toggle_row.pack(padx=16, pady=(0, 6), anchor="w")
+    GlyphCheck(toggle_row, variable=enabled_var, mark="check").pack(side="left")
+    ttk.Label(toggle_row, text="Numerate big lists").pack(side="left", padx=(6, 0))
+
+    row = ttk.Frame(dialog)
+    row.pack(padx=16, pady=(0, 4), anchor="w")
+    ttk.Label(row, text="Numerate when the list has at least").pack(side="left")
+    entry = ttk.Entry(row, width=6)
+    entry.pack(side="left", padx=(6, 6))
+    ttk.Label(row, text="items").pack(side="left")
+    entry.insert(0, str(threshold))
+    entry.focus_set()
+
+    error_label = tk.Label(dialog, text="", foreground=theme.ERROR)
+    error_label.pack(padx=16, anchor="w")
+
+    result = {"value": None}
+
+    def _ok():
+        raw = entry.get().strip()
+        if not raw.isdigit():
+            error_label.config(text="Threshold must be an integer >= 0.")
+            return
+        result["value"] = (bool(enabled_var.get()), int(raw))
+        dialog.destroy()
+
+    def _cancel():
+        result["value"] = None
+        dialog.destroy()
+
+    bar = ttk.Frame(dialog)
+    bar.pack(padx=16, pady=12)
+    ttk.Button(bar, text="Save", command=_ok).pack(side="left", padx=4)
+    ttk.Button(bar, text="Cancel", command=_cancel).pack(side="left", padx=4)
+
+    entry.bind("<Return>", lambda _e: _ok())
+    dialog.protocol("WM_DELETE_WINDOW", _cancel)
+    dialog.bind("<Escape>", lambda _e: _cancel())
+    _center_over_parent(dialog, parent)
+    dialog.grab_set()
+    parent.wait_window(dialog)
+    return result["value"]
+
+
 def ask_pipeline_poll_seconds(parent, current, minimum, maximum):
     """Modal asking for pipeline monitor poll frequency in seconds.
 

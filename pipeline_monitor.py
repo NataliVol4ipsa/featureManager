@@ -13,6 +13,7 @@ from tkinter import ttk
 
 import theme
 import icons
+import messages
 from widgets import Tooltip
 import pipeline_history
 from parallel import run_in_parallel
@@ -742,16 +743,12 @@ class PipelineMonitorWindow(tk.Toplevel):
 
     def _copy_all_links(self):
         """Copy multiline '<service> - <link>' output for all rows with URLs."""
-        lines = []
-        for repo in sorted(self._rows):
-            url = self._rows[repo].get("link_url") or ""
-            if url:
-                lines.append(f"{repo} - {url}")
-        if not lines:
+        text = messages.build_message([
+            (repo, self._rows[repo]["link_url"])
+            for repo in sorted(self._rows) if self._rows[repo].get("link_url")
+        ])
+        if not messages.copy_message(self, text):
             return
-        text = "\n".join(lines)
-        self.clipboard_clear()
-        self.clipboard_append(text)
         self.title("Pipeline monitor - links copied")
         self._flash_copied()
 
@@ -782,23 +779,18 @@ class PipelineMonitorWindow(tk.Toplevel):
 
     def _generate_release_message(self):
         """Copy the feature name, run links and linked test report links."""
-        lines = []
         # Feature name is the part after '|' in the PBI title (fallback: title).
         feature_name = (self._pbi_title.split("|")[-1]).strip()
-        if feature_name:
-            lines.append(feature_name)
-        for repo in sorted(self._rows):
-            url = self._rows[repo].get("link_url") or ""
-            if url:
-                lines.append(f"{repo}: {url}")
-        if self._test_reports:
-            for name, url in self._test_reports:
-                lines.append(f"{name}: {url}")
-        if not lines:
+        text = messages.build_message(
+            [
+                (repo, self._rows[repo]["link_url"])
+                for repo in sorted(self._rows) if self._rows[repo].get("link_url")
+            ],
+            header=[feature_name] if feature_name else [],
+            footer=[(name, url) for name, url in self._test_reports or ()],
+        )
+        if not messages.copy_message(self, text):
             return
-        text = "\n".join(lines)
-        self.clipboard_clear()
-        self.clipboard_append(text)
         self.title("Pipeline monitor - release message copied")
         self._flash_copied()
 

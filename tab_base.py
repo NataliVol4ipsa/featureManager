@@ -38,6 +38,7 @@ from pipelines import (
     has_custom_pipeline_parameters,
     configurable_pipeline_parameters,
 )
+import messages
 import packages
 import pipeline_history
 from parallel import run_in_parallel
@@ -518,10 +519,10 @@ class ActionTabBase(ttk.Frame):
 
         # On full success, offer to copy every "repo name - pr link" line.
         def _copy_text(ok_repos):
-            return "\n".join(
-                f"{name} - {pr_urls[name]}"
+            return messages.build_message([
+                (name, pr_urls[name])
                 for name, _ in ok_repos if name in pr_urls
-            )
+            ])
 
         def _on_complete(all_ok):
             if pr_urls:
@@ -595,10 +596,10 @@ class ActionTabBase(ttk.Frame):
             return False, result
 
         def _copy_text(ok_repos):
-            return "\n".join(
-                f"{name} - {pr_urls[name]}"
+            return messages.build_message([
+                (name, pr_urls[name])
                 for name, _ in ok_repos if name in pr_urls
-            )
+            ])
 
         self.run_repo_action(
             repos,
@@ -1075,9 +1076,9 @@ class ActionTabBase(ttk.Frame):
                 urls[n] for n, _ in ok_repos if urls.get(n)
             ],
             completion_open_label="Open pipelines",
-            completion_copy_fn=lambda ok_repos: "\n".join(
-                f"{n} - {urls[n]}" for n, _ in ok_repos if urls.get(n)
-            ),
+            completion_copy_fn=lambda ok_repos: messages.build_message([
+                (n, urls[n]) for n, _ in ok_repos if urls.get(n)
+            ]),
             completion_copy_label="Copy links",
             on_complete=_on_complete,
             parallel=True,

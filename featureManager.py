@@ -24,6 +24,7 @@ from workspaces_tab import WorkspacesTab
 from dialogs import (
     edit_synonyms, edit_pipeline_ids, edit_ado_identity_cache,
     edit_nuget_feed_cache, ask_pipeline_poll_seconds, confirm_force_close,
+    ask_list_numbering,
     show_report, ask_repositories_to_cleanup,
 )
 from toolbar import build_action_toolbar
@@ -188,6 +189,20 @@ def main():
             not theme.load_pipeline_monitor_compact()
         )
 
+    def _toggle_copy_links_formatted():
+        theme.save_copy_links_formatted(not theme.load_copy_links_formatted())
+
+    def _set_list_numbering():
+        enabled, threshold = theme.load_list_numbering()
+        value = ask_list_numbering(root, enabled, threshold)
+        if value is not None:
+            theme.save_list_numbering(*value)
+
+    def _list_numbering_label():
+        enabled, threshold = theme.load_list_numbering()
+        state = f"\u2265 {threshold} items" if enabled else "off"
+        return f"Numbered lists in messages ({state})\u2026"
+
     def _settings_entries():
         # A nested entry is (label, submenu_list, False); the popup drills into
         # the list in place. The cache editors are grouped under "Caches".
@@ -214,6 +229,12 @@ def main():
                 _toggle_pipeline_monitor_compact,
                 theme.load_pipeline_monitor_compact(),
             ),
+            (
+                "Teams-friendly links in copied messages",
+                _toggle_copy_links_formatted,
+                theme.load_copy_links_formatted(),
+            ),
+            (_list_numbering_label(), _set_list_numbering, False),
             ("Dark theme", _toggle_theme, theme.load_dark_preference()),
         ]
         # "\u2039 Back" is itself a nested entry whose submenu is the top menu.

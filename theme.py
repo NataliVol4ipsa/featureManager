@@ -357,6 +357,41 @@ def save_pipeline_monitor_autoapprove_production(enabled):
     _save_prefs(data)
 
 
+def load_copy_links_formatted():
+    """Return True when copied messages embed links in text (Teams-friendly)."""
+    return bool(_load_prefs().get("copy_links_formatted", False))
+
+
+def save_copy_links_formatted(formatted):
+    """Persist the Teams-friendly (embedded) link format preference."""
+    data = _load_prefs()
+    data["copy_links_formatted"] = bool(formatted)
+    _save_prefs(data)
+
+
+LIST_NUMBERING_DEFAULT_THRESHOLD = 5
+
+
+def load_list_numbering():
+    """Return (enabled, threshold) for numbering lists in copied messages."""
+    data = _load_prefs()
+    enabled = bool(data.get("list_numbering_enabled", False))
+    try:
+        threshold = int(data.get("list_numbering_threshold",
+                                 LIST_NUMBERING_DEFAULT_THRESHOLD))
+    except (TypeError, ValueError):
+        threshold = LIST_NUMBERING_DEFAULT_THRESHOLD
+    return enabled, max(0, threshold)
+
+
+def save_list_numbering(enabled, threshold):
+    """Persist the list-numbering toggle and its item threshold (>= 0)."""
+    data = _load_prefs()
+    data["list_numbering_enabled"] = bool(enabled)
+    data["list_numbering_threshold"] = max(0, int(threshold))
+    _save_prefs(data)
+
+
 def apply_theme(root, dark=None):
     """Apply the chosen palette to *root* and every widget created under it.
 

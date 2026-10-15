@@ -24,6 +24,7 @@ import tkinter as tk
 from datetime import datetime
 from tkinter import ttk, messagebox
 
+import messages
 import theme
 from widgets import Tooltip
 from parallel import run_in_parallel
@@ -174,16 +175,14 @@ class PrStatusWindow(tk.Toplevel):
         self._load(force=True)
 
     def _copy_pr_links(self):
-        lines = []
+        items = []
         for name, _path, _branch in self._entries:
             data = self._row_data.get(name)
             if data and data["ok"] and data["info"]:
                 url = data["info"].get("web_url")
                 if url:
-                    lines.append(f"{name} - {url}")
-        if lines:
-            self.clipboard_clear()
-            self.clipboard_append("\n".join(lines))
+                    items.append((name, url))
+        messages.copy_message(self, messages.build_message(items))
 
     def _clear_inner(self):
         for child in self._inner.winfo_children():

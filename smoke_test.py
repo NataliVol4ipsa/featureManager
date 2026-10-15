@@ -552,7 +552,11 @@ def _check_pr_status(root):
             check(window._copy_links_button.winfo_x() < window._refresh_button.winfo_x(),
                     "Copy PR links button was not left of Refresh")
             with patch.object(window, "clipboard_clear") as clear, \
-                        patch.object(window, "clipboard_append") as append:
+                        patch.object(window, "clipboard_append") as append, \
+                        patch.object(theme, "load_copy_links_formatted",
+                                     return_value=False), \
+                        patch.object(theme, "load_list_numbering",
+                                     return_value=(False, 0)):
                   window._copy_links_button.invoke()
                   clear.assert_called_once()
                   append.assert_called_once_with(
