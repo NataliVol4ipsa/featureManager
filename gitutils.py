@@ -1726,8 +1726,9 @@ def fetch_pr_policy(ctx):
     """Fetch a PR's branch-policy evaluations using the reusable *ctx*.
 
     One REST call per PR during the initial status scan. Returns
-    (ok, dict_or_err) with: ``build_state`` ('succeeded'|'failed'|'running'|
-    'none'), ``build_id``, ``build_url``, ``rejected``, ``pending`` and
+    (ok, dict_or_err) with: ``build_state`` ('succeeded'|'failed'|'expired'|
+    'running'|'none'), ``build_id``, ``build_url``, ``rejected``, ``pending``,
+    ``expired_ids`` (evaluation ids of expired builds, for requeueing) and
     ``policies`` (a [{name, status}] list for display). Build-error *text* is a
     separate lazy call (pipelines.get_build_errors) only when build_state failed.
     """
@@ -1752,6 +1753,7 @@ def fetch_pr_policy(ctx):
     build_id = None
     rejected = False
     pending = False
+    expired_ids = []
     policies = []
     for evaluation in data.get("value") or []:
         status = (evaluation.get("status") or "").lower()
@@ -1773,7 +1775,13 @@ def fetch_pr_policy(ctx):
                 build_id = bid
             if status in ("rejected", "broken"):
                 build_state = "failed"
-            elif status in ("queued", "running") and build_state != "failed":
+            elif context.get("isExpired"):
+                if evaluation.get("evaluationId"):
+                    expired_ids.append(evaluation["evaluationId"])
+                if build_state != "failed":
+                    build_state = "expired"
+            elif (status in ("queued", "running")
+                  and build_state not in ("failed", "expired")):
                 build_state = "running"
             elif status == "approved" and build_state == "none":
                 build_state = "succeeded"
@@ -1789,8 +1797,14 @@ def fetch_pr_policy(ctx):
         "build_url": build_url,
         "rejected": rejected,
         "pending": pending,
+        "expired_ids": expired_ids,
         "policies": policies,
     }
+
+
+def requeue_pr_policy(ctx, evaluation_id):
+    """Requeue one policy evaluation (e.g. re-run an expired build) of a PR."""
+    return _requeue_policy_evaluation(ctx["org"], ctx["project"], evaluation_id, ctx["auth"])
 
 
 # Merge strategies accepted by the Azure DevOps PR completion API.

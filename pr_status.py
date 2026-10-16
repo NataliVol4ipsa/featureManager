@@ -28,8 +28,15 @@ import messages
 import theme
 from widgets import Tooltip
 from parallel import run_in_parallel
-from gitutils import fetch_pr_status, fetch_pr_threads, fetch_pr_policy, set_pr_draft
+from gitutils import (
+    fetch_pr_status, fetch_pr_threads, fetch_pr_policy, set_pr_draft,
+    requeue_pr_policy, PR_VOTE_LABELS,
+)
+from dialogs import _center_over_parent
 import pipelines
+
+
+_POLL_MS = 10 * 60 * 1000
 
 
 # (key, header, width) for every table column, in display order.
@@ -69,6 +76,54 @@ def _vote_color(summary):
     return "FG_MUTED"
 
 
+def _snapshot(data):
+    """The fields of a row whose automatic changes are worth warning about."""
+    if not data or not data["ok"] or not data["info"]:
+        return None
+    info = data["info"]
+    comments = None
+    if data["thread_error"] is None:
+        comments = {
+            (thread["id"], comment["id"]): comment["author"]
+            for thread in data["threads"] or []
+            for comment in thread["comments"] if not comment["is_system"]
+        }
+    return {
+        "build": data["policy"].get("build_state") if data["policy_ok"] else None,
+        "votes": {r.get("name", ""): r["vote"] for r in info.get("reviewers", [])
+                  if not r["is_container"]},
+        "comments": comments,
+        "conflicts": info["has_conflicts"],
+    }
+
+
+def _significant_changes(old, new):
+    """Human-readable significant differences between two row snapshots."""
+    if old is None or new is None:
+        return []
+    changes = []
+    if old["build"] == "running" and new["build"] == "failed":
+        changes.append("build failed")
+    for reviewer in sorted(set(old["votes"]) | set(new["votes"])):
+        before, after = old["votes"].get(reviewer, 0), new["votes"].get(reviewer, 0)
+        if before != after:
+            changes.append(
+                f"vote by {reviewer}: {PR_VOTE_LABELS.get(before, before)} "
+                f"\u2192 {PR_VOTE_LABELS.get(after, after)}"
+            )
+    if old["comments"] is not None and new["comments"] is not None:
+        added = [author for key, author in new["comments"].items()
+                 if key not in old["comments"]]
+        if added:
+            authors = ", ".join(sorted(set(a for a in added if a)))
+            changes.append(
+                f"{len(added)} new comment(s)" + (f" by {authors}" if authors else "")
+            )
+    if new["conflicts"] and not old["conflicts"]:
+        changes.append("merge conflicts appeared")
+    return changes
+
+
 class PrStatusWindow(tk.Toplevel):
     """Non-modal window listing each repo's pull-request state."""
 
@@ -94,7 +149,16 @@ class PrStatusWindow(tk.Toplevel):
         self._row_exclude = {}     # name -> widgets that keep their own click
         self._detail_windows = {}  # name -> open PrDetailWindow
         self._draft_updates = set()
+        self._build_requeues = set()
         self._loading = False
+        self._baseline = {}        # name -> snapshot the next poll diffs against
+        self._action_gen = {}      # name -> user-action counter (stale-poll guard)
+        self._suppress_diff = set()
+        self._load_gen = 0
+        self._poll_job = None
+        self._polling = False
+        self._changes = []
+        self._changes_window = None
 
         self._build_ui()
         self.protocol("WM_DELETE_WINDOW", self._on_close)
@@ -206,6 +270,10 @@ class PrStatusWindow(tk.Toplevel):
 
     def _load(self, force):
         self._loading = True
+        self._load_gen += 1
+        self._cancel_poll()
+        self._baseline = {}
+        self._suppress_diff.clear()
         self._show_complete = True
         self._refresh_button.configure(state="disabled")
         self._clear_inner()
@@ -237,39 +305,182 @@ class PrStatusWindow(tk.Toplevel):
                 name, path, branch = entry
                 if self._on_progress:
                     self.after(0, self._on_progress, name, "in-progress")
-                ok, info = fetch_pr_status(name, path, branch=branch)
-                threads, terr = [], None
-                policy_ok, policy, build_errors = False, None, None
-                if ok and info:
-                    tok, tdata = fetch_pr_threads(info["ctx"])
-                    if tok:
-                        threads = tdata
-                    else:
-                        terr = tdata
-                    policy_ok, policy = fetch_pr_policy(info["ctx"])
-                    if (policy_ok and policy.get("build_state") == "failed"
-                            and policy.get("build_id")):
-                        eok, edata = pipelines.get_build_errors(
-                            info["ctx"]["org"], info["ctx"]["project"],
-                            info["ctx"]["host"], policy["build_id"],
-                        )
-                        build_errors = edata if eok else [
-                            f"(could not read build log: {edata})"
-                        ]
+                result = self._fetch_entry(name, path, branch)
+                ok, info = result[0], result[1]
                 if self._on_progress:
                     state = "done" if ok else "error"
                     self.after(0, self._on_progress, name, state,
                                None if ok else str(info))
-                self.after(
-                    0, self._render_row, name, ok, info, threads, terr,
-                    policy_ok, policy, build_errors,
-                )
+                self.after(0, self._loaded_row, name, result)
                 return name
 
             run_in_parallel(self._entries, _fetch)
             self.after(0, self._finish_load)
 
         threading.Thread(target=_work, daemon=True).start()
+
+    @staticmethod
+    def _fetch_entry(name, path, branch):
+        """Fetch one row's PR, threads and policy (worker thread)."""
+        ok, info = fetch_pr_status(name, path, branch=branch)
+        threads, terr = [], None
+        policy_ok, policy, build_errors = False, None, None
+        if ok and info:
+            tok, tdata = fetch_pr_threads(info["ctx"])
+            if tok:
+                threads = tdata
+            else:
+                terr = tdata
+            policy_ok, policy = fetch_pr_policy(info["ctx"])
+            if (policy_ok and policy.get("build_state") == "failed"
+                    and policy.get("build_id")):
+                eok, edata = pipelines.get_build_errors(
+                    info["ctx"]["org"], info["ctx"]["project"],
+                    info["ctx"]["host"], policy["build_id"],
+                )
+                build_errors = edata if eok else [
+                    f"(could not read build log: {edata})"
+                ]
+        return ok, info, threads, terr, policy_ok, policy, build_errors
+
+    def _loaded_row(self, name, result):
+        if not self.winfo_exists():
+            return
+        self._render_row(name, *result)
+        self._mark_baseline(name)
+
+    def _mark_baseline(self, name):
+        self._baseline[name] = _snapshot(self._row_data.get(name))
+
+    def _user_acted(self, name):
+        """Invalidate in-flight poll data for *name* after a user action."""
+        self._action_gen[name] = self._action_gen.get(name, 0) + 1
+
+    def _cancel_poll(self):
+        if self._poll_job is not None:
+            self.after_cancel(self._poll_job)
+            self._poll_job = None
+
+    def _schedule_poll(self):
+        self._cancel_poll()
+        self._poll_job = self.after(_POLL_MS, self._poll)
+
+    def _poll(self):
+        self._poll_job = None
+        if not self.winfo_exists():
+            return
+        if self._loading or self._polling:
+            self._schedule_poll()
+            return
+        self._polling = True
+        load_gen = self._load_gen
+        action_gens = dict(self._action_gen)
+        entries = list(self._entries)
+
+        def fetch(entry):
+            name, path, branch = entry
+            try:
+                return name, self._fetch_entry(name, path, branch)
+            except Exception:
+                return name, None
+
+        def work():
+            results = run_in_parallel(entries, fetch)
+            self.after(0, self._poll_done, load_gen, action_gens, results)
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _poll_done(self, load_gen, action_gens, results):
+        self._polling = False
+        if not self.winfo_exists() or load_gen != self._load_gen:
+            return
+        changes = []
+        for name, result in results:
+            if (result is None or name not in self._row_index
+                    or self._action_gen.get(name, 0) != action_gens.get(name, 0)
+                    or name in self._draft_updates or name in self._build_requeues):
+                continue
+            old = self._baseline.get(name)
+            self._render_row(name, *result)
+            self._mark_baseline(name)
+            if name in self._suppress_diff:
+                self._suppress_diff.discard(name)
+                continue
+            changes.extend(
+                (name, line)
+                for line in _significant_changes(old, self._baseline[name])
+            )
+            detail = self._detail_windows.pop(name, None)
+            if detail is not None and detail.winfo_exists():
+                detail.destroy()
+        self._update_actions()
+        self.after_idle(self._fit_to_content)
+        self._schedule_poll()
+        self._set_updated_title(
+            failed=bool(results) and all(result is None for _n, result in results))
+        if changes:
+            self._show_changes(changes)
+
+    def _set_updated_title(self, failed=False):
+        if failed:
+            self.title("Pull request status - last updated: error while polling")
+        else:
+            self.title("Pull request status - last updated: "
+                       f"{datetime.now().strftime('%H:%M:%S')}")
+
+    def _show_changes(self, changes):
+        """Warn about automatic significant changes (accumulates until closed)."""
+        self._changes.extend(changes)
+        if self._changes_window is not None and self._changes_window.winfo_exists():
+            self._changes_window.destroy()
+        dialog = tk.Toplevel(self)
+        self._changes_window = dialog
+        dialog.withdraw()
+        dialog.title("Pull request changes")
+        dialog.transient(self)
+        dialog.resizable(False, False)
+        dialog.configure(background=theme.BG)
+        theme.apply_window_icon(dialog)
+        theme.enable_dark_titlebar(dialog)
+
+        body = ttk.Frame(dialog)
+        body.pack(padx=16, pady=12, anchor="w")
+        head = ttk.Frame(body)
+        head.pack(anchor="w")
+        tk.Label(head, text="\u26A0", foreground=theme.WARNING,
+                 font=("", 11, "bold")).pack(side="left", padx=(0, 6))
+        tk.Label(
+            head, text="Pull requests changed since the last check "
+            f"({datetime.now().strftime('%H:%M')}):",
+        ).pack(side="left")
+        grouped = {}
+        for name, line in self._changes:
+            grouped.setdefault(name, []).append(line)
+        for name, lines in grouped.items():
+            tk.Label(body, text=name, font=("", 9, "bold")).pack(
+                anchor="w", pady=(8, 0))
+            for line in lines:
+                tk.Label(body, text=f"\u2022 {line}", justify="left",
+                         wraplength=460).pack(anchor="w", padx=(12, 0))
+
+        def close():
+            self._changes = []
+            self._changes_window = None
+            dialog.destroy()
+
+        bar = ttk.Frame(dialog)
+        bar.pack(fill="x", padx=16, pady=(0, 12))
+        ok = ttk.Button(bar, text="OK", command=close)
+        ok.pack(side="right")
+        Tooltip(ok, "Dismiss this warning; the table already shows the new state.")
+        dialog.protocol("WM_DELETE_WINDOW", close)
+        dialog.bind("<Escape>", lambda _e: close())
+        _center_over_parent(dialog, self)
+        dialog.deiconify()
+        dialog.lift()
+        dialog.focus_force()
+        if not self.grab_current():
+            dialog.grab_set()
 
     def _render_row(self, name, ok, info, threads, terr,
                     policy_ok, policy, build_errors):
@@ -367,6 +578,10 @@ class PrStatusWindow(tk.Toplevel):
             if key == "draft":
                 self._build_draft_cell(name, row, col, width, info)
                 continue
+            if key == "build" and (name in self._build_requeues or (
+                    policy_ok and policy.get("build_state") == "expired")):
+                self._build_expired_cell(name, row, col, width, info, policy)
+                continue
             if key == "complete":
                 if info["status"] == "active":
                     btn = ttk.Button(
@@ -422,37 +637,53 @@ class PrStatusWindow(tk.Toplevel):
         self._bind_row(name)
 
     def _build_draft_cell(self, name, row, col, width, info):
+        self._hover_button_cell(
+            name, row, col, width,
+            text="draft" if info["is_draft"] else "-",
+            pending=name in self._draft_updates, pending_text="toggling...",
+            button_text="toggle", command=lambda: self._toggle_draft(name),
+            tooltip=(f"Publish the draft pull request for {name}." if info["is_draft"]
+                     else f"Mark the pull request for {name} as draft."),
+            enabled=info["status"] == "active",
+        )
+
+    def _build_expired_cell(self, name, row, col, width, info, policy):
+        self._hover_button_cell(
+            name, row, col, width, text="expired", color=theme.WARNING,
+            pending=name in self._build_requeues, pending_text="queuing...",
+            button_text="re-run", command=lambda: self._requeue_build(name),
+            tooltip=f"Re-run the expired pull request build for {name}.",
+            enabled=info["status"] == "active" and bool(policy.get("expired_ids")),
+        )
+
+    def _hover_button_cell(self, name, row, col, width, text, pending,
+                           pending_text, button_text, command, tooltip,
+                           enabled, color=None):
+        """Label cell that turns into a same-size button while hovered."""
         cell = tk.Frame(self._inner, background=theme.BG)
         cell.grid(row=row, column=col, padx=4, pady=1, sticky="w")
-        pending = name in self._draft_updates
         label = tk.Label(
-            cell, text="toggling...", font=("", 8, "italic"),
+            cell, text=pending_text, font=("", 8, "italic"),
             background=theme.BG, foreground=theme.FG_MUTED, anchor="w",
         )
         button = ttk.Button(
-            cell, text="toggle", width=width,
-            command=lambda: self._toggle_draft(name),
-            state="disabled" if name in self._draft_updates else "normal",
+            cell, text=button_text, width=width, command=command,
+            state="disabled" if pending else "normal",
         )
-        Tooltip(
-            button,
-            f"Publish the draft pull request for {name}." if info["is_draft"]
-            else f"Mark the pull request for {name} as draft.",
-        )
+        Tooltip(button, tooltip)
         cell.configure(
             width=max(label.winfo_reqwidth(), button.winfo_reqwidth()),
             height=max(label.winfo_reqheight(), button.winfo_reqheight()),
         )
         if not pending:
-            label.configure(
-                text="draft" if info["is_draft"] else "-", font=("", 9),
-            )
+            label.configure(text=text, font=("", 9),
+                            foreground=color or theme.FG_MUTED)
         label.place(x=0, y=0, relwidth=1, relheight=1)
-        if info["status"] != "active":
-            return
+        if not enabled:
+            return cell
         self._row_exclude.setdefault(name, []).append(cell)
         if pending:
-            return
+            return cell
 
         def show(_event):
             button.place(x=0, y=0, relwidth=1, relheight=1)
@@ -463,6 +694,64 @@ class PrStatusWindow(tk.Toplevel):
 
         label.bind("<Enter>", show)
         button.bind("<Leave>", hide, add="+")
+        return cell
+
+    def _requeue_build(self, name):
+        data = self._row_data.get(name)
+        if (not data or not data["info"] or not data["policy_ok"]
+                or data["info"]["status"] != "active"
+                or name in self._build_requeues):
+            return
+        expired_ids = list(data["policy"].get("expired_ids") or [])
+        if not expired_ids:
+            return
+        self._build_requeues.add(name)
+        self._user_acted(name)
+        self._rerender(name)
+        self._update_actions()
+
+        def work():
+            ok, result = True, None
+            for evaluation_id in expired_ids:
+                try:
+                    step_ok, step_result = requeue_pr_policy(
+                        data["info"]["ctx"], evaluation_id)
+                except Exception as exc:
+                    step_ok, step_result = False, str(exc)
+                if not step_ok:
+                    ok, result = False, step_result
+            try:
+                policy_ok, policy = fetch_pr_policy(data["info"]["ctx"])
+            except Exception as exc:
+                policy_ok, policy = False, str(exc)
+            self.after(0, self._build_requeued, name, data, ok, result,
+                       policy_ok, policy)
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _build_requeued(self, name, data, ok, result, policy_ok, policy):
+        if not self.winfo_exists():
+            return
+        self._build_requeues.discard(name)
+        self._user_acted(name)
+        if policy_ok:
+            data["policy_ok"], data["policy"] = policy_ok, policy
+            data["build_errors"] = None
+            detail = self._detail_windows.pop(name, None)
+            if detail is not None and detail.winfo_exists():
+                detail.destroy()
+        self._rerender(name)
+        self._mark_baseline(name)
+        self._update_actions()
+        if not ok:
+            messagebox.showerror("Could not re-run build", str(result), parent=self)
+
+    def _rerender(self, name):
+        data = self._row_data[name]
+        self._render_row(
+            name, data["ok"], data["info"], data["threads"], data["thread_error"],
+            data["policy_ok"], data["policy"], data["build_errors"],
+        )
 
     def _toggle_draft(self, name):
         data = self._row_data.get(name)
@@ -472,6 +761,7 @@ class PrStatusWindow(tk.Toplevel):
             return
         draft = not data["info"]["is_draft"]
         self._draft_updates.add(name)
+        self._user_acted(name)
         self._render_row(
             name, data["ok"], data["info"], data["threads"], data["thread_error"],
             data["policy_ok"], data["policy"], data["build_errors"],
@@ -500,6 +790,7 @@ class PrStatusWindow(tk.Toplevel):
         if not self.winfo_exists():
             return
         self._draft_updates.discard(name)
+        self._user_acted(name)
         if ok:
             data["info"]["is_draft"] = draft
             data["policy_ok"], data["policy"] = policy_ok, policy
@@ -510,6 +801,7 @@ class PrStatusWindow(tk.Toplevel):
             name, data["ok"], data["info"], data["threads"], data["thread_error"],
             data["policy_ok"], data["policy"], data["build_errors"],
         )
+        self._mark_baseline(name)
         self._update_actions()
         if not ok:
             messagebox.showerror("Could not toggle draft", str(result), parent=self)
@@ -589,7 +881,7 @@ class PrStatusWindow(tk.Toplevel):
         """True when every PR is ready to merge or already completed, and at
         least one is still completable (an all-completed set hides the button).
         """
-        if self._loading or self._draft_updates:
+        if self._loading or self._draft_updates or self._build_requeues:
             return False
         prs = [self._row_data.get(n) for n in self._row_index]
         prs = [d for d in prs if d and d["info"]]
@@ -612,6 +904,8 @@ class PrStatusWindow(tk.Toplevel):
             return
         path = self._path_by_name.get(name)
         if path:
+            self._user_acted(name)
+            self._suppress_diff.add(name)
             self._tab.complete_prs(
                 [(name, path)], branches={name: self._branch_by_name.get(name)}
             )
@@ -621,6 +915,9 @@ class PrStatusWindow(tk.Toplevel):
             return
         repos = [(name, path) for name, path, _d in self._completable()]
         if repos:
+            for name, _path in repos:
+                self._user_acted(name)
+                self._suppress_diff.add(name)
             branches = {name: self._branch_by_name.get(name) for name, _p in repos}
             self._tab.complete_prs(repos, branches=branches)
 
@@ -631,6 +928,7 @@ class PrStatusWindow(tk.Toplevel):
         return {
             "succeeded": ("passed", "SUCCESS"),
             "failed": ("failed", "ERROR"),
+            "expired": ("expired", "WARNING"),
             "running": ("running", "WARNING"),
             "none": ("-", "FG_MUTED"),
         }.get(policy.get("build_state"), ("?", "FG_MUTED"))
@@ -667,10 +965,14 @@ class PrStatusWindow(tk.Toplevel):
 
         self._update_actions()
         self.after_idle(self._fit_to_content)
+        self._schedule_poll()
+        self._set_updated_title()
 
     def _update_actions(self):
         self._refresh_button.configure(
-            state="disabled" if self._loading or self._draft_updates else "normal"
+            state="disabled"
+            if self._loading or self._draft_updates or self._build_requeues
+            else "normal"
         )
         if self._all_ready():
             self._complete_all_button.pack(side="right", padx=(0, 6))
@@ -692,6 +994,7 @@ class PrStatusWindow(tk.Toplevel):
         self.geometry(f"{width}x{height}{match.group(1) if match else ''}")
 
     def _on_close(self):
+        self._cancel_poll()
         theme.save_pr_status_geometry(self.geometry())
         for win in list(self._detail_windows.values()):
             if win.winfo_exists():
@@ -882,6 +1185,7 @@ class PrDetailWindow(tk.Toplevel):
         build_label = {
             "succeeded": ("Build: passed", theme.SUCCESS),
             "failed": ("Build: failed", theme.ERROR),
+            "expired": ("Build: expired", theme.WARNING),
             "running": ("Build: running", theme.WARNING),
             "none": ("Build: no build policy", theme.FG_MUTED),
         }.get(build_state, ("Build: unknown", theme.FG_MUTED))
