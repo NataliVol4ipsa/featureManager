@@ -635,6 +635,17 @@ def _check_pr_status(root):
             with patch.object(window, "_tab") as tab:
                   window._complete_one("RepoA")
                   check(not tab.complete_prs.called, "Unready PR completion was dispatched")
+            for change in ("build failed", "new comment"):
+                  window._show_changes([("RepoA", change)])
+                  root.update()
+                  check(root.grab_current() is None,
+                          "Automatic PR changes warning blocked the application")
+            check(len(window._changes) == 2,
+                    "Repeated PR changes warning lost earlier changes")
+            window._changes_window.event_generate("<Escape>")
+            root.update()
+            check(window._changes_window is None and not window._changes,
+                    "Dismissing PR changes warning did not clear its state")
       finally:
             window.destroy()
 

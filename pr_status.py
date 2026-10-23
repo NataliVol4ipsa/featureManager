@@ -479,8 +479,6 @@ class PrStatusWindow(tk.Toplevel):
         dialog.deiconify()
         dialog.lift()
         dialog.focus_force()
-        if not self.grab_current():
-            dialog.grab_set()
 
     def _render_row(self, name, ok, info, threads, terr,
                     policy_ok, policy, build_errors):
