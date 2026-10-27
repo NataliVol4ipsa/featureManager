@@ -585,7 +585,7 @@ def enable_dpi_awareness():
         pass
 
 
-def _set_titlebar(window, dark):
+def _set_titlebar(window, dark, caption_color=None):
     """Set *window*'s native Windows title bar to dark or light (no-op else).
 
     Uses the DWM ``USE_IMMERSIVE_DARK_MODE`` window attribute so the OS-drawn
@@ -603,6 +603,15 @@ def _set_titlebar(window, dark):
                 hwnd, attribute, ctypes.byref(value), ctypes.sizeof(value)
             ) == 0:
                 break
+        if caption_color is not None:
+            color = ctypes.c_uint32(
+                int(caption_color[1:3], 16)
+                | (int(caption_color[3:5], 16) << 8)
+                | (int(caption_color[5:7], 16) << 16)
+            )
+            ctypes.windll.dwmapi.DwmSetWindowAttribute(
+                hwnd, 35, ctypes.byref(color), ctypes.sizeof(color)
+            )
         # Nudge the frame so the title bar repaints immediately.
         ctypes.windll.user32.SetWindowPos(
             hwnd, 0, 0, 0, 0, 0, 0x0001 | 0x0002 | 0x0004 | 0x0020
@@ -611,11 +620,15 @@ def _set_titlebar(window, dark):
         pass
 
 
-def enable_dark_titlebar(window, dark=None):
-    """Apply the current (or given) title-bar theme to a secondary *window*."""
+def enable_dark_titlebar(window, dark=None, accent=None):
+    """Apply the title-bar theme and an optional muted red or green accent."""
     if dark is None:
         dark = load_dark_preference()
-    _set_titlebar(window, dark)
+    colors = {
+        "red": "#503436" if dark else "#ead4d3",
+        "green": "#2e4739" if dark else "#d4e5d8",
+    }
+    _set_titlebar(window, dark, caption_color=colors.get(accent))
 
 
 def apply_window_icon(window):

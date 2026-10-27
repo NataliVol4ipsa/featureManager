@@ -135,7 +135,7 @@ class PrStatusWindow(tk.Toplevel):
         self.minsize(520, 200)
         self.configure(background=theme.BG)
         theme.apply_window_icon(self)
-        theme.enable_dark_titlebar(self)
+        theme.enable_dark_titlebar(self, accent="red")
 
         self._entries = entries
         self._on_progress = on_progress

@@ -157,7 +157,7 @@ class PipelineMonitorWindow(tk.Toplevel):
         self.attributes("-topmost", True)
         self.configure(background=theme.BG)
         theme.apply_window_icon(self)
-        theme.enable_dark_titlebar(self)
+        theme.enable_dark_titlebar(self, accent="green")
 
         self._closed = False
         self._poll_in_progress = False
