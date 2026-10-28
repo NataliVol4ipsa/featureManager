@@ -25,9 +25,11 @@ from tkinter import ttk
 from unittest.mock import patch
 
 import gitutils
+import deployment_status
 import manual_tab
 import packages
 import pbi
+import pipelines
 import pr_status
 import theme
 from tab_base import ActionTabBase
@@ -650,6 +652,86 @@ def _check_pr_status(root):
             window.destroy()
 
 
+def _check_deployment_timestamps():
+      from datetime import datetime
+      import urllib.error
+
+      authored = "2026-10-26T10:20:30Z"
+      deployed = "2026-10-27T12:34:56Z"
+      builds = [
+            {"id": 12, "sourceVersion": "abc123", "status": "inProgress",
+             "requestedFor": {"displayName": "Test User"}},
+      ]
+      timeline = {"records": [
+            {"type": "Stage", "name": "Development", "state": "completed",
+             "result": "succeeded", "finishTime": deployed},
+            {"type": "Stage", "name": "Acceptance", "state": "completed",
+             "result": "succeeded", "finishTime": "2026-10-28T08:00:00Z"},
+            {"type": "Stage", "name": "Production", "state": "inProgress"},
+      ]}
+      commit = {"comment": "Commit subject\nMore detail",
+                "author": {"date": authored}}
+
+      def api_get(url, auth):
+            if "/build/builds?" in url:
+                  return {"value": builds}
+            if "/commits/abc123?" in url:
+                  return commit
+            raise AssertionError(f"Unexpected deployment request: {url}")
+
+      with patch.object(pipelines, "is_git_repo", return_value=True), \
+                  patch.object(pipelines, "git_remote_url", return_value="remote"), \
+                  patch.object(pipelines, "parse_ado_remote",
+                               return_value=("org", "project", "repo", "host")), \
+                  patch.object(pipelines, "_auth_for_host", return_value=("auth", None)), \
+                  patch.object(pipelines, "_cached_repo_id", return_value="repo-id"), \
+                  patch.object(pipelines, "_cached_pipeline_id", return_value=7), \
+                  patch.object(pipelines, "_deploy_status_cache", {}), \
+                  patch.object(pipelines, "_api_build_timeline_safe",
+                               return_value=timeline), \
+                  patch.object(pipelines, "_api_get", side_effect=api_get) as request:
+            ok, data = pipelines.get_latest_deployed_artifacts("Repo", "path")
+            check(ok, "Deployment timestamp lookup failed")
+            dev = data["development"]
+            check(dev["deployed_at"] == deployed,
+                  "Deployment date did not come from the completed stage")
+            check(data["acceptance"]["deployed_at"] == "2026-10-28T08:00:00Z",
+                  "Stages with the same commit lost their distinct deployment dates")
+            check(data["production"] is None, "Unfinished deployment gained a commit")
+            check(dev["commit_created_at"] == authored,
+                  "Commit creation date did not come from the author")
+            check(dev["message"] == "Commit subject", "Commit subject changed")
+            check(request.call_count == 2,
+                  "Deployment timestamps added requests or duplicated a commit lookup")
+            pipelines.get_latest_deployed_artifacts("Repo", "path")
+            check(request.call_count == 2, "Deployment cache was not reused")
+
+      tooltip = deployment_status._cell_tooltip("master", dev)
+      for value, label in ((deployed, "Deployed"), (authored, "Commit authored")):
+            local = datetime.fromisoformat(value.replace("Z", "+00:00")).astimezone()
+            check(f"- {label}: {local.strftime('%Y-%m-%d %H:%M:%S')}" in tooltip.splitlines(),
+                  f"{label} timestamp was not shown in local time without a timezone label")
+      check("Commit subject" in tooltip and "Triggered by: Test User" in tooltip
+            and "latest commit on master" in tooltip,
+            "Deployment tooltip lost existing details")
+      check(deployment_status._cell_tooltip("master", {}) == "- latest commit on master",
+            "Missing deployment dates added empty tooltip lines")
+      check("- Deployed: invalid" in deployment_status._cell_tooltip(
+            "master", {"deployed_at": "invalid"}),
+            "Invalid timestamp was hidden or crashed the tooltip")
+
+      with patch.object(pipelines, "_api_get", return_value={}):
+            check(pipelines._commit_details_from_ado(
+                  "org", "project", "repo", "abc", "auth") ==
+                  {"message": "", "commit_created_at": ""},
+                  "Missing commit metadata was not handled")
+      with patch.object(pipelines, "_api_get",
+                        side_effect=urllib.error.URLError("unavailable")):
+            check(pipelines._commit_details_from_ado(
+                  "org", "project", "repo", "abc", "auth") == {},
+                  "Unavailable commit metadata changed best-effort lookup behavior")
+
+
 def main():
       root = tk.Tk()
       root.withdraw()  # no visible window
@@ -673,6 +755,7 @@ def main():
             _check_base_methods()
             _check_repo_delegation(repo_tab)
             _check_pure_logic()
+            _check_deployment_timestamps()
             _check_pr_status(root)
       finally:
             root.destroy()

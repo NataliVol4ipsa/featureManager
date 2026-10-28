@@ -2269,10 +2269,10 @@ _deploy_status_cache = {}
 _deploy_status_cache_lock = threading.Lock()
 
 
-def _commit_message_from_ado(org, project, repo, commit_id, auth):
-    """Return the subject line of *commit_id* via the ADO commits API, or ''."""
+def _commit_details_from_ado(org, project, repo, commit_id, auth):
+    """Return a commit's subject and author timestamp, or {} if unavailable."""
     if not commit_id:
-        return ""
+        return {}
     url = (
         f"https://dev.azure.com/{urllib.parse.quote(org)}/"
         f"{urllib.parse.quote(project)}/_apis/git/repositories/"
@@ -2282,8 +2282,11 @@ def _commit_message_from_ado(org, project, repo, commit_id, auth):
     try:
         data = _api_get(url, auth)
     except (urllib.error.HTTPError, urllib.error.URLError, OSError, ValueError):
-        return ""
-    return (data.get("comment") or "").splitlines()[0] if data.get("comment") else ""
+        return {}
+    return {
+        "message": (data.get("comment") or "").splitlines()[0] if data.get("comment") else "",
+        "commit_created_at": (data.get("author") or {}).get("date") or "",
+    }
 
 
 def get_latest_deployed_artifacts(name, path, force=False):
@@ -2311,7 +2314,9 @@ def get_latest_deployed_artifacts(name, path, force=False):
     was removed; this scan against the public Build REST API is the only path.)
 
     On success *data* is ``{stage_key: {"commit","message","build_id","url",
-    "triggered_by"} or None}`` (all three stage keys always present; a stage
+    "triggered_by","deployed_at","commit_created_at"} or None}`` (timestamps
+    are the stage finish time and commit author date from existing responses;
+    all three stage keys always present; a stage
     with no completed run is None) plus a ``"_pipeline_url"`` entry (the repo's
     deployment pipeline overview page, built from the already-resolved pipeline
     id - no extra HTTP call). Results are cached in memory per repository for a
@@ -2356,18 +2361,20 @@ def get_latest_deployed_artifacts(name, path, force=False):
     if not ok_scan:
         return False, result
 
-    # Fetch each distinct commit's message once (several stages often share it).
-    messages = {}
+    # Fetch each distinct commit's details once (several stages often share it).
+    commits = {}
     for key in DEPLOY_STATUS_STAGE_KEYS:
         entry = result.get(key)
-        if entry and entry["commit"] and entry["commit"] not in messages:
-            messages[entry["commit"]] = _commit_message_from_ado(
+        if entry and entry["commit"] and entry["commit"] not in commits:
+            commits[entry["commit"]] = _commit_details_from_ado(
                 org, project, repo, entry["commit"], auth
             )
     for key in DEPLOY_STATUS_STAGE_KEYS:
         entry = result.get(key)
         if entry:
-            entry["message"] = messages.get(entry["commit"], "")
+            details = commits.get(entry["commit"]) or {}
+            entry["message"] = details.get("message", "")
+            entry["commit_created_at"] = details.get("commit_created_at", "")
 
     result["_pipeline_url"] = pipeline_url
     with _deploy_status_cache_lock:
@@ -2426,21 +2433,17 @@ def _get_latest_deployed_artifacts_scan(name, org, project, repo, auth, pipeline
     for build, timeline in zip(builds, timelines):
         if not pending:
             break
-        stages = {}
-        for record in (timeline or {}).get("records") or []:
-            if (record.get("type") or "").lower() != "stage":
-                continue
-            key = _timeline_stage_key(record.get("name") or record.get("identifier"))
-            if key:
-                stages[key] = _timeline_state(record)
+        stages = _stage_timings_from_timeline(timeline)
         for key in list(pending):
-            if stages.get(key) == "done":
+            stage = stages.get(key) or {}
+            if stage.get("state") == "done":
                 result[key] = {
                     "commit": build.get("sourceVersion") or "",
                     "message": "",
                     "build_id": build.get("id"),
                     "url": _build_web_url(org, project, build),
                     "triggered_by": _build_triggered_by(build),
+                    "deployed_at": stage.get("finish") or "",
                 }
                 pending.discard(key)
     return True, result
@@ -2532,4 +2535,3 @@ def classify_deployed_commit(context, commit):
     if branch and branch != "master" and is_ancestor_of(branch):
         return "branch_older"
     return "unknown"
-

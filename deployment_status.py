@@ -21,6 +21,8 @@ caller must pass the exact branch, not assume ``feature/<workspace>``):
 Clicking a commit opens the repository's pipeline (run history overview), not
 a one-off build page; the URL is built from the pipeline id already resolved
 while fetching the commit, so no extra HTTP call is made on click.
+Hovering also shows the stage completion time and commit author date, when
+available, in local time. These reuse existing API responses.
 
 Self-contained (owns its own fetching, like pipeline_monitor.py): callers only
 need to build the (name, path, branch) entries and the ticked stage keys.
@@ -38,6 +40,7 @@ from parallel import run_in_parallel
 from pipelines import (
     get_latest_deployed_artifacts, get_deployment_commit_context,
     classify_deployed_commit,
+    _parse_iso_utc,
 )
 
 _STAGE_LABELS = {
@@ -351,7 +354,7 @@ class DeploymentStatusWindow(tk.Toplevel):
 
 
 def _cell_tooltip(kind, entry):
-    """Build the cell tooltip: commit message, then origin + who triggered it.
+    """Build the cell tooltip: message, origin, trigger and available timestamps.
 
     Extends (never overwrites) the existing commit-message tooltip. *kind* is
     the classification already computed on the background fetch thread (never
@@ -364,4 +367,12 @@ def _cell_tooltip(kind, entry):
     lines.append(f"- {explanation}")
     if entry.get("triggered_by"):
         lines.append(f"- Triggered by: {entry['triggered_by']}")
+    for key, label in (("deployed_at", "Deployed"),
+                       ("commit_created_at", "Commit authored")):
+        value = entry.get(key)
+        if value:
+            parsed = _parse_iso_utc(value)
+            display = (parsed.astimezone().strftime("%Y-%m-%d %H:%M:%S")
+                       if parsed else value)
+            lines.append(f"- {label}: {display}")
     return "\n".join(lines)

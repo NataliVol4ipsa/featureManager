@@ -8,6 +8,14 @@ Run it with:
 python featureManager.py
 ```
 
+## Deployment status
+
+Hover over a commit in **View deployment status** to see its message, branch
+classification, who triggered the run, and (when available) the deployment
+stage's completion date/time and the commit's author date/time. Timestamps are
+shown in local time without a timezone label, using responses already fetched by the
+window; no extra API requests are needed.
+
 ## Configuration (config.json)
 
 Folder locations and exclusions are read from `config.json` (next to the code),
