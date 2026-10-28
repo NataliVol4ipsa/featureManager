@@ -31,6 +31,7 @@ import packages
 import pbi
 import pipelines
 import pr_status
+import stale_items
 import theme
 from tab_base import ActionTabBase
 from manual_tab import ManualTab
@@ -732,6 +733,154 @@ def _check_deployment_timestamps():
                   "Unavailable commit metadata changed best-effort lookup behavior")
 
 
+def _check_stale_items(root):
+      from datetime import datetime, timezone
+
+      now = datetime(2026, 10, 28, tzinfo=timezone.utc)
+      owner = "my-id"
+      with patch.object(gitutils, "_IDENTITY_CACHE") as identity_cache, \
+           patch.object(gitutils, "_ado_get_json", return_value=(True, {
+                 "authenticatedUser": {"id": owner},
+           })) as identity_get:
+            identity_cache.get.side_effect = [None, owner]
+            check(gitutils._ado_current_user_id("test-org", "auth") == owner,
+                  "Identity lookup must return the authenticated Azure DevOps user")
+            check(identity_get.call_args.args[0] == "https://dev.azure.com/test-org/_apis/connectionData",
+                  "connectionData must not request the unsupported stable 7.1 API version")
+            identity_cache.set.assert_called_once_with("test-org", owner)
+            check(gitutils._ado_current_user_id("test-org", "auth") == owner,
+                  "Identity lookup must reuse its existing cache")
+            identity_get.assert_called_once()
+      base_ref = {"creator": {"id": owner}, "objectId": "a" * 40}
+      refs = [dict(base_ref, name="refs/heads/feature/old"),
+              dict(base_ref, name="refs/heads/feature/new"),
+              dict(base_ref, name="refs/heads/feature/unknown"),
+              dict(base_ref, name="refs/heads/feature/other", creator={"id": "other"})]
+      active = {"pullRequestId": 12, "createdBy": {"id": owner},
+                "status": "active", "creationDate": "2026-10-27T00:00:00Z",
+                "title": "My draft", "isDraft": True}
+      calls = []
+
+      def get(url, auth, params=None, response_headers=None):
+            calls.append((url, params))
+            if url.endswith("/pullrequests"):
+                  check(params["searchCriteria.creatorId"] == owner,
+                        "Stale PR query must filter by current creator")
+                  check(params["searchCriteria.status"] == "active",
+                        "Stale PR query must request only active PRs")
+                  return {"value": [active, dict(active, pullRequestId=13, status="abandoned"),
+                                    dict(active, pullRequestId=14, createdBy={"id": "other"})]}
+            if url.endswith("/refs"):
+                  if "continuationToken" not in params:
+                        response_headers["X-MS-ContinuationToken"] = "opaque-token"
+                        return {"value": refs[:2]}
+                  check(params["continuationToken"] == "opaque-token",
+                        "Stale branches must use the server continuation token")
+                  return {"value": refs[2:]}
+            if url.endswith("/stats/branches"):
+                  check(params["baseVersionDescriptor.version"] == "main",
+                        "Stale branches must compare with the repository default branch")
+                  return {"value": [{"name": "feature/old", "behindCount": 7}]}
+            if url.endswith("/pushes"):
+                  ref = params["searchCriteria.refName"]
+                  if ref.endswith("unknown"):
+                        return {"value": []}
+                  date = "2026-10-01T00:00:00Z" if ref.endswith("old") else "2026-10-27T00:00:00Z"
+                  return {"value": [{"date": date, "refUpdates": [
+                        {"name": ref, "oldObjectId": stale_items._ZERO}]}]}
+            return {"defaultBranch": "refs/heads/main"}
+
+      stale_items._CACHE.clear()
+      with patch.object(gitutils, "git_remote_url", return_value="https://dev.azure.com/org/project/_git/repo"), \
+           patch.object(stale_items.ado_auth, "auth_header", return_value=("Basic auth", "")), \
+           patch.object(gitutils, "_ado_current_user_id", return_value=owner), \
+           patch.object(stale_items, "_get", side_effect=get):
+            result = stale_items.scan_repo(("Repo", "fake"), force=True, now=now)
+            check([item["title"] for item in result["branches"]] == ["feature/old"],
+                  "Stale branches must exclude recent, unknown-age and other-owned refs")
+            check(result["branches"][0]["state"] == "7", "Stale branches must show behind count")
+            check(len(result["prs"]) == 1 and result["prs"][0]["state"] == "Draft",
+                  "Stale PRs must include recent own drafts but exclude abandoned and other-owned PRs")
+            check(len(result["errors"]) == 1, "Missing branch creation dates must be reported")
+            with patch.object(stale_items, "_creation_date", return_value="2026-10-01T00:00:00Z"):
+                  stale_items.scan_repo(("Repo", "fake"), force=True, now=now)
+                  count = len(calls)
+                  stale_items.scan_repo(("Repo", "fake"), now=now)
+                  check(len(calls) == count, "Reopening stale items must reuse fresh scan results")
+
+      branch = result["branches"][0]
+      with patch.object(gitutils, "_pr_rest_context", return_value=(True, {"auth": "auth"})), \
+           patch.object(gitutils, "_ado_send_json", return_value=(True, {"value": [{"success": True}]})) as send:
+            ok, error = stale_items.remove_item(branch, "branches")
+            check(ok and not error, "Stale branch deletion must accept successful ref updates")
+            body = send.call_args.args[2][0]
+            check(body["oldObjectId"] == branch["object_id"] and body["newObjectId"] == stale_items._ZERO,
+                  "Branch deletion must guard against concurrent pushes with the displayed commit ID")
+            send.return_value = (True, {"value": [{"success": False, "updateStatus": "staleOldObjectId"}]})
+            ok, error = stale_items.remove_item(branch, "branches")
+            check(not ok and "staleOldObjectId" in error, "Failed ref updates must not remove the row")
+            send.return_value = (True, {"status": "abandoned"})
+            ok, error = stale_items.remove_item(result["prs"][0], "prs")
+            check(ok and send.call_args.args[2] == {"status": "abandoned"},
+                  "PR cleanup must abandon rather than complete the PR")
+
+      with patch.object(stale_items, "repository_entries", return_value=[]):
+            window = stale_items.StaleItemsWindow(root)
+            window._busy = False
+            window._rows["branches"] = [{"item": branch, "selected": tk.BooleanVar(value=True)}]
+            window._render("branches")
+            check(len(window._notebook.tabs()) == 2, "Stale cleanup must have two tabs")
+            with patch.object(stale_items.messagebox, "askyesno", return_value=False) as confirm:
+                  window._act("branches")
+                  check(confirm.called, "Bulk branch deletion must require confirmation")
+            window._rows["branches"] = [
+                  {"item": dict(branch, repo=repo, state=state, date=date),
+                   "selected": tk.BooleanVar(value=True)}
+                  for repo, state, date in (
+                        ("Zulu", "10", "2026-10-01T00:00:00Z"),
+                        ("alpha", "2", "2026-10-02T00:00:00Z"),
+                        ("Beta", "Unknown", "2026-10-03T00:00:00Z"),
+                  )
+            ]
+            window._sort_table("branches", "state")
+            check([row["item"]["state"] for row in window._rows["branches"]] == ["2", "10", "Unknown"],
+                  "Branch behind counts must sort numerically with unknown values last")
+            header = window._pages["branches"]["table"].grid_slaves(row=0, column=5)[0]
+            header.event_generate("<Button-1>")
+            check([row["item"]["state"] for row in window._rows["branches"]] == ["10", "2", "Unknown"],
+                  "Clicking the same header must reverse sorting and keep unknown values last")
+            window._sort_table("branches", "repo")
+            check([row["item"]["repo"] for row in window._rows["branches"]] == ["alpha", "Beta", "Zulu"],
+                  "Repository sorting must be case insensitive")
+            window._sort_table("branches", "date")
+            check(window._rows["branches"][0]["item"]["repo"] == "Zulu",
+                  "Creation dates must sort chronologically")
+            window._rows["branches"].append({
+                  "item": dict(branch, repo="New arrival", date="2026-09-01T00:00:00Z"),
+                  "selected": tk.BooleanVar(value=True),
+            })
+            window._render("branches")
+            check(window._rows["branches"][0]["item"]["repo"] == "New arrival",
+                  "New scan results must retain the selected sort order")
+            check(all(row["selected"].get() for row in window._rows["branches"]),
+                  "Sorting must preserve existing row selections")
+            window._rows["prs"] = [
+                  {"item": dict(result["prs"][0], pr_id=pr_id, title=f"#{pr_id} PR", state=state),
+                   "selected": tk.BooleanVar(value=False)}
+                  for pr_id, state in ((10, "Waiting for approvals"), (2, "Draft"))
+            ]
+            window._sort_table("prs", "title")
+            check([row["item"]["pr_id"] for row in window._rows["prs"]] == [2, 10],
+                  "The PR column must sort PR numbers numerically")
+            window._sort_table("prs", "state")
+            check(window._rows["prs"][0]["item"]["state"] == "Draft",
+                  "PR status must sort alphabetically")
+            check(window._sort["branches"] == ("date", False),
+                  "Each tab must retain an independent sort order")
+            window._close()
+      stale_items._CACHE.clear()
+
+
 def main():
       root = tk.Tk()
       root.withdraw()  # no visible window
@@ -757,6 +906,7 @@ def main():
             _check_pure_logic()
             _check_deployment_timestamps()
             _check_pr_status(root)
+            _check_stale_items(root)
       finally:
             root.destroy()
 

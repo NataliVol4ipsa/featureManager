@@ -8,6 +8,27 @@ Run it with:
 python featureManager.py
 ```
 
+## Stale branches and PRs
+
+**Tools > Stale branches and PRs** scans all local Services and NuGet
+repositories in parallel (up to eight at once). The modal has two tabs:
+
+- **Branches**: your remote `feature/` branches created more than seven days
+   ago, with creation date and commits behind the repository's default branch.
+   Creation dates come from branch-creation push records, not commit dates.
+   Branches with unavailable creation history are reported under **Errors**.
+- **PRs**: all your active pull requests, including drafts, regardless of age.
+   Completed and abandoned PRs are excluded. Status uses draft, reviewer and
+   merge information; approval does not imply all branch policies passed.
+
+Open links per row, select individual items or all items, then delete remote
+branches or abandon PRs. Both row and bulk actions require confirmation.
+Local branches are untouched; deleting a remote branch fails if its commit
+changed since the scan. Cleanup runs in parallel across repositories.
+Successful scans are cached for five minutes; **Refresh** bypasses this cache.
+Existing authentication and identity caches are reused. Partial scan and action
+failures remain visible under **Errors**.
+
 ## Deployment status
 
 Hover over a commit in **View deployment status** to see its message, branch

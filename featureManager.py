@@ -28,11 +28,13 @@ from dialogs import (
     show_report, ask_repositories_to_cleanup,
 )
 from toolbar import build_action_toolbar
+from widgets import Tooltip
 import deployment_status
 import gitutils
 import packages
 import pipeline_estimates
 import pipeline_history
+import stale_items
 import theme
 
 
@@ -362,10 +364,14 @@ def main():
         threading.Thread(target=_worker, daemon=True).start()
 
     def _tools_entries():
-        # Flat list of (label, command) utilities. Add new tools here.
+        # Flat list of (label, command, hint) utilities. Add new tools here.
         return [
-            ("Generate clone script\u2026", _generate_clone_script),
-            ("Cleanup repositories\u2026", _cleanup_repositories),
+            ("Generate clone script\u2026", _generate_clone_script,
+             "Generate a clone script for all local repositories."),
+            ("Cleanup repositories\u2026", _cleanup_repositories,
+             "Select repositories whose bin/obj folders should be removed."),
+            ("Stale branches and PRs\u2026", lambda: stale_items.StaleItemsWindow(app),
+             "Find your feature branches older than one week and your open PRs, including drafts, across Services and NuGets."),
         ]
 
     def _post_tools(_event=None):
@@ -383,16 +389,17 @@ def main():
             if popup.winfo_exists():
                 popup.destroy()
 
-        for label, command in _tools_entries():
+        for label, command, hint in _tools_entries():
             entry = tk.Label(
                 inner, text="     " + label, anchor="w",
                 background=theme.BG_PANEL, foreground=theme.FG, padx=12, pady=5,
             )
             entry.pack(fill="x")
+            Tooltip(entry, hint)
             entry.bind("<Enter>",
-                       lambda _e, w=entry: w.config(background=theme.ACCENT))
+                       lambda _e, w=entry: w.config(background=theme.ACCENT), add="+")
             entry.bind("<Leave>",
-                       lambda _e, w=entry: w.config(background=theme.BG_PANEL))
+                       lambda _e, w=entry: w.config(background=theme.BG_PANEL), add="+")
             entry.bind("<Button-1>",
                        lambda _e, c=command: (_dismiss(), c()))
         popup.update_idletasks()  # re-fit the borderless window to content

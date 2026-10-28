@@ -1811,12 +1811,14 @@ def requeue_pr_policy(ctx, evaluation_id):
 PR_MERGE_STRATEGIES = ("noFastForward", "squash", "rebase", "rebaseMerge")
 
 
-def _ado_get_json(url, auth, timeout=30):
+def _ado_get_json(url, auth, timeout=30, response_headers=None):
     """GET *url* with Basic *auth* and return (ok, json_or_error_message)."""
     req = urllib.request.Request(url, method="GET")
     req.add_header("Authorization", f"Basic {auth}")
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
+            if response_headers is not None:
+                response_headers.update(resp.headers)
             return True, json.loads(resp.read().decode("utf-8"))
     except urllib.error.HTTPError as exc:
         detail = exc.read().decode("utf-8", "replace").strip()
@@ -1867,7 +1869,7 @@ def _ado_current_user_id(org, auth):
         return cached
     url = (
         f"https://dev.azure.com/{urllib.parse.quote(org)}/"
-        f"_apis/connectionData?api-version=7.1"
+        f"_apis/connectionData"
     )
     ok, data = _ado_get_json(url, auth)
     if not ok:
