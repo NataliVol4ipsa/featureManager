@@ -93,7 +93,7 @@ class DeploymentStatusWindow(tk.Toplevel):
         self.minsize(360, 200)
         self.configure(background=theme.BG)
         theme.apply_window_icon(self)
-        theme.enable_dark_titlebar(self)
+        theme.enable_dark_titlebar(self, accent="yellow")
         _open_windows.append(self)
 
         self._entries = entries

@@ -621,12 +621,13 @@ def _set_titlebar(window, dark, caption_color=None):
 
 
 def enable_dark_titlebar(window, dark=None, accent=None):
-    """Apply the title-bar theme and an optional muted red or green accent."""
+    """Apply the title-bar theme and an optional muted color accent."""
     if dark is None:
         dark = load_dark_preference()
     colors = {
         "red": "#503436" if dark else "#ead4d3",
         "green": "#2e4739" if dark else "#d4e5d8",
+        "yellow": "#4b432c" if dark else "#ece3c8",
     }
     _set_titlebar(window, dark, caption_color=colors.get(accent))
 
