@@ -29,6 +29,7 @@ from pipelines import (
 from dialogs import ask_pipeline_parameters, ask_deployment_status_stages
 from deployment_status import DeploymentStatusWindow
 import pipeline_estimates
+import data_sources
 
 
 # Amber "previous run" marker (Lucide undo-2), matching the toolbar icon style.
@@ -1215,6 +1216,9 @@ class PipelineMonitorWindow(tk.Toplevel):
             return
         estimate = row.get("estimate")
         if not estimate:
+            estimate = pipeline_estimates.get_estimate(repo)
+            row["estimate"] = estimate
+        if not estimate:
             label.configure(text="")
             return
         now = datetime.datetime.now(datetime.timezone.utc)
@@ -1491,6 +1495,8 @@ class PipelineMonitorWindow(tk.Toplevel):
 
     def _rerun_from_latest(self, repo):
         """Queue a fresh run from the branch tip and follow it in this row."""
+        if not data_sources.ensure_available("pipelines"):
+            return
         row = self._rows.get(repo)
         info = self._run_infos.get(repo)
         if not row or not info or row.get("rerun_launch_in_progress"):
@@ -1641,6 +1647,9 @@ class PipelineMonitorWindow(tk.Toplevel):
 
     def _poll_once(self):
         if self._closed:
+            return
+        if not data_sources.ensure_available("pipelines"):
+            self.title("Pipeline monitor - source not implemented yet")
             return
         if self._poll_in_progress:
             self._schedule_next_poll()

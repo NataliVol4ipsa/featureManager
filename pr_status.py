@@ -34,6 +34,7 @@ from gitutils import (
 )
 from dialogs import _center_over_parent
 import pipelines
+import data_sources
 
 
 _POLL_MS = 10 * 60 * 1000
@@ -363,11 +364,15 @@ class PrStatusWindow(tk.Toplevel):
 
     def _schedule_poll(self):
         self._cancel_poll()
+        if not data_sources.strategy("repositories").available:
+            return
         self._poll_job = self.after(_POLL_MS, self._poll)
 
     def _poll(self):
         self._poll_job = None
         if not self.winfo_exists():
+            return
+        if not data_sources.ensure_available("repositories"):
             return
         if self._loading or self._polling:
             self._schedule_poll()

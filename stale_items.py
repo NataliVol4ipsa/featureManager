@@ -1,5 +1,6 @@
 """Owned remote feature branches and open pull requests, with cleanup actions."""
 
+import data_sources
 import os
 import queue
 import threading
@@ -29,193 +30,14 @@ def _date(value):
     return parsed.replace(tzinfo=timezone.utc) if parsed.tzinfo is None else parsed
 
 
-def _get(url, auth, params=None, response_headers=None):
-    query = dict(params or {}, **{"api-version": "7.1"})
-    options = {"response_headers": response_headers} if response_headers is not None else {}
-    ok, data = gitutils._ado_get_json(
-        url + "?" + urllib.parse.urlencode(query), auth, **options
-    )
-    if not ok:
-        raise RuntimeError(data)
-    return data
-
-
-def _pr_state(pr):
-    if pr.get("isDraft"):
-        return "Draft"
-    if pr.get("mergeStatus") == "conflicts":
-        return "Merge conflicts"
-    reviewers = pr.get("reviewers") or []
-    votes = [int(reviewer.get("vote") or 0) for reviewer in reviewers]
-    if -10 in votes:
-        return "Rejected"
-    if -5 in votes:
-        return "Waiting for author"
-    if pr.get("autoCompleteSetBy"):
-        return "Auto-complete pending"
-    required = [reviewer for reviewer in reviewers if reviewer.get("isRequired")]
-    if any(int(reviewer.get("vote") or 0) < 5 for reviewer in required):
-        return "Waiting for approvals"
-    if any(vote >= 5 for vote in votes):
-        return "Approved (policies not checked)"
-    return "Waiting for approvals"
-
-
-def _creation_date(base, auth, ref):
-    offset = 0
-    while True:
-        pushes = _get(base + "/pushes", auth, {
-            "searchCriteria.refName": ref,
-            "searchCriteria.includeRefUpdates": "true",
-            "$top": 100, "$skip": offset,
-        }).get("value", [])
-        for push in pushes:
-            for update in push.get("refUpdates") or []:
-                if update.get("name") == ref and update.get("oldObjectId") == _ZERO:
-                    return push["date"]
-        if len(pushes) < 100:
-            return None
-        offset += len(pushes)
-
-
 def scan_repo(entry, force=False, now=None):
     """Return branches, PRs and errors; never infer ownership from commit author."""
-    name, path = entry
-    result = {"branches": [], "prs": [], "errors": []}
-    try:
-        remote = gitutils.git_remote_url(path)
-        parsed = gitutils.parse_ado_remote(remote)
-        if not parsed:
-            raise RuntimeError("origin is not an Azure DevOps repository")
-        org, project, repo, host = parsed
-        header, error = ado_auth.auth_header(host, org=org, cred_url=remote)
-        if not header:
-            raise RuntimeError(error)
-        auth = header.removeprefix("Basic ")
-        with _IDENTITY_LOCK:
-            user_id = gitutils._ado_current_user_id(org, auth)
-        if not user_id:
-            raise RuntimeError("Cannot resolve your Azure DevOps identity")
-        key = (org.lower(), project.lower(), repo.lower(), user_id.lower())
-        with _LOCK:
-            cached = _CACHE.get(key)
-            if not force and cached and time.monotonic() - cached[0] < _CACHE_SECONDS:
-                return cached[1]
-        base = (
-            "https://dev.azure.com/" + urllib.parse.quote(org, safe="") + "/"
-            + urllib.parse.quote(project, safe="") + "/_apis/git/repositories/"
-            + urllib.parse.quote(repo, safe="")
-        )
-        web = (
-            "https://dev.azure.com/" + urllib.parse.quote(org, safe="") + "/"
-            + urllib.parse.quote(project, safe="") + "/_git/"
-            + urllib.parse.quote(repo, safe="")
-        )
-        context = {"base": base, "path": path, "repo": name, "key": key}
-        try:
-            offset = 0
-            while True:
-                prs = _get(base + "/pullrequests", auth, {
-                    "searchCriteria.status": "active",
-                    "searchCriteria.creatorId": user_id,
-                    "$top": 100, "$skip": offset,
-                }).get("value", [])
-                for pr in prs:
-                    if (pr.get("status") != "active" or
-                            (pr.get("createdBy") or {}).get("id", "").lower() != user_id.lower()):
-                        continue
-                    result["prs"].append(dict(
-                        context, title=f"#{pr['pullRequestId']} {pr.get('title', '')}",
-                        pr_id=pr["pullRequestId"], date=pr["creationDate"],
-                        link=web + f"/pullrequest/{pr['pullRequestId']}",
-                        state=_pr_state(pr),
-                    ))
-                if len(prs) < 100:
-                    break
-                offset += len(prs)
-        except Exception as exc:
-            result["errors"].append(f"{name} PRs: {exc}")
-        try:
-            refs = []
-            continuation = None
-            while True:
-                params = {"filter": "heads/feature/", "$top": 1000}
-                if continuation:
-                    params["continuationToken"] = continuation
-                headers = {}
-                page = _get(base + "/refs", auth, params, headers).get("value", [])
-                refs.extend(page)
-                continuation = next((value for key, value in headers.items()
-                                     if key.lower() == "x-ms-continuationtoken"), None)
-                if not continuation:
-                    break
-            owned = [ref for ref in refs if
-                     (ref.get("creator") or {}).get("id", "").lower() == user_id.lower()]
-            stats = {}
-            if owned:
-                metadata = _get(base, auth)
-                target = metadata.get("defaultBranch") or "refs/heads/master"
-                stats = {stat["name"]: stat for stat in _get(
-                    base + "/stats/branches", auth,
-                    {"baseVersionDescriptor.version": target.removeprefix("refs/heads/"),
-                     "baseVersionDescriptor.versionType": "branch"},
-                ).get("value", [])}
-            cutoff = (now or datetime.now(timezone.utc)) - timedelta(days=7)
-            for ref in owned:
-                try:
-                    created = _creation_date(base, auth, ref["name"])
-                    if not created:
-                        raise RuntimeError("branch creation date unavailable")
-                    if _date(created) >= cutoff:
-                        continue
-                    branch = ref["name"].removeprefix("refs/heads/")
-                    behind = stats.get(branch, {}).get("behindCount")
-                    result["branches"].append(dict(
-                        context, title=branch, ref=ref["name"],
-                        object_id=ref["objectId"], date=created,
-                        link=web + "?" + urllib.parse.urlencode({"version": "GB" + branch}),
-                        state=str(behind) if behind is not None else "Unknown",
-                        target=target.removeprefix("refs/heads/"),
-                    ))
-                except Exception as exc:
-                    result["errors"].append(f"{name} {ref['name']}: {exc}")
-        except Exception as exc:
-            result["errors"].append(f"{name} branches: {exc}")
-        if not result["errors"]:
-            with _LOCK:
-                _CACHE[key] = (time.monotonic(), result)
-    except Exception as exc:
-        result["errors"].append(f"{name}: {exc}")
-    return result
+    return data_sources.strategy("repositories").scan_repo(entry, force, now)
 
 
 def remove_item(item, kind, context=None):
     """Use repository Git credentials for writes, as existing PR actions do."""
-    try:
-        ctx = context
-        if ctx is None:
-            ok, ctx = gitutils._pr_rest_context(item["repo"], item["path"], branch="master")
-            if not ok:
-                return False, ctx
-        if kind == "branches":
-            url = item["base"] + "/refs?api-version=7.1"
-            body = [{"name": item["ref"], "oldObjectId": item["object_id"],
-                     "newObjectId": _ZERO}]
-            ok, data = gitutils._ado_send_json(url, ctx["auth"], body, "POST")
-            if ok:
-                updates = data.get("value") or []
-                ok = bool(updates) and all(update.get("success") for update in updates)
-                if not ok:
-                    data = "; ".join(str(update.get("customMessage") or
-                                         update.get("updateStatus")) for update in updates)
-        else:
-            url = item["base"] + f"/pullrequests/{item['pr_id']}?api-version=7.1"
-            ok, data = gitutils._ado_send_json(url, ctx["auth"], {"status": "abandoned"}, "PATCH")
-        with _LOCK:
-            _CACHE.pop(item["key"], None)
-        return ok, "" if ok else str(data)
-    except Exception as exc:
-        return False, str(exc)
+    return data_sources.strategy("repositories").remove_item(item, kind, context)
 
 
 def repository_entries():
@@ -493,3 +315,10 @@ class StaleItemsWindow(tk.Toplevel):
             except Exception as exc:
                 self._events.put(("failed", str(exc)))
         threading.Thread(target=worker, daemon=True).start()
+
+# Compatibility exports for shared helpers and existing offline tests.
+from data_sources.ado.repositories import (
+    _get,
+    _pr_state,
+    _creation_date,
+)

@@ -6,6 +6,7 @@ and a generic background runner that drives the per-repo status indicators.
 
 import threading
 import webbrowser
+import data_sources
 from tkinter import ttk
 
 from widgets import ProgressPanel, ErrorList
@@ -641,6 +642,8 @@ class ActionTabBase(ttk.Frame):
         applied bumps is offered to copy on completion. *repos* is assumed
         non-empty (callers validate their selection first).
         """
+        if include_private and not data_sources.ensure_available("nuget"):
+            return
         self.show_repos_async(repos, with_status=True)
 
         # The private feed needs an Azure CLI token; fetch it once (off the UI
@@ -794,6 +797,8 @@ class ActionTabBase(ttk.Frame):
         (root, or per sub-solution for a multi-repository repo) are marked
         skipped. *repos* is assumed non-empty.
         """
+        if not data_sources.ensure_available("nuget"):
+            return
         self.show_repos_async(repos, with_status=True)
 
         def _prepare():
@@ -831,6 +836,8 @@ class ActionTabBase(ttk.Frame):
         Acceptance auto-approval is not asked upfront: the monitor window shows
         an "Auto-approve ACC" toggle button (like the master monitor) instead.
         """
+        if not data_sources.ensure_available("pipelines"):
+            return
         autoapprove_acc = False
 
         self.show_repos_async([(n, p) for n, p, _ in active], with_status=True)
@@ -1156,6 +1163,8 @@ class ActionTabBase(ttk.Frame):
 
         *active* is a list of (name, path, branch).
         """
+        if not data_sources.ensure_available("pipelines"):
+            return
         self.errors.clear()
         if not active:
             return
@@ -1287,6 +1296,8 @@ class ActionTabBase(ttk.Frame):
         (queuing runs and resolving the latest master builds) runs on a
         background thread, then a monitor opens for every resolved run.
         """
+        if not data_sources.ensure_available("pipelines"):
+            return
         self.errors.clear()
         if not active:
             return
@@ -1659,4 +1670,3 @@ class ActionTabBase(ttk.Frame):
                        completion_report_title)
         if on_complete is not None:
             self.after(0, on_complete, all_ok)
-

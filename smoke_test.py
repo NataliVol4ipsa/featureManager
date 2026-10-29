@@ -881,6 +881,69 @@ def _check_stale_items(root):
       stale_items._CACHE.clear()
 
 
+def _check_pipeline_estimate_recovery():
+      import datetime
+      from types import SimpleNamespace
+      from unittest.mock import Mock
+      import pipeline_estimates
+      from pipeline_monitor import PipelineMonitorWindow
+
+      now = datetime.datetime.now(datetime.timezone.utc)
+      label = Mock()
+      label.winfo_exists.return_value = True
+      row = {
+            "estimate": None,
+            "estimate_label": label,
+            "stages": {"build": "running", "development": "waiting"},
+            "stage_times": {"build": {"start": now.isoformat()}},
+            "environment": "dev",
+            "configured_stages": ["build", "development"],
+            "stage_progress": {"build": {"waiting_for_agent": True}},
+            "agent_wait": {},
+            "graph": Mock(),
+            "running_hitboxes": [("build", 34, 20)],
+      }
+      monitor = SimpleNamespace(
+            _rows={"Repo": row}, _first_poll_done=True,
+            _estimates_enabled=True, _progress_tip_target=None,
+            _hide_progress_tip=Mock(), _show_progress_tip=Mock(),
+            _row_is_complete=lambda repo: False,
+      )
+      monitor._agent_wait_seconds = lambda row, key, now: (
+            PipelineMonitorWindow._agent_wait_seconds(monitor, row, key, now)
+      )
+      monitor._stage_time_fill = lambda row, key: (
+            PipelineMonitorWindow._stage_time_fill(monitor, row, key)
+      )
+      monitor._running_stage_at = lambda row, px, py: (
+            PipelineMonitorWindow._running_stage_at(monitor, row, px, py)
+      )
+      row["graph"].winfo_rootx.return_value = 0
+      row["graph"].winfo_rooty.return_value = 0
+      profile = {"stages": {"build": 120, "development": 60}}
+      with patch.object(pipeline_estimates, "get_estimate",
+                                side_effect=[None, profile]) as getter:
+            PipelineMonitorWindow._update_agent_wait(monitor, "Repo")
+            PipelineMonitorWindow._update_estimate_label(monitor, "Repo")
+            check(label.configure.call_args.kwargs["text"] == "",
+                    "Missing historical estimates must not invent a countdown")
+
+            row["stage_progress"]["build"] = {"current": "Build docker image"}
+            PipelineMonitorWindow._update_agent_wait(monitor, "Repo")
+            PipelineMonitorWindow._update_estimate_label(monitor, "Repo")
+            check(label.configure.call_args.kwargs["text"].startswith("~"),
+                    "A running row must pick up estimates cached after opening")
+            fill = monitor._stage_time_fill(row, "build")
+            check(fill is not None and 119 < fill["left"] <= 120,
+                    "Circle timing must recover with the row after agent wait")
+            PipelineMonitorWindow._update_progress_tip(monitor, "Repo", row, 34, 20)
+            check("Time left:" in monitor._show_progress_tip.call_args.args[0],
+                    "The running circle tooltip must include recovered time left")
+            PipelineMonitorWindow._update_estimate_label(monitor, "Repo")
+            check(getter.call_count == 2,
+                    "An available estimate must be reused rather than read every tick")
+
+
 def main():
       root = tk.Tk()
       root.withdraw()  # no visible window
@@ -905,6 +968,7 @@ def main():
             _check_repo_delegation(repo_tab)
             _check_pure_logic()
             _check_deployment_timestamps()
+            _check_pipeline_estimate_recovery()
             _check_pr_status(root)
             _check_stale_items(root)
       finally:

@@ -17,6 +17,7 @@ import datetime
 import threading
 
 import pipelines
+import data_sources
 
 
 _CACHE_PATH = os.path.join(
@@ -185,6 +186,10 @@ def refresh_all(force=False, log=None, error_log=None):
     background (daemon) thread. *log* receives info messages and *error_log*
     receives per-repository failures.
     """
+    if not data_sources.ensure_available("pipelines"):
+        if error_log:
+            error_log("Pipeline time-left estimates: source not implemented yet.")
+        return
     from parallel import run_in_parallel
 
     entries = _discover_entries()

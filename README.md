@@ -8,6 +8,64 @@ Run it with:
 python featureManager.py
 ```
 
+## Data sources
+
+**Settings > Data sources...** opens a modal table with independent **ADO** /
+**GitHub** selectors for **Board**, **Repositories**, **Pipelines**, and
+**NuGet feed**. All four default to ADO, preserving the existing behavior.
+**Save and restart** persists the selections locally in
+`data/data_sources.json` and restarts the app; **Cancel** changes nothing.
+Selections remain fixed within a process so a running batch cannot change
+providers midway through an operation.
+
+GitHub is a placeholder, not a working integration yet. Using a GitHub source
+shows **"not implemented yet"** and stops that source's operation without
+network requests. Notifications are coalesced once per source per app session,
+including concurrent/background work. Unsupported PR/pipeline polling stops
+instead of repeatedly retrying. Startup NuGet cache prewarming is skipped for
+an unavailable feed source. Local Git operations, browser URL construction,
+saved pipeline history, and public nuget.org lookups remain provider-independent.
+
+Source responsibilities:
+
+| Source | Features |
+|---|---|
+| Board | PBI download, work-item/PR links, work-item transitions on PR completion, PBI titles and linked test reports |
+| Repositories | PR create/open/status/comments/reviews/policies/draft/completion, stale branch and PR scan/cleanup |
+| Pipelines | Runtime parameter discovery/inputs, run/redeploy/monitor, approvals, cancellation/retries, build errors, deployment overview and historical timing data |
+| NuGet feed | Private package version lookup, feed checks/authentication and package restore |
+
+### Strategy layout
+
+- `data_sources/contracts.py` defines abstract data-access strategies.
+- `data_sources/__init__.py` resolves strategies from the active settings and queues
+  unsupported-source notifications without calling Tk from worker threads.
+- `data_sources/ado/` contains the existing ADO implementations, separated into
+  `board.py`, `repositories.py`, `pipelines.py`, and `nuget.py`.
+- `data_sources/github.py` implements the same contracts with explicit unsupported
+  results. Future GitHub implementations belong here (or in separate GitHub
+  strategy modules), not in the rendering code.
+- Existing entry points in `pbi.py`, `gitutils.py`, `pipelines.py`,
+  `packages.py`, and `stale_items.py` are compatibility facades. Their result
+  shapes remain unchanged; local parsing, filesystem/Git helpers and rendering
+  remain shared. ADO helper exports preserve existing cache editors and test
+  seams; provider-specific helpers are internal to the selected strategies.
+- `data_sources/settings.py` owns validated, atomic persistence. Settings remain
+  in the application-level `data/` directory, not inside the code package.
+  `data_sources/dialog.py` owns the settings modal and main-thread notifications.
+
+Mixed selections are saved independently, but selecting GitHub does not make
+that part functional. For example, ADO PR creation can succeed while linking
+its work item reports an unsupported GitHub Board warning. PR completion with
+work-item transitions requested is blocked before mutation if the Board
+strategy cannot provide that operation.
+
+Run the new offline strategy/settings/UI checks with:
+
+```powershell
+python -m unittest test_data_sources
+```
+
 ## Stale branches and PRs
 
 **Tools > Stale branches and PRs** scans all local Services and NuGet

@@ -15,6 +15,7 @@ with a ``.example`` suffix are committed so a fresh checkout knows the expected
 shape.
 """
 
+import data_sources
 import os
 import re
 import json
@@ -160,23 +161,6 @@ def map_services(service_names, synonyms=None, folders=None):
 # Azure DevOps work item download
 # --------------------------------------------------------------------------- #
 
-def _ado_auth_header():
-    """Return (auth_header_value, error) for Azure DevOps work-item reads.
-
-    The header itself is derived and cached by :mod:`ado_auth`; this only adds
-    the secrets.json organization-URL requirement specific to the PBI feature.
-    """
-    secrets = load_secrets()
-    org_url = (secrets.get("ado_organization_url") or "").strip()
-    if not org_url:
-        return None, (
-            "Azure DevOps organization URL is not configured. Set "
-            "'ado_organization_url' in secrets.json."
-        )
-
-    host = (urllib.parse.urlparse(org_url).hostname or "").lower()
-    return ado_auth.auth_header(host, cred_url=org_url)
-
 
 def fetch_work_item(work_item_id):
     """Download a work item from Azure DevOps. Returns (ok, result).
@@ -184,47 +168,7 @@ def fetch_work_item(work_item_id):
     On success *result* is a dict with "id", "title" and "description" (plain
     text). On failure *result* is an error message string.
     """
-    secrets = load_secrets()
-    org_url = (secrets.get("ado_organization_url") or "").strip().rstrip("/")
-    if not org_url:
-        return False, (
-            "Azure DevOps organization URL is not configured. Set "
-            "'ado_organization_url' in secrets.json."
-        )
-
-    auth, err = _ado_auth_header()
-    if err:
-        return False, err
-
-    api_url = (
-        f"{org_url}/_apis/wit/workitems/"
-        f"{urllib.parse.quote(str(work_item_id))}"
-        "?fields=System.Title,System.Description&api-version=7.1"
-    )
-    req = urllib.request.Request(api_url, method="GET")
-    req.add_header("Authorization", auth)
-    req.add_header("Accept", "application/json")
-    try:
-        with urllib.request.urlopen(req, timeout=30) as resp:
-            data = json.loads(resp.read().decode("utf-8"))
-    except urllib.error.HTTPError as exc:
-        detail = exc.read().decode("utf-8", "replace").strip()
-        try:
-            detail = json.loads(detail).get("message", detail)
-        except ValueError:
-            pass
-        if exc.code == 404:
-            detail = detail or f"work item {work_item_id} was not found"
-        return False, f"could not download PBI {work_item_id} ({exc.code}): {detail}"
-    except (urllib.error.URLError, OSError) as exc:
-        return False, f"could not download PBI {work_item_id}: {exc}"
-
-    fields = data.get("fields", {})
-    return True, {
-        "id": data.get("id", work_item_id),
-        "title": fields.get("System.Title", "") or "",
-        "description": fields.get("System.Description", "") or "",
-    }
+    return data_sources.strategy("board").fetch_work_item(work_item_id)
 
 
 # --------------------------------------------------------------------------- #
@@ -398,3 +342,9 @@ def slugify_title(title):
         title = title.rsplit("|", 1)[1]
     slug = re.sub(r"[^A-Za-z0-9._-]+", "_", title.strip().lower())
     return slug.strip("_")
+
+
+# Compatibility exports for shared helpers and existing offline tests.
+from data_sources.ado.board import (
+    _ado_auth_header,
+)

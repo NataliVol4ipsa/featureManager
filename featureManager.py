@@ -17,7 +17,7 @@ import os
 import sys
 import threading
 import tkinter as tk
-from tkinter import ttk
+from tkinter import messagebox, ttk
 
 from manual_tab import ManualTab
 from workspaces_tab import WorkspacesTab
@@ -36,6 +36,8 @@ import pipeline_estimates
 import pipeline_history
 import stale_items
 import theme
+from data_sources import settings as source_settings
+from data_sources.dialog import edit_data_sources, install_notifications
 
 
 def _reload_persisted_pat():
@@ -102,6 +104,16 @@ def main():
 
     # Theme (dark or light). Persisted preference; must run before any widgets.
     theme.apply_theme(root)
+    try:
+        source_settings.current()
+    except (OSError, ValueError) as error:
+        messagebox.showerror(
+            "Data sources", f"Could not load data-source settings:\n{error}",
+            parent=root,
+        )
+        root.destroy()
+        return
+    install_notifications(root)
 
     # Custom menu bar. The native Windows menu bar paints its empty strip with
     # the system brush, and a native popup menu draws a white window frame -
@@ -157,6 +169,10 @@ def main():
         theme.save_dark_preference(not theme.load_dark_preference())
         # Re-launch so every widget is rebuilt cleanly with the new palette.
         _relaunch()
+
+    def _set_data_sources():
+        if edit_data_sources(root):
+            _relaunch()
 
     def _set_pipeline_poll_seconds():
         current = theme.load_pipeline_poll_seconds()
@@ -216,6 +232,7 @@ def main():
         top = [
             ("Repository synonyms\u2026", lambda: edit_synonyms(root), False),
             ("Caches", None, False),  # replaced with its submenu below
+            ("Data sources\u2026", _set_data_sources, False),
             (
                 f"Pipeline monitor polling ({theme.load_pipeline_poll_seconds()}s)\u2026",
                 _set_pipeline_poll_seconds,

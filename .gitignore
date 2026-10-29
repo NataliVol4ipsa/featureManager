@@ -74,6 +74,8 @@ _out.log
 data/secrets.json
 data/repo_synonyms.json
 data/ui_prefs.json
+data/data_sources.json
+data/data_sources.*.tmp
 data/monitor_session.json
 data/deployment_status_session.json
 data/restart_geometry.json
