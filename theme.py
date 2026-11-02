@@ -163,6 +163,32 @@ def pop_deployment_status_session():
     return data if isinstance(data, list) else []
 
 
+_PR_STATUS_SESSION_PATH = os.path.join(_DATA_DIR, "pr_status_session.json")
+
+
+def save_pr_status_session(sessions):
+    """Persist open PR-status window snapshots for a relaunch."""
+    try:
+        with open(_PR_STATUS_SESSION_PATH, "w", encoding="utf-8") as handle:
+            json.dump(list(sessions), handle)
+    except (OSError, TypeError):
+        pass
+
+
+def pop_pr_status_session():
+    """Return the saved PR-status snapshots and delete the file; [] if none."""
+    try:
+        with open(_PR_STATUS_SESSION_PATH, "r", encoding="utf-8") as handle:
+            data = json.load(handle)
+    except (OSError, ValueError):
+        data = []
+    try:
+        os.remove(_PR_STATUS_SESSION_PATH)
+    except OSError:
+        pass
+    return data if isinstance(data, list) else []
+
+
 # Transient flag marking that the pipeline history window was open at relaunch,
 # so it can be reopened on the next startup (deleted once consumed).
 _HISTORY_FLAG_PATH = os.path.join(_DATA_DIR, "history_window.flag")

@@ -34,6 +34,7 @@ import gitutils
 import packages
 import pipeline_estimates
 import pipeline_history
+import pr_status
 import stale_items
 import theme
 from data_sources import settings as source_settings
@@ -152,6 +153,11 @@ def main():
         theme.save_deployment_status_session(
             [win.session_state() for win in deployment_status.open_windows()]
         )
+        theme.save_pr_status_session([
+            dict(win.session_state(),
+                 tab="manual" if win._tab is app.manual_tab else "workspaces")
+            for win in pr_status.open_windows()
+        ])
         # Remember where the window is so the restarted app reopens in place.
         theme.save_restart_geometry(root.geometry())
         # Reopen the pipeline history window too if it is currently open.
@@ -562,6 +568,14 @@ def main():
     root.after(0, lambda: [
         deployment_status.reopen_session(app.workspaces_tab, session)
         for session in theme.pop_deployment_status_session()
+    ])
+
+    root.after(0, lambda: [
+        pr_status.reopen_session(
+            app.manual_tab if session.get("tab") == "manual" else app.workspaces_tab,
+            session,
+        )
+        for session in theme.pop_pr_status_session()
     ])
 
     # Reopen the pipeline history window too if it was open at relaunch. Delayed

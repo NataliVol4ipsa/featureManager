@@ -30,7 +30,8 @@ from widgets import Tooltip
 from parallel import run_in_parallel
 from gitutils import (
     fetch_pr_status, fetch_pr_threads, fetch_pr_policy, set_pr_draft,
-    requeue_pr_policy, PR_VOTE_LABELS,
+    requeue_pr_policy, PR_VOTE_LABELS, ado_pr_title_from_branch,
+    ado_work_item_id_from_branch,
 )
 from dialogs import _center_over_parent
 import pipelines
@@ -38,19 +39,36 @@ import data_sources
 
 
 _POLL_MS = 10 * 60 * 1000
+_open_windows = []
+
+
+def open_windows():
+    """Return the PR status windows that are still open."""
+    _open_windows[:] = [window for window in _open_windows if window.winfo_exists()]
+    return list(_open_windows)
+
+
+def reopen_session(parent, session):
+    """Reopen a PR status window from its restart snapshot."""
+    entries = [tuple(entry) for entry in (session or {}).get("entries") or []]
+    if not entries:
+        return None
+    window = PrStatusWindow(parent, entries, restore_geometry=session.get("geometry"))
+    parent._pr_status_window = window
+    return window
 
 
 # (key, header, width) for every table column, in display order.
 _COLUMNS = (
-    ("service", "Service", 24),
+    ("service", "Service", 0),
     ("draft", "Draft", 7),
     ("build", "Build", 7),
     ("vote", "Vote", 0),
-    ("ready", "Ready", 9),
-    ("comments", "Comments", 9),
-    ("conflicts", "Conflicts", 9),
+    ("ready", "Ready", 0),
+    ("comments", "Comments", 0),
+    ("conflicts", "Conflicts", 0),
     ("complete", "", 9),
-    ("prlink", "", 8),
+    ("prlink", "", 0),
 )
 
 
@@ -131,9 +149,23 @@ class PrStatusWindow(tk.Toplevel):
     def __init__(self, parent, entries, on_progress=None, restore_geometry=None):
         super().__init__(parent.winfo_toplevel())
         self.withdraw()
-        self.title("Pull request status")
-        self.geometry(restore_geometry or theme.load_pr_status_geometry() or "820x360")
-        self.minsize(520, 200)
+        feature_names = []
+        feature_numbers = []
+        for branch in dict.fromkeys(branch for _name, _path, branch in entries if branch):
+            name = ado_pr_title_from_branch(branch)
+            number = ado_work_item_id_from_branch(branch)
+            if number:
+                name = re.sub(r"^(?:\S+\(\d+\)|\(\d+\))\s*", "", name)
+                feature_numbers.append(number)
+            elif branch.removeprefix("refs/heads/").startswith("feature/"):
+                name = name.removeprefix("feature ")
+            feature_names.append(name or "Feature")
+        self._feature_title = " | ".join(dict.fromkeys(feature_names)) or "Pull request state & comments"
+        self._feature_numbers = list(dict.fromkeys(feature_numbers))
+        self._base_title = "Pull request status"
+        self.title(self._base_title)
+        self.geometry(restore_geometry or theme.load_pr_status_geometry() or "520x160")
+        self.minsize(360, 120)
         self.configure(background=theme.BG)
         theme.apply_window_icon(self)
         theme.enable_dark_titlebar(self, accent="red")
@@ -173,14 +205,11 @@ class PrStatusWindow(tk.Toplevel):
             400, lambda: self.winfo_exists() and self.attributes("-topmost", False)
         )
         self.focus_force()
+        _open_windows.append(self)
 
     def _build_ui(self):
         header = ttk.Frame(self)
         header.pack(side="top", fill="x", padx=10, pady=(10, 6))
-        ttk.Label(
-            header, text="Pull request state & comments",
-            font=("", 11, "bold"),
-        ).pack(side="left")
         self._refresh_button = ttk.Button(
             header, text="Refresh", command=self._refresh
         )
@@ -203,6 +232,14 @@ class PrStatusWindow(tk.Toplevel):
             "Complete (merge) every listed pull request - shown only when they "
             "are all ready to merge.",
         )
+        self._feature_label = ttk.Label(
+            header, text=self._feature_title, width=1, wraplength=300,
+            font=("", 11, "bold"), anchor="w",
+        )
+        self._feature_label.pack(side="left", fill="x", expand=True, padx=(0, 10))
+        self._feature_label.bind("<Configure>", self._wrap_feature_title)
+        if self._feature_numbers:
+            Tooltip(self._feature_label, "Feature number: " + ", ".join(self._feature_numbers))
 
         tk.Frame(self, height=1, background=theme.BORDER).pack(side="top", fill="x")
 
@@ -217,8 +254,8 @@ class PrStatusWindow(tk.Toplevel):
         canvas = tk.Canvas(shell, highlightthickness=0, background=theme.BG)
         canvas.pack(side="left", fill="both", expand=True)
         scroll = ttk.Scrollbar(shell, orient="vertical", command=canvas.yview)
-        scroll.pack(side="right", fill="y")
-        canvas.configure(yscrollcommand=scroll.set)
+        self._scroll = scroll
+        canvas.configure(yscrollcommand=self._update_scrollbar)
         self._canvas = canvas
         self._inner = tk.Frame(canvas, background=theme.BG)
         self._inner_id = canvas.create_window((0, 0), window=self._inner, anchor="nw")
@@ -233,8 +270,21 @@ class PrStatusWindow(tk.Toplevel):
         canvas.bind("<Enter>", lambda _e: canvas.bind_all("<MouseWheel>", self._on_wheel))
         canvas.bind("<Leave>", lambda _e: canvas.unbind_all("<MouseWheel>"))
 
+    def _wrap_feature_title(self, event):
+        if int(self._feature_label.cget("wraplength")) != event.width:
+            self._feature_label.configure(wraplength=max(1, event.width))
+            self.after_idle(self._fit_to_content)
+
+    def _update_scrollbar(self, first, last):
+        self._scroll.set(first, last)
+        if float(first) <= 0 and float(last) >= 1:
+            self._scroll.pack_forget()
+        elif not self._scroll.winfo_manager():
+            self._scroll.pack(side="right", fill="y")
+
     def _on_wheel(self, event):
-        self._canvas.yview_scroll(int(-event.delta / 120), "units")
+        if self._scroll.winfo_manager():
+            self._canvas.yview_scroll(int(-event.delta / 120), "units")
 
     def _refresh(self):
         self._load(force=True)
@@ -428,9 +478,9 @@ class PrStatusWindow(tk.Toplevel):
 
     def _set_updated_title(self, failed=False):
         if failed:
-            self.title("Pull request status - last updated: error while polling")
+            self.title(f"{self._base_title} - last updated: error while polling")
         else:
-            self.title("Pull request status - last updated: "
+            self.title(f"{self._base_title} - last updated: "
                        f"{datetime.now().strftime('%H:%M:%S')}")
 
     def _show_changes(self, changes):
@@ -991,10 +1041,21 @@ class PrStatusWindow(tk.Toplevel):
             width=self._inner.winfo_reqwidth(), height=content_height,
         )
         self.update_idletasks()
+        max_height = self.winfo_screenheight() - 120
+        extra_height = self.winfo_reqheight() - content_height
+        self._canvas.configure(height=min(content_height, max(1, max_height - extra_height)))
+        self.update_idletasks()
         width = min(self.winfo_reqwidth(), self.winfo_screenwidth() - 80)
-        height = min(self.winfo_reqheight(), self.winfo_screenheight() - 120)
-        match = re.search(r"(\+-?\d+\+-?\d+)$", self.geometry())
+        height = min(self.winfo_reqheight(), max_height)
+        match = re.search(r"([+-]-?\d+[+-]-?\d+)$", self.geometry())
         self.geometry(f"{width}x{height}{match.group(1) if match else ''}")
+
+    def session_state(self):
+        """Return the entries and exact window geometry for a relaunch."""
+        return {
+            "entries": [list(entry) for entry in self._entries],
+            "geometry": self.geometry(),
+        }
 
     def _on_close(self):
         self._cancel_poll()
