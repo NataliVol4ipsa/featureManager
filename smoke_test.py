@@ -517,6 +517,82 @@ def _check_git_integration():
         _rmtree(base)
 
 
+def _check_pr_restart(root):
+      workspaces = ttk.Frame(root)
+      manual = ttk.Frame(root)
+      try:
+            with tempfile.TemporaryDirectory() as directory, \
+                        patch.object(theme, "_PR_STATUS_SESSION_PATH", os.path.join(directory, "sessions.json")), \
+                        patch.object(pr_status, "_open_windows", []), \
+                        patch.object(pr_status, "_pending_sessions", None), \
+                        patch.object(pr_status.PrStatusWindow, "_load"):
+                  originals = [
+                        pr_status.PrStatusWindow(workspaces, [("RepoA", "fake/A", "feature/a")]),
+                        pr_status.PrStatusWindow(manual, [("RepoB", "fake/B", "feature/b")]),
+                  ]
+                  for window, position in zip(originals, ("+80+90", "+-600+140")):
+                        window.geometry("720x180" + position)
+                  root.update()
+                  for _restart in range(6):
+                        snapshots = pr_status.restart_sessions(manual)
+                        check(len(snapshots) == 2, "Repeated restart lost a PR window")
+                        check(theme.save_pr_status_session(snapshots), "Could not save PR restart snapshots")
+                        with patch.object(theme.os, "replace", side_effect=OSError("interrupted write")):
+                              check(not theme.save_pr_status_session([]),
+                                      "Failed PR snapshot write reported success")
+                        check(theme.load_pr_status_session() == snapshots,
+                                "Failed PR snapshot write erased saved windows")
+                        for window in pr_status.open_windows():
+                              window.destroy()
+                        pr_status._pending_sessions = None
+                        check(len(pr_status.restart_sessions(manual)) == 2,
+                                "Restart before PR restoration lost pending windows")
+                        pr_status.restore_sessions(workspaces, manual)
+                        root.update()
+                        restored = pr_status.open_windows()
+                        check(len(restored) == 2, "PR restoration did not reopen both windows")
+                        check([window._tab for window in restored] == [workspaces, manual],
+                                "PR restart changed the owning tab")
+                        check([window.geometry().split("+", 1)[-1] for window in restored]
+                                == [session["geometry"].split("+", 1)[-1] for session in snapshots],
+                                "PR restart changed window positions")
+                  snapshots = pr_status.restart_sessions(manual)
+                  theme.save_pr_status_session(snapshots)
+                  for window in pr_status.open_windows():
+                        window.destroy()
+                  pr_status._pending_sessions = None
+                  reopen = pr_status.reopen_session
+
+                  def fail_first(parent, session):
+                        if session["entries"][0][0] == "RepoA":
+                              raise tk.TclError("simulated transient reopen failure")
+                        return reopen(parent, session)
+
+                  with patch.object(pr_status, "reopen_session", side_effect=fail_first):
+                        pr_status.restore_sessions(workspaces, manual)
+                  check(len(pr_status.open_windows()) == 1,
+                          "One failed PR reopen prevented later windows from opening")
+                  check(theme.load_pr_status_session() == snapshots[:1],
+                          "Failed PR reopen discarded its saved snapshot")
+                  check(len(pr_status.restart_sessions(manual)) == 2,
+                          "Restart did not carry forward a failed PR window")
+                  pr_status.restore_sessions(workspaces, manual)
+                  check(len(pr_status.open_windows()) == 2,
+                          "Retry failed to restore the missing PR window")
+                  check(not theme.load_pr_status_session(),
+                          "Successful PR restore left duplicate pending snapshots")
+                  for window in pr_status.open_windows():
+                        window.destroy()
+                  check(not pr_status.restart_sessions(manual),
+                          "Closed PR windows would be resurrected on restart")
+      finally:
+            for window in list(root.winfo_children()):
+                  if isinstance(window, pr_status.PrStatusWindow):
+                        window.destroy()
+            workspaces.destroy()
+            manual.destroy()
+
+
 def _check_pr_status(root):
       with patch.object(pr_status.PrStatusWindow, "_load"):
             window = pr_status.PrStatusWindow(
@@ -970,6 +1046,7 @@ def main():
             _check_deployment_timestamps()
             _check_pipeline_estimate_recovery()
             _check_pr_status(root)
+            _check_pr_restart(root)
             _check_stale_items(root)
       finally:
             root.destroy()

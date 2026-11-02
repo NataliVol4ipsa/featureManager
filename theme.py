@@ -178,11 +178,15 @@ def save_pr_status_session(sessions):
             temporary_path = handle.name
             json.dump(list(sessions), handle)
         os.replace(temporary_path, _PR_STATUS_SESSION_PATH)
+        return True
     except (OSError, TypeError):
-        pass
+        return False
     finally:
-        if temporary_path and os.path.exists(temporary_path):
-            os.remove(temporary_path)
+        if temporary_path:
+            try:
+                os.remove(temporary_path)
+            except OSError:
+                pass
 
 
 def load_pr_status_session():

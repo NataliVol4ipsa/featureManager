@@ -144,6 +144,13 @@ def main():
 
     def _relaunch():
         """Re-exec the Python process, preserving any open pipeline monitors."""
+        if not theme.save_pr_status_session(pr_status.restart_sessions(app.manual_tab)):
+            messagebox.showerror(
+                "Restart canceled",
+                "Could not save PR status windows. Restart was canceled to keep them open.",
+                parent=root,
+            )
+            return
         sessions = []
         for tab in (app.workspaces_tab, app.manual_tab):
             for win in getattr(tab, "_pipeline_monitors", []):
@@ -153,11 +160,6 @@ def main():
         theme.save_deployment_status_session(
             [win.session_state() for win in deployment_status.open_windows()]
         )
-        theme.save_pr_status_session([
-            dict(win.session_state(),
-                 tab="manual" if win._tab is app.manual_tab else "workspaces")
-            for win in pr_status.open_windows()
-        ])
         # Remember where the window is so the restarted app reopens in place.
         theme.save_restart_geometry(root.geometry())
         # Reopen the pipeline history window too if it is currently open.
@@ -575,13 +577,7 @@ def main():
         for session in theme.pop_deployment_status_session()
     ])
 
-    root.after(0, lambda: [
-        pr_status.reopen_session(
-            app.manual_tab if session.get("tab") == "manual" else app.workspaces_tab,
-            session,
-        )
-        for session in theme.pop_pr_status_session()
-    ])
+    root.after(350, pr_status.restore_sessions, app.workspaces_tab, app.manual_tab)
 
     # Reopen the pipeline history window too if it was open at relaunch. Delayed
     # so it lands after the main window's focus grab and ends up on top.

@@ -40,6 +40,7 @@ import data_sources
 
 _POLL_MS = 10 * 60 * 1000
 _open_windows = []
+_pending_sessions = None
 
 
 def open_windows():
@@ -56,6 +57,35 @@ def reopen_session(parent, session):
     window = PrStatusWindow(parent, entries, restore_geometry=session.get("geometry"))
     parent._pr_status_window = window
     return window
+
+
+def restart_sessions(manual_tab):
+    """Snapshot live windows and carry forward windows not successfully reopened."""
+    pending = theme.load_pr_status_session() if _pending_sessions is None else _pending_sessions
+    return list(pending) + [
+        dict(window.session_state(),
+             tab="manual" if window._tab is manual_tab else "workspaces")
+        for window in open_windows()
+    ]
+
+
+def restore_sessions(workspaces_tab, manual_tab):
+    """Reopen each saved window independently, retaining failed snapshots."""
+    global _pending_sessions
+    if _pending_sessions is None:
+        _pending_sessions = theme.load_pr_status_session()
+    for session in list(_pending_sessions):
+        parent = workspaces_tab
+        try:
+            parent = manual_tab if session.get("tab") == "manual" else workspaces_tab
+            reopen_session(parent, session)
+        except Exception as error:
+            panel = getattr(parent, "errors", None)
+            if panel is not None:
+                panel.add(f"Could not reopen PR status: {error}. Saved for the next restart.")
+            continue
+        _pending_sessions.remove(session)
+        theme.save_pr_status_session(_pending_sessions)
 
 
 # (key, header, width) for every table column, in display order.
