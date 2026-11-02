@@ -78,6 +78,7 @@ data/data_sources.json
 data/data_sources.*.tmp
 data/monitor_session.json
 data/deployment_status_session.json
+data/pr_status_session.json
 data/restart_geometry.json
 data/pipeline_estimates.json
 data/pipeline_history.json
