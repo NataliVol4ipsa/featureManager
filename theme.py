@@ -21,6 +21,7 @@ import ctypes
 import json
 import os
 import sys
+import tempfile
 
 
 # -- Palettes ------------------------------------------------------------- #
@@ -168,20 +169,35 @@ _PR_STATUS_SESSION_PATH = os.path.join(_DATA_DIR, "pr_status_session.json")
 
 def save_pr_status_session(sessions):
     """Persist open PR-status window snapshots for a relaunch."""
+    temporary_path = None
     try:
-        with open(_PR_STATUS_SESSION_PATH, "w", encoding="utf-8") as handle:
+        with tempfile.NamedTemporaryFile(
+            mode="w", encoding="utf-8", dir=os.path.dirname(_PR_STATUS_SESSION_PATH),
+            delete=False,
+        ) as handle:
+            temporary_path = handle.name
             json.dump(list(sessions), handle)
+        os.replace(temporary_path, _PR_STATUS_SESSION_PATH)
     except (OSError, TypeError):
         pass
+    finally:
+        if temporary_path and os.path.exists(temporary_path):
+            os.remove(temporary_path)
 
 
-def pop_pr_status_session():
-    """Return the saved PR-status snapshots and delete the file; [] if none."""
+def load_pr_status_session():
+    """Read PR snapshots without consuming windows that have not reopened yet."""
     try:
         with open(_PR_STATUS_SESSION_PATH, "r", encoding="utf-8") as handle:
             data = json.load(handle)
     except (OSError, ValueError):
         data = []
+    return data if isinstance(data, list) else []
+
+
+def pop_pr_status_session():
+    """Return the saved PR-status snapshots and delete the file; [] if none."""
+    data = load_pr_status_session()
     try:
         os.remove(_PR_STATUS_SESSION_PATH)
     except OSError:

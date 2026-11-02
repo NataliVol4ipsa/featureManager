@@ -49,17 +49,38 @@ def _fmt_time(timestamp):
     return datetime.fromtimestamp(timestamp).strftime("%Y-%m-%d %H:%M")
 
 
+def _workspace_branch_mismatch_counts(entries):
+    """Return mismatched and total counts, excluding ignored and non-git folders."""
+    def _matches(entry):
+        if entry["ignoreGit"] or not is_git_repo(entry["path"]):
+            return None
+        return bool(entry["branch"]) and git_current_branch(entry["path"]) == entry["branch"]
+
+    matches = [result for result in run_in_parallel(entries, _matches) if result is not None]
+    return matches.count(False), len(matches)
+
+
 class WorkspacesTab(ActionTabBase):
     """Left: single-select workspace list. Middle: actions. Right: progress."""
 
     def __init__(self, master):
         super().__init__(master)
+        self.disabled_actions = {
+            "Restore state before switch": "Disabled because no workspace is selected."
+        }
+        self._restore_check_generation = 0
+        self._restore_check_job = None
+        self._restore_workspace = None
         self._build_left()
         self.build_middle_sections(self._sections())
         # Let the Details panel absorb the extra width when the window grows, so
         # long branch/PR content on the right has room (the workspace list on
         # the left keeps a fixed width).
         self.build_right_details(expand=True)
+        self._update_selection_actions(
+            bool(self.workspace_list.get_selected()), "Disabled because no workspace is selected."
+        )
+        self.after_idle(self._refresh_restore_availability)
 
     # -- Layout ------------------------------------------------------------ #
     def _build_left(self):
@@ -98,7 +119,12 @@ class WorkspacesTab(ActionTabBase):
 
     def _on_workspace_selected(self, workspace):
         """Show the workspace's repositories (with branch) in the Details table."""
+        self._set_restore_available(False)
+        self._refresh_restore_availability()
         self.errors.clear()
+        if not workspace:
+            self.progress.show_repos([])
+            return
         ok, repos = read_workspace_repos(workspace)
         if not ok:
             self.progress.show_repos([])
@@ -109,9 +135,71 @@ class WorkspacesTab(ActionTabBase):
     def _refresh(self):
         """Re-scan the workspaces folder (e.g. after creating a new workspace)."""
         self.workspace_list.set_items(self._workspace_items())
+        self._refresh_restore_availability()
 
     # Public alias used by the app when the Workspaces tab is opened.
     refresh = _refresh
+
+    def _set_restore_available(self, enabled, reason=""):
+        label = "Restore state before switch"
+        was_enabled = label not in self.disabled_actions
+        previous_reason = self.disabled_actions.get(label, "")
+        if enabled:
+            self.disabled_actions.pop(label, None)
+        else:
+            reason = reason or "Disabled while checking workspace branches."
+            self.disabled_actions[label] = reason
+        if was_enabled != enabled or previous_reason != reason:
+            self.event_generate("<<ActionStateChanged>>")
+
+    def _refresh_restore_availability(self):
+        if self._restore_check_job is not None:
+            self.after_cancel(self._restore_check_job)
+            self._restore_check_job = None
+        self._restore_check_generation += 1
+        generation = self._restore_check_generation
+        workspace = self.workspace_list.get_selected()
+        self._update_selection_actions(
+            bool(workspace), "Disabled because no workspace is selected."
+        )
+        if workspace != self._restore_workspace or not workspace:
+            self._set_restore_available(
+                False, "Disabled while checking workspace branches." if workspace
+                else "Disabled because no workspace is selected.",
+            )
+        self._restore_workspace = workspace
+        if not workspace:
+            return
+
+        def _work():
+            enabled = False
+            reason = "Disabled because workspace branches could not be checked."
+            try:
+                ok, entries = workspace_branch_entries(workspace)
+                if ok:
+                    mismatched, total = _workspace_branch_mismatch_counts(entries)
+                    enabled = total > 0 and mismatched == 0
+                    if not total:
+                        reason = "Disabled because this workspace has no eligible Git repositories."
+                    elif mismatched:
+                        reason = (
+                            f"Disabled because {mismatched} of {total} repos are not "
+                            "on their configured workspace branch."
+                        )
+                    else:
+                        reason = ""
+            except Exception:
+                pass
+            self.after(0, self._apply_restore_availability, generation, workspace, enabled, reason)
+
+        threading.Thread(target=_work, daemon=True).start()
+
+    def _apply_restore_availability(self, generation, workspace, enabled, reason):
+        if (generation != self._restore_check_generation
+                or workspace != self.workspace_list.get_selected()):
+            return
+        self._set_restore_available(enabled, reason)
+        self._restore_check_job = self.after(2000, self._refresh_restore_availability)
 
     def _workspace_items(self):
         """Build (name, created, modified) rows, freshest (most recent) first."""
@@ -227,8 +315,9 @@ class WorkspacesTab(ActionTabBase):
                 "For the selected workspace's repositories, undoes the savepos "
                 "commit the app made (when switching workspaces or creating a "
                 "feature branch) and restores the exact staged/unstaged working "
-                "state. User commits are never touched. Skipped repos are offered "
-                "as opt-in checkboxes (off by default).",
+                "state. User commits are never touched. Enabled only when every "
+                "git repository is on its configured workspace branch; non-git "
+                "folders and repos marked ignore git are excluded from this check.",
             ),
         ]
 

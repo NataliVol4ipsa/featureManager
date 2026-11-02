@@ -86,6 +86,20 @@ class ActionTabBase(ttk.Frame):
         # Exposed so the top action toolbar can mirror these actions.
         self.action_sections = sections
 
+    def _update_selection_actions(self, has_selection, reason):
+        disabled = dict(getattr(self, "disabled_actions", {}))
+        for _title, actions in self.action_sections:
+            for label, _command, _hint in actions:
+                if label == "Create workspace from PBI":
+                    continue
+                if not has_selection:
+                    disabled[label] = reason
+                elif disabled.get(label) == reason:
+                    disabled.pop(label)
+        if disabled != getattr(self, "disabled_actions", {}):
+            self.disabled_actions = disabled
+            self.event_generate("<<ActionStateChanged>>")
+
     def build_right_details(self, expand=True, width=None):
         """Build the right 'Details' column holding the live progress panel.
 

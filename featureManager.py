@@ -481,10 +481,15 @@ def main():
 
     def _rebuild_toolbar(_event=None):
         active = app.nametowidget(app.select())
-        build_action_toolbar(toolbar_host, getattr(active, "action_sections", []))
+        build_action_toolbar(
+            toolbar_host, getattr(active, "action_sections", []),
+            disabled_actions=getattr(active, "disabled_actions", ()),
+        )
 
     _rebuild_toolbar()
     app.bind("<<NotebookTabChanged>>", _rebuild_toolbar, add="+")
+    app.workspaces_tab.bind("<<ActionStateChanged>>", _rebuild_toolbar, add="+")
+    app.manual_tab.bind("<<ActionStateChanged>>", _rebuild_toolbar, add="+")
 
     def _log_estimate(message):
         """Append a gray info line to the active tab's log (thread-safe)."""

@@ -54,10 +54,11 @@ class ActionTooltip:
     NAME_DELAY = 350    # ms hover before the name appears
     DETAIL_DELAY = 2000  # ms hover before the description is added
 
-    def __init__(self, widget, name, description=""):
+    def __init__(self, widget, name, description="", warning=""):
         self.widget = widget
         self.name = name
         self.description = description
+        self.warning = warning
         self._tip = None
         self._desc_label = None
         self._after_name = None
@@ -67,7 +68,7 @@ class ActionTooltip:
 
     def _on_enter(self, _event=None):
         self._after_name = self.widget.after(self.NAME_DELAY, self._show_name)
-        if self.description:
+        if self.description or self.warning:
             self._after_detail = self.widget.after(
                 self.DETAIL_DELAY, self._show_detail
             )
@@ -93,6 +94,12 @@ class ActionTooltip:
             self._show_name()
         if self._desc_label is not None:
             return
+        if self.warning:
+            tk.Label(
+                self._tip, text=self.warning, justify="left",
+                background=theme.TOOLTIP_BG, foreground=theme.WARNING,
+                font=("Segoe UI", 9), padx=6, wraplength=300,
+            ).pack(anchor="w", pady=(1, 4))
         self._desc_label = tk.Label(
             self._tip, text=self.description, justify="left",
             background=theme.TOOLTIP_BG, foreground=theme.TOOLTIP_FG,
@@ -853,7 +860,7 @@ class WorkspaceList(ttk.Frame):
 
     def _handle_select(self, _event=None):
         name = self.get_selected()
-        if name is not None and self._on_select is not None:
+        if self._on_select is not None:
             self._on_select(name)
 
     def set_items(self, items):

@@ -8,7 +8,9 @@ longer adds its full description (see widgets.ActionTooltip). Colours come from
 theme.* so the strip survives the dark/light restart.
 """
 
+import struct
 import tkinter as tk
+import zlib
 
 import icons
 import theme
@@ -35,13 +37,47 @@ def _icon_set():
     return icons.ACTION_ICON_LIGHT
 
 
-def _image_for(label):
+def _png_chunk(kind, data):
+    return (struct.pack(">I", len(data)) + kind + data
+            + struct.pack(">I", zlib.crc32(kind + data)))
+
+
+def _muted_image(image, color):
+    """Recolor Tk's unfiltered RGBA PNG export without changing pixel alpha."""
+    png = image.tk.call(str(image), "data", "-format", "png")
+    position = 8
+    compressed = []
+    header = b""
+    while position < len(png):
+        length = struct.unpack_from(">I", png, position)[0]
+        kind = png[position + 4:position + 8]
+        data = png[position + 8:position + 8 + length]
+        if kind == b"IHDR":
+            header = data
+        elif kind == b"IDAT":
+            compressed.append(data)
+        position += length + 12
+    pixels = bytearray(zlib.decompress(b"".join(compressed)))
+    stride = image.width() * 4 + 1
+    for row in range(image.height()):
+        start = row * stride
+        for column in range(image.width()):
+            offset = start + 1 + column * 4
+            pixels[offset:offset + 3] = color
+    return tk.PhotoImage(data=(
+        b"\x89PNG\r\n\x1a\n" + _png_chunk(b"IHDR", header)
+        + _png_chunk(b"IDAT", zlib.compress(pixels)) + _png_chunk(b"IEND", b"")
+    ))
+
+
+def _image_for(label, disabled=False):
     """Return the toolbar-sized PNG icon for *label*, or None if it has none."""
     data = _icon_set().get(label)
     if data is None:
         return None
-    if label in _image_cache:
-        return _image_cache[label]
+    cache_key = (label, disabled)
+    if cache_key in _image_cache:
+        return _image_cache[cache_key]
     try:
         img = tk.PhotoImage(data=data)
     except tk.TclError:
@@ -49,8 +85,16 @@ def _image_for(label):
     factor = _SUBSAMPLE.get(label, 1)
     if factor > 1:
         img = img.subsample(factor, factor)
+    if disabled:
+        foreground = tuple(int(theme.FG_MUTED[index:index + 2], 16)
+                           for index in (1, 3, 5))
+        background = tuple(int(theme.BG_PANEL[index:index + 2], 16)
+                           for index in (1, 3, 5))
+        color = bytes(round(front * 0.55 + back * 0.45)
+                      for front, back in zip(foreground, background))
+        img = _muted_image(img, color)
     _images.append(img)
-    _image_cache[label] = img
+    _image_cache[cache_key] = img
     return img
 
 
@@ -93,7 +137,16 @@ GLYPHS = {
 # Actions rendered with a product logo image use _IMAGE_ICONS above.
 
 
-def _make_icon(parent, glyph, name, description, command, image=None):
+def _make_icon(
+    parent,
+    glyph,
+    name,
+    description,
+    command,
+    image=None,
+    enabled=True,
+    disabled_reason="",
+):
     """A single flat, hoverable icon 'button' with a two-stage tooltip.
 
     Uses *image* when given, otherwise the *glyph* text. The tooltip shows
@@ -101,22 +154,24 @@ def _make_icon(parent, glyph, name, description, command, image=None):
     """
     if image is not None:
         icon = tk.Label(parent, image=image, background=theme.BG_PANEL,
-                        padx=6, pady=2, cursor="hand2")
+                        padx=6, pady=2, cursor="hand2" if enabled else "")
     else:
         icon = tk.Label(
             parent,
             text=glyph,
             background=theme.BG_PANEL,
-            foreground=theme.FG,
+            foreground=theme.FG if enabled else theme.FG_MUTED,
             font=("Segoe UI Emoji", 11),
             padx=6,
             pady=2,
-            cursor="hand2",
+            cursor="hand2" if enabled else "",
         )
-    icon.bind("<Enter>", lambda _e: icon.config(background=theme.BG_RAISED))
-    icon.bind("<Leave>", lambda _e: icon.config(background=theme.BG_PANEL))
-    icon.bind("<Button-1>", lambda _e: command())
-    ActionTooltip(icon, name, description)
+    if enabled:
+        icon.bind("<Enter>", lambda _e: icon.config(background=theme.BG_RAISED))
+        icon.bind("<Leave>", lambda _e: icon.config(background=theme.BG_PANEL))
+        icon.bind("<Button-1>", lambda _e: command())
+    ActionTooltip(icon, name, description,
+                  warning=disabled_reason if not enabled else "")
     return icon
 
 
@@ -125,7 +180,7 @@ def _divider(parent):
     return tk.Frame(parent, width=1, background=theme.BORDER)
 
 
-def build_action_toolbar(host, sections):
+def build_action_toolbar(host, sections, disabled_actions=()):
     """(Re)build the toolbar inside *host* from a tab's action *sections*.
 
     *sections* is the list of (title, actions) groups a tab passes to
@@ -142,10 +197,13 @@ def build_action_toolbar(host, sections):
     last = len(groups) - 1
     for gi, actions in enumerate(groups):
         for label, command, hint in actions:
-            image = _image_for(label)
+            enabled = label not in disabled_actions
+            image = _image_for(label, disabled=not enabled)
             glyph = GLYPHS.get(label, "\u2022")
+            reason = disabled_actions.get(label, "") if isinstance(disabled_actions, dict) else ""
             _make_icon(host, glyph, label, hint, command,
-                       image=image).pack(side="left")
+                       image=image, enabled=enabled,
+                       disabled_reason=reason).pack(side="left")
         if gi != last:
             _divider(host).pack(side="left", fill="y", padx=6, pady=5)
     return host

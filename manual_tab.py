@@ -28,6 +28,9 @@ class ManualTab(ActionTabBase):
         self._build_left()
         self.build_middle_sections(self._sections())
         self.build_right_details()
+        self._update_selection_actions(
+            bool(self._all_selected_repos()), "Disabled because no repositories are selected."
+        )
 
     # -- Layout ------------------------------------------------------------ #
     def _build_left(self):
@@ -56,7 +59,11 @@ class ManualTab(ActionTabBase):
         Status circles stay blank here - they only appear while an action runs.
         Branches are filled in lazily so a large selection stays responsive.
         """
-        self.show_repos_async(self._all_selected_repos(), with_status=False)
+        repos = self._all_selected_repos()
+        self._update_selection_actions(
+            bool(repos), "Disabled because no repositories are selected."
+        )
+        self.show_repos_async(repos, with_status=False)
 
     def _sections(self):
         """Stacked action groups mirroring the Workspaces tab (minus the
@@ -236,6 +243,15 @@ class ManualTab(ActionTabBase):
                 "for that exact merge commit, and opens a live monitor. "
                 "This master monitor has both Auto-approve ACC and Auto-approve "
                 "PRD controls.",
+            ),
+            (
+                "Redeploy latest master commit",
+                self._action_redeploy_latest_master,
+                "For every selected repository: opens a dialog to redeploy the "
+                "latest master commit to Development and/or Acceptance (never "
+                "Production), or only follow the newest master run via 'View "
+                "latest'. Opens a live monitor with an Auto-approve ACC button. "
+                "Needs an ADO_PAT with Build (Read & execute) permission.",
             ),
         ]
 
@@ -541,6 +557,13 @@ class ManualTab(ActionTabBase):
             return
         active = [(name, path, git_current_branch(path)) for name, path in repos]
         self.show_master_pipeline_monitor_for_merged_prs(active)
+
+    def _action_redeploy_latest_master(self):
+        repos = self._all_selected_repos()
+        if not repos:
+            return
+        active = [(name, path, git_current_branch(path)) for name, path in repos]
+        self.redeploy_latest_master(active)
 
     def _action_view_deployment_status(self):
         """Ask which stages to check, then open the deployment status window."""
