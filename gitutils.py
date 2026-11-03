@@ -80,19 +80,11 @@ def get_nuget_folders():
 
 def list_workspaces():
     """Return the sorted names (without extension) of feature workspace files."""
-    if not os.path.isdir(WORKSPACES_ROOT):
-        return []
-    suffix = ".code-workspace"
-    return sorted(
-        name[: -len(suffix)]
-        for name in os.listdir(WORKSPACES_ROOT)
-        if name.endswith(suffix)
-        and name[: -len(suffix)].lower() not in EXCLUDED_WORKSPACES
-    )
+    return sorted(name for name, _, _ in list_workspaces_detailed())
 
 
 def list_workspaces_detailed():
-    """Return workspace info sorted with the most recently modified first.
+    """Return active workspaces before completed, newest modified first in each.
 
     Each item is (name, created_at, modified_at) where the timestamps are
     epoch-second floats. Files that cannot be stat'd are skipped.
@@ -101,20 +93,74 @@ def list_workspaces_detailed():
         return []
     suffix = ".code-workspace"
     items = []
-    for fname in os.listdir(WORKSPACES_ROOT):
-        if not fname.endswith(suffix):
+    for subfolder in ("", "completed"):
+        directory = os.path.join(WORKSPACES_ROOT, subfolder)
+        if not os.path.isdir(directory):
             continue
-        name = fname[: -len(suffix)]
-        if name.lower() in EXCLUDED_WORKSPACES:
-            continue
-        try:
-            info = os.stat(os.path.join(WORKSPACES_ROOT, fname))
-        except OSError:
-            continue
-        items.append((name, info.st_ctime, info.st_mtime))
-    # Freshest (most recently modified) on top.
-    items.sort(key=lambda item: item[2], reverse=True)
+        for fname in os.listdir(directory):
+            if not fname.endswith(suffix):
+                continue
+            name = fname[: -len(suffix)]
+            if name.lower() in EXCLUDED_WORKSPACES:
+                continue
+            path = os.path.join(directory, fname)
+            try:
+                if not os.path.isfile(path):
+                    continue
+                info = os.stat(path)
+            except OSError:
+                continue
+            identifier = f"completed/{name}" if subfolder else name
+            items.append((identifier, info.st_ctime, info.st_mtime))
+    items.sort(key=lambda item: (item[0].startswith("completed/"), -item[2]))
     return items
+
+
+def complete_workspace(workspace_name):
+    """Move a workspace into completed, preserving folder targets and mtime."""
+    if workspace_name.startswith("completed/"):
+        return False, "Workspace is already completed."
+    ok, data = _read_workspace_json(workspace_name)
+    if not ok:
+        return False, data
+    source = os.path.join(WORKSPACES_ROOT, f"{workspace_name}.code-workspace")
+    directory = os.path.join(WORKSPACES_ROOT, "completed")
+    target = os.path.join(directory, f"{workspace_name}.code-workspace")
+    if os.path.exists(target):
+        return False, f"a completed workspace named '{workspace_name}' already exists"
+    target_created = False
+    try:
+        info = os.stat(source)
+        for folder in data.get("folders", []):
+            path = folder.get("path")
+            if path and not os.path.isabs(path):
+                folder["path"] = os.path.relpath(
+                    os.path.join(WORKSPACES_ROOT, path), directory
+                ).replace("\\", "/")
+        os.makedirs(directory, exist_ok=True)
+        with open(target, "x", encoding="utf-8") as handle:
+            target_created = True
+            json.dump(data, handle, indent=4)
+        os.utime(target, ns=(info.st_atime_ns, info.st_mtime_ns))
+        os.remove(source)
+        return True, f"Workspace marked completed: {workspace_name}"
+    except (OSError, ValueError, TypeError, AttributeError) as exc:
+        if target_created:
+            try:
+                os.remove(target)
+            except OSError:
+                pass
+        return False, f"could not complete workspace: {exc}"
+
+
+def delete_workspace(workspace_name):
+    """Permanently remove only the workspace file, not its repositories."""
+    path = os.path.join(WORKSPACES_ROOT, f"{workspace_name}.code-workspace")
+    try:
+        os.remove(path)
+        return True, f"Workspace deleted: {workspace_name}"
+    except OSError as exc:
+        return False, f"could not delete workspace: {exc}"
 
 
 def read_workspace_repos(workspace_name):
@@ -122,7 +168,7 @@ def read_workspace_repos(workspace_name):
 
     On success *repos* is a list of (repo_name, absolute_path) for every folder
     referenced by the workspace file. Paths are resolved relative to
-    WORKSPACES_ROOT, matching how the files are written.
+    the workspace file's directory, matching VS Code's path resolution.
     """
     path = os.path.join(WORKSPACES_ROOT, f"{workspace_name}.code-workspace")
     try:
@@ -136,7 +182,7 @@ def read_workspace_repos(workspace_name):
         rel = folder.get("path", "")
         if not rel:
             continue
-        abs_path = os.path.normpath(os.path.join(WORKSPACES_ROOT, rel))
+        abs_path = os.path.normpath(os.path.join(os.path.dirname(path), rel))
         repos.append((os.path.basename(abs_path), abs_path))
     return True, repos
 
@@ -189,7 +235,7 @@ IGNORE_GIT_KEY = "ignoreGit"
 
 def default_workspace_branch(workspace_name):
     """Return the default feature branch for a workspace ('feature/<name>')."""
-    return f"feature/{workspace_name}"
+    return f"feature/{workspace_name.removeprefix('completed/')}"
 
 
 def _read_workspace_json(workspace_name):
@@ -307,7 +353,7 @@ def set_workspace_folders(workspace_name, repos):
     this reads the existing .code-workspace, swaps only its ``folders`` array
     and writes it back, so the ``featureManagerSettings`` block and any VS Code
     ``settings`` survive. *repos* is a list of ``(name, path)``; paths are stored
-    relative to WORKSPACES_ROOT to match the existing files. Returns (ok, msg).
+    relative to the workspace file's directory. Returns (ok, msg).
     """
     ok, data = _read_workspace_json(workspace_name)
     if not ok:
@@ -315,13 +361,13 @@ def set_workspace_folders(workspace_name, repos):
     if not isinstance(data, dict):
         data = {}
 
+    target = os.path.join(WORKSPACES_ROOT, f"{workspace_name}.code-workspace")
     folders = []
     for _, path in repos:
-        rel = os.path.relpath(path, WORKSPACES_ROOT).replace("\\", "/")
+        rel = os.path.relpath(path, os.path.dirname(target)).replace("\\", "/")
         folders.append({"path": rel})
     data["folders"] = folders
 
-    target = os.path.join(WORKSPACES_ROOT, f"{workspace_name}.code-workspace")
     try:
         with open(target, "w", encoding="utf-8") as handle:
             json.dump(data, handle, indent=4)

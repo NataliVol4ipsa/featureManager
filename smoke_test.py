@@ -22,6 +22,7 @@ import subprocess
 import tempfile
 import tkinter as tk
 from tkinter import ttk
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import gitutils
@@ -465,6 +466,88 @@ def _check_rebase_on_master(work):
     rc, _ = _run(["git", "merge-base", "--is-ancestor", "master", "feature/rb"],
                  cwd=work)
     check(rc != 0, "pull-only should not rebase the feature branch")
+
+
+def _check_workspace_lifecycle(root):
+    with tempfile.TemporaryDirectory() as base, \
+            patch.object(gitutils, "WORKSPACES_ROOT", base), \
+            patch.object(WorkspacesTab, "_refresh_restore_availability"), \
+            patch.object(WorkspacesTab, "_on_workspace_selected"):
+        repos = [("repo", os.path.join(base, "repo"))]
+        overrides = {"repo": {"branch": "feature/custom", "ignoreGit": True}}
+        for name, modified in (("older", 100), ("newer", 200),
+                               ("done-old", 300), ("done-new", 400)):
+            check(gitutils.write_workspace(name, repos)[0], "Workspace creation failed")
+            check(gitutils.save_branch_overrides(name, overrides)[0],
+                  "Workspace overrides could not be saved")
+            os.utime(os.path.join(base, f"{name}.code-workspace"), (modified, modified))
+        for name in ("done-old", "done-new"):
+            check(gitutils.complete_workspace(name)[0], "Workspace completion failed")
+        expected = ["newer", "older", "completed/done-new", "completed/done-old"]
+        check([item[0] for item in gitutils.list_workspaces_detailed()] == expected,
+              "Active/completed groups must each be newest modified first")
+        check(gitutils.read_workspace_repos("completed/done-old") == (True, repos),
+              "Completion must preserve repository targets")
+        check(gitutils.read_branch_overrides("completed/done-old") == overrides,
+              "Completion must preserve branch overrides")
+        check(gitutils.default_workspace_branch("completed/done-old") == "feature/done-old",
+              "Completed folder must not become part of the feature branch")
+        check(gitutils.list_workspaces_detailed()[-1][2] == 300,
+              "Completion must preserve modification time")
+        check(gitutils.set_workspace_folders("completed/done-old", repos)[0]
+              and gitutils.read_workspace_repos("completed/done-old") == (True, repos),
+              "Editing completed folders must preserve repository targets")
+        gitutils.write_workspace("done-old", repos)
+        check(not gitutils.complete_workspace("done-old")[0],
+              "Completion must not overwrite an existing completed workspace")
+
+        tab = WorkspacesTab(root)
+        try:
+            tab.workspace_list.select("older")
+            tree = tab.workspace_list.tree
+            for row, name in tab.workspace_list._names.items():
+                check(tree.set(row, "name") == name.removeprefix("completed/"),
+                      "Workspace names must not display the completed folder prefix")
+                check(("completed" in tree.item(row, "tags"))
+                      == name.startswith("completed/"),
+                      "Only completed workspace rows must use muted styling")
+            check(str(tree.tag_configure("completed", "foreground")) == theme.FG_MUTED,
+                  "Completed workspaces must use the theme's muted text color")
+            for name in ("done-old", "completed/done-old"):
+                check(tab.workspace_list.select(name)
+                      and tab.workspace_list.get_selected() == name,
+                      "Same-named active and completed workspaces must remain distinct")
+            row = next(row for row, name in tab.workspace_list._names.items()
+                       if name == "newer")
+            event = SimpleNamespace(x=1, y=1, x_root=1, y_root=1)
+            with patch.object(tree, "identify_row", return_value=row), \
+                    patch.object(tree, "identify_region", return_value="cell"), \
+                    patch.object(tab._workspace_menu, "tk_popup"), \
+                    patch.object(tab._workspace_menu, "grab_release"):
+                tab._show_workspace_menu(event)
+                check(tab.workspace_list.get_selected() == "newer",
+                      "Context menu must target the right-clicked workspace")
+                tab._mark_workspace_completed()
+                check(tab.workspace_list.get_selected() == "completed/newer",
+                      "Completion must keep the moved workspace selected")
+                row = tree.selection()[0]
+                with patch.object(tree, "identify_row", return_value=row):
+                    tab._show_workspace_menu(event)
+                check(tab._workspace_menu.entrycget("Mark completed", "state") == "disabled",
+                      "Completed workspaces must not be completed again")
+            path = os.path.join(base, "completed", "newer.code-workspace")
+            with patch("workspaces_tab.messagebox.askyesno", return_value=False):
+                tab._delete_workspace()
+            check(os.path.isfile(path), "Cancelling delete must keep the workspace")
+            with patch("workspaces_tab.messagebox.askyesno", return_value=True) as confirm:
+                tab._delete_workspace()
+            check(confirm.call_args.kwargs["default"] == "no",
+                  "Permanent deletion confirmation must default to No")
+            check(not os.path.exists(path), "Confirmed delete must remove the workspace")
+            check(os.path.isfile(os.path.join(base, "older.code-workspace")),
+                  "Deleting a workspace must not affect other workspace files")
+        finally:
+            tab.destroy()
 
 
 def _check_workspace_and_overrides(base, repos):
@@ -1061,6 +1144,7 @@ def main():
             _check_disabled_toolbar_colors(root)
             _check_repo_delegation(repo_tab)
             _check_pure_logic()
+            _check_workspace_lifecycle(root)
             _check_deployment_timestamps()
             _check_pipeline_estimate_recovery()
             _check_pr_status(root)

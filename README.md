@@ -8,6 +8,18 @@ Run it with:
 python featureManager.py
 ```
 
+## Workspace completion and deletion
+
+Right-click a workspace in the **Workspaces** tab for **Mark completed** or
+**Delete**. Completed workspace files move into `completed/` under the configured
+workspaces folder and remain listed by name with muted text. Active workspaces
+appear first, followed by completed workspaces; each group is sorted by modified
+date, newest first. Completion preserves repository paths, branch settings,
+and the workspace's modified date.
+
+**Delete** permanently removes the workspace file after confirmation. It does
+not delete repositories or branches.
+
 ## Data sources
 
 **Settings > Data sources...** opens a modal table with independent **ADO** /

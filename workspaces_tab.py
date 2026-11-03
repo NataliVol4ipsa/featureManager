@@ -4,7 +4,7 @@ import os
 import subprocess
 import threading
 from datetime import datetime
-from tkinter import ttk
+from tkinter import Menu, messagebox, ttk
 
 from config import WORKSPACES_ROOT, REPOS_ROOT, NUGETS_ROOT
 from gitutils import (
@@ -16,7 +16,7 @@ from gitutils import (
     workspace_branch_entries, save_branch_overrides,
     remote_branch_exists, delete_remote_branch,
     set_workspace_folders,
-    rename_workspace,
+    rename_workspace, complete_workspace, delete_workspace,
     SAVEPOS_MSG,
 )
 from parallel import run_in_parallel
@@ -109,6 +109,14 @@ class WorkspacesTab(ActionTabBase):
             left, self._workspace_items(), on_select=self._on_workspace_selected
         )
         self.workspace_list.pack(fill="both", expand=True, padx=4, pady=4)
+        self._workspace_menu = Menu(self, tearoff=False)
+        self._workspace_menu.add_command(
+            label="Mark completed", command=self._mark_workspace_completed
+        )
+        self._workspace_menu.add_command(
+            label="Delete", command=self._delete_workspace
+        )
+        self.workspace_list.tree.bind("<Button-3>", self._show_workspace_menu)
 
         ttk.Button(left, text="Refresh", command=self._refresh).pack(
             fill="x", padx=4, pady=(0, 4)
@@ -122,6 +130,56 @@ class WorkspacesTab(ActionTabBase):
             "Opens the workspaces folder "
             f"({WORKSPACES_ROOT}) in Windows File Explorer.",
         )
+
+    def _show_workspace_menu(self, event):
+        tree = self.workspace_list.tree
+        row = tree.identify_row(event.y)
+        if not row or tree.identify_region(event.x, event.y) not in ("cell", "tree"):
+            return "break"
+        tree.selection_set(row)
+        tree.focus(row)
+        workspace = self.workspace_list.get_selected()
+        self._workspace_menu.entryconfigure(
+            "Mark completed",
+            state="disabled" if workspace.startswith("completed/") else "normal",
+        )
+        try:
+            self._workspace_menu.tk_popup(event.x_root, event.y_root)
+        finally:
+            self._workspace_menu.grab_release()
+        return "break"
+
+    def _mark_workspace_completed(self):
+        workspace = self.workspace_list.get_selected()
+        if not workspace:
+            return
+        self.errors.clear()
+        ok, message = complete_workspace(workspace)
+        if not ok:
+            self.errors.add(message)
+            return
+        self._refresh()
+        self.workspace_list.select(f"completed/{workspace}")
+
+    def _delete_workspace(self):
+        workspace = self.workspace_list.get_selected()
+        if not workspace:
+            return
+        if not messagebox.askyesno(
+            "Delete workspace",
+            f"Permanently delete workspace '{workspace}'?\n\n"
+            "This cannot be undone. Only the workspace file will be deleted; "
+            "repositories and branches will not be changed.",
+            parent=self, icon="warning", default="no",
+        ):
+            return
+        self.errors.clear()
+        ok, message = delete_workspace(workspace)
+        if not ok:
+            self.errors.add(message)
+            return
+        self._refresh()
+        self._on_workspace_selected(None)
 
     def _open_workspaces_folder(self):
         """Open the feature workspaces folder in Windows File Explorer."""
@@ -216,7 +274,7 @@ class WorkspacesTab(ActionTabBase):
         self._restore_check_job = self.after(2000, self._refresh_restore_availability)
 
     def _workspace_items(self):
-        """Build (name, created, modified) rows, freshest (most recent) first."""
+        """Build active-then-completed rows, newest modified first in each."""
         items = []
         for name, created, modified in list_workspaces_detailed():
             items.append((name, _fmt_time(created), _fmt_time(modified)))
@@ -666,11 +724,15 @@ class WorkspacesTab(ActionTabBase):
             self.errors.add("this workspace has no folders to configure")
             return
 
-        plan = edit_branch_overrides(self, workspace, entries)
+        plan = edit_branch_overrides(
+            self, workspace.removeprefix("completed/"), entries
+        )
         if plan is None:
             return
 
         new_workspace = plan["name"]
+        if workspace.startswith("completed/"):
+            new_workspace = f"completed/{new_workspace}"
         overrides = plan["overrides"]
         added = plan["added"]        # list of (name, path, branch, ignore)
         removed = set(plan["removed"])

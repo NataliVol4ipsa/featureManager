@@ -827,6 +827,7 @@ class WorkspaceList(ttk.Frame):
         self.tree = ttk.Treeview(
             self, columns=column_ids, show="headings", selectmode="browse"
         )
+        self.tree.tag_configure("completed", foreground=theme.FG_MUTED)
         for col_id, heading, width in self._COLUMNS:
             self.tree.heading(col_id, text=heading)
             # 'name' stretches to fill spare width; the date columns stay fixed.
@@ -878,7 +879,11 @@ class WorkspaceList(ttk.Frame):
             else:
                 name = item
                 values = (item, "", "")
-            row_id = self.tree.insert("", "end", values=values)
+            completed = name.startswith("completed/")
+            values = (name.removeprefix("completed/"), *values[1:])
+            row_id = self.tree.insert(
+                "", "end", values=values, tags=("completed",) if completed else ()
+            )
             self._names[row_id] = name
 
     def get_selected(self):
