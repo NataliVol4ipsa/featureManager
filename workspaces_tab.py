@@ -60,13 +60,28 @@ def _workspace_branch_mismatch_counts(entries):
     return matches.count(False), len(matches)
 
 
+_WORKSPACE_BRANCH_ACTIONS = (
+    "Restore state before switch",
+    "Rebase current branch on master",
+    "Commit all changes",
+    "Git push",
+    "Bump NuGet packages (public)",
+    "Bump NuGet packages (private)",
+    "Bump all NuGet packages",
+    "Restore NuGet packages",
+    "Open workspace in VS Code",
+    "Open solutions in Visual Studio",
+)
+
+
 class WorkspacesTab(ActionTabBase):
     """Left: single-select workspace list. Middle: actions. Right: progress."""
 
     def __init__(self, master):
         super().__init__(master)
         self.disabled_actions = {
-            "Restore state before switch": "Disabled because no workspace is selected."
+            label: "Disabled because no workspace is selected."
+            for label in _WORKSPACE_BRANCH_ACTIONS
         }
         self._restore_check_generation = 0
         self._restore_check_job = None
@@ -141,15 +156,14 @@ class WorkspacesTab(ActionTabBase):
     refresh = _refresh
 
     def _set_restore_available(self, enabled, reason=""):
-        label = "Restore state before switch"
-        was_enabled = label not in self.disabled_actions
-        previous_reason = self.disabled_actions.get(label, "")
-        if enabled:
-            self.disabled_actions.pop(label, None)
-        else:
-            reason = reason or "Disabled while checking workspace branches."
-            self.disabled_actions[label] = reason
-        if was_enabled != enabled or previous_reason != reason:
+        previous = dict(self.disabled_actions)
+        reason = reason or "Disabled while checking workspace branches."
+        for label in _WORKSPACE_BRANCH_ACTIONS:
+            if enabled:
+                self.disabled_actions.pop(label, None)
+            else:
+                self.disabled_actions[label] = reason
+        if previous != self.disabled_actions:
             self.event_generate("<<ActionStateChanged>>")
 
     def _refresh_restore_availability(self):

@@ -33,6 +33,7 @@ import pipelines
 import pr_status
 import stale_items
 import theme
+import toolbar
 from tab_base import ActionTabBase
 from manual_tab import ManualTab
 from workspaces_tab import WorkspacesTab
@@ -105,6 +106,22 @@ def _validate_sections(tab, tab_name):
     check("Copy PR links" not in labels,
           f"{tab_name}: Copy PR links still appears as a standalone action")
     return labels
+
+
+def _check_disabled_toolbar_colors(root):
+      original = tk.PhotoImage(master=root, width=4, height=1)
+      colors = ((240, 40, 20), (20, 200, 80), (30, 60, 230))
+      for column, color in enumerate(colors):
+            original.put("#%02x%02x%02x" % color, to=(column, 0))
+      for tint in ((70, 70, 70), (190, 190, 190)):
+            muted = toolbar._muted_image(original, bytes(tint))
+            for column, color in enumerate(colors):
+                  expected = tuple(round(channel * 0.20 + gray * 0.80)
+                                           for channel, gray in zip(color, tint))
+                  check(muted.get(column, 0) == expected,
+                          "Disabled toolbar icons must retain 20% of their original color")
+            check(muted.transparency_get(3, 0),
+                    "Disabled toolbar icons must preserve transparent pixels")
 
 
 def _check_base_methods():
@@ -1041,6 +1058,7 @@ def main():
                     f"Repositories tab is missing ported actions: {sorted(missing)}")
 
             _check_base_methods()
+            _check_disabled_toolbar_colors(root)
             _check_repo_delegation(repo_tab)
             _check_pure_logic()
             _check_deployment_timestamps()

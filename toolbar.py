@@ -43,7 +43,7 @@ def _png_chunk(kind, data):
 
 
 def _muted_image(image, color):
-    """Recolor Tk's unfiltered RGBA PNG export without changing pixel alpha."""
+    """Blend a gray tint into Tk's RGBA PNG export without changing pixel alpha."""
     png = image.tk.call(str(image), "data", "-format", "png")
     position = 8
     compressed = []
@@ -63,7 +63,10 @@ def _muted_image(image, color):
         start = row * stride
         for column in range(image.width()):
             offset = start + 1 + column * 4
-            pixels[offset:offset + 3] = color
+            pixels[offset:offset + 3] = bytes(
+                round(original * 0.20 + muted * 0.80)
+                for original, muted in zip(pixels[offset:offset + 3], color)
+            )
     return tk.PhotoImage(data=(
         b"\x89PNG\r\n\x1a\n" + _png_chunk(b"IHDR", header)
         + _png_chunk(b"IDAT", zlib.compress(pixels)) + _png_chunk(b"IEND", b"")
