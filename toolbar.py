@@ -43,7 +43,7 @@ def _png_chunk(kind, data):
 
 
 def _muted_image(image, color):
-    """Blend a gray tint into Tk's RGBA PNG export without changing pixel alpha."""
+    """Recolor Tk's unfiltered RGBA PNG export without changing pixel alpha."""
     png = image.tk.call(str(image), "data", "-format", "png")
     position = 8
     compressed = []
@@ -63,10 +63,7 @@ def _muted_image(image, color):
         start = row * stride
         for column in range(image.width()):
             offset = start + 1 + column * 4
-            pixels[offset:offset + 3] = bytes(
-                round(original * 0.20 + muted * 0.80)
-                for original, muted in zip(pixels[offset:offset + 3], color)
-            )
+            pixels[offset:offset + 3] = color
     return tk.PhotoImage(data=(
         b"\x89PNG\r\n\x1a\n" + _png_chunk(b"IHDR", header)
         + _png_chunk(b"IDAT", zlib.compress(pixels)) + _png_chunk(b"IEND", b"")
@@ -149,6 +146,7 @@ def _make_icon(
     image=None,
     enabled=True,
     disabled_reason="",
+    warning="",
 ):
     """A single flat, hoverable icon 'button' with a two-stage tooltip.
 
@@ -169,12 +167,25 @@ def _make_icon(
             pady=2,
             cursor="hand2" if enabled else "",
         )
-    if enabled:
-        icon.bind("<Enter>", lambda _e: icon.config(background=theme.BG_RAISED))
-        icon.bind("<Leave>", lambda _e: icon.config(background=theme.BG_PANEL))
-        icon.bind("<Button-1>", lambda _e: command())
-    ActionTooltip(icon, name, description,
-                  warning=disabled_reason if not enabled else "")
+    targets = [icon]
+    if enabled and warning:
+        badge = tk.Canvas(icon, width=8, height=8, highlightthickness=0,
+                          borderwidth=0, background=theme.BG_PANEL, cursor="hand2")
+        badge.create_oval(1, 1, 7, 7, fill=theme.WARNING, outline="")
+        badge.place(relx=1, rely=1, anchor="se", x=-3, y=-1)
+        targets.append(badge)
+
+    def _set_background(color):
+        for target in targets:
+            target.config(background=color)
+
+    for target in targets:
+        if enabled:
+            target.bind("<Enter>", lambda _e: _set_background(theme.BG_RAISED))
+            target.bind("<Leave>", lambda _e: _set_background(theme.BG_PANEL))
+            target.bind("<Button-1>", lambda _e: command())
+        ActionTooltip(target, name, description,
+                      warning=disabled_reason if not enabled else warning)
     return icon
 
 
@@ -183,7 +194,7 @@ def _divider(parent):
     return tk.Frame(parent, width=1, background=theme.BORDER)
 
 
-def build_action_toolbar(host, sections, disabled_actions=()):
+def build_action_toolbar(host, sections, disabled_actions=(), warning_actions=None):
     """(Re)build the toolbar inside *host* from a tab's action *sections*.
 
     *sections* is the list of (title, actions) groups a tab passes to
@@ -206,7 +217,8 @@ def build_action_toolbar(host, sections, disabled_actions=()):
             reason = disabled_actions.get(label, "") if isinstance(disabled_actions, dict) else ""
             _make_icon(host, glyph, label, hint, command,
                        image=image, enabled=enabled,
-                       disabled_reason=reason).pack(side="left")
+                       disabled_reason=reason,
+                       warning=(warning_actions or {}).get(label, "")).pack(side="left")
         if gi != last:
             _divider(host).pack(side="left", fill="y", padx=6, pady=5)
     return host

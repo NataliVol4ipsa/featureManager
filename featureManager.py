@@ -486,6 +486,7 @@ def main():
         build_action_toolbar(
             toolbar_host, getattr(active, "action_sections", []),
             disabled_actions=getattr(active, "disabled_actions", ()),
+            warning_actions=getattr(active, "warning_actions", None),
         )
 
     _rebuild_toolbar()

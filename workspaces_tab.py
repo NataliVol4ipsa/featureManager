@@ -69,6 +69,9 @@ _WORKSPACE_BRANCH_ACTIONS = (
     "Bump NuGet packages (private)",
     "Bump all NuGet packages",
     "Restore NuGet packages",
+)
+
+_WORKSPACE_EDITOR_ACTIONS = (
     "Open workspace in VS Code",
     "Open solutions in Visual Studio",
 )
@@ -83,6 +86,7 @@ class WorkspacesTab(ActionTabBase):
             label: "Disabled because no workspace is selected."
             for label in _WORKSPACE_BRANCH_ACTIONS
         }
+        self.warning_actions = {}
         self._restore_check_generation = 0
         self._restore_check_job = None
         self._restore_workspace = None
@@ -213,15 +217,21 @@ class WorkspacesTab(ActionTabBase):
     # Public alias used by the app when the Workspaces tab is opened.
     refresh = _refresh
 
-    def _set_restore_available(self, enabled, reason=""):
+    def _set_restore_available(self, enabled, reason="", warning=""):
         previous = dict(self.disabled_actions)
+        previous_warnings = dict(self.warning_actions)
         reason = reason or "Disabled while checking workspace branches."
         for label in _WORKSPACE_BRANCH_ACTIONS:
             if enabled:
                 self.disabled_actions.pop(label, None)
             else:
                 self.disabled_actions[label] = reason
-        if previous != self.disabled_actions:
+        for label in _WORKSPACE_EDITOR_ACTIONS:
+            if warning:
+                self.warning_actions[label] = warning
+            else:
+                self.warning_actions.pop(label, None)
+        if previous != self.disabled_actions or previous_warnings != self.warning_actions:
             self.event_generate("<<ActionStateChanged>>")
 
     def _refresh_restore_availability(self):
@@ -245,6 +255,7 @@ class WorkspacesTab(ActionTabBase):
 
         def _work():
             enabled = False
+            warning = ""
             reason = "Disabled because workspace branches could not be checked."
             try:
                 ok, entries = workspace_branch_entries(workspace)
@@ -254,23 +265,32 @@ class WorkspacesTab(ActionTabBase):
                     if not total:
                         reason = "Disabled because this workspace has no eligible Git repositories."
                     elif mismatched:
-                        reason = (
-                            f"Disabled because {mismatched} of {total} repos are not "
+                        warning = (
+                            f"{mismatched} of {total} repos are not "
                             "on their configured workspace branch."
                         )
+                        reason = "Disabled because " + warning
                     else:
                         reason = ""
             except Exception:
                 pass
-            self.after(0, self._apply_restore_availability, generation, workspace, enabled, reason)
+            self.after(0, self._apply_restore_availability, generation, workspace,
+                       enabled, reason, warning)
 
         threading.Thread(target=_work, daemon=True).start()
 
-    def _apply_restore_availability(self, generation, workspace, enabled, reason):
+    def _apply_restore_availability(
+        self,
+        generation,
+        workspace,
+        enabled,
+        reason,
+        warning="",
+    ):
         if (generation != self._restore_check_generation
                 or workspace != self.workspace_list.get_selected()):
             return
-        self._set_restore_available(enabled, reason)
+        self._set_restore_available(enabled, reason, warning)
         self._restore_check_job = self.after(2000, self._refresh_restore_availability)
 
     def _workspace_items(self):

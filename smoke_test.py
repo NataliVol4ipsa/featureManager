@@ -125,6 +125,66 @@ def _check_disabled_toolbar_colors(root):
                     "Disabled toolbar icons must preserve transparent pixels")
 
 
+def _check_workspace_editor_warnings(root):
+    from types import SimpleNamespace
+    from unittest.mock import Mock
+    from workspaces_tab import _WORKSPACE_EDITOR_ACTIONS
+
+    warning = "1 of 2 repos are not on their configured workspace branch."
+    tab = SimpleNamespace(disabled_actions={}, warning_actions={}, event_generate=Mock())
+    WorkspacesTab._set_restore_available(tab, False, "Disabled because " + warning, warning)
+    check(all(label not in tab.disabled_actions for label in _WORKSPACE_EDITOR_ACTIONS),
+          "Editor actions must remain enabled on workspace branch mismatch")
+    check(all(tab.warning_actions.get(label) == warning for label in _WORKSPACE_EDITOR_ACTIONS),
+          "Editor warnings must describe the mismatch without saying disabled")
+    check("Git push" in tab.disabled_actions,
+          "Workspace branch mismatch must still disable Git push")
+    command = Mock()
+    sections = [("Open", [(label, command, "Full editor action description")
+                          for label in _WORKSPACE_EDITOR_ACTIONS])]
+    window = tk.Toplevel(root)
+    window.geometry("240x48")
+    host = ttk.Frame(window)
+    host.pack()
+    try:
+        with patch.object(toolbar, "ActionTooltip") as tooltips:
+            toolbar.build_action_toolbar(host, sections, tab.disabled_actions,
+                                         tab.warning_actions)
+        window.update()
+        for label in _WORKSPACE_EDITOR_ACTIONS:
+            calls = [call for call in tooltips.call_args_list if call.args[1] == label]
+            check(len(calls) == 2, f"{label}: icon and badge must both have tooltips")
+            icon = calls[0].args[0]
+            badge = icon.winfo_children()[0]
+            check(icon.cget("cursor") == "hand2", f"{label}: icon must stay clickable")
+            check(str(icon.cget("image")) == str(toolbar._image_for(label)),
+                  f"{label}: warning must retain the full-color icon")
+            check(badge.itemcget(1, "fill") == theme.WARNING,
+                  f"{label}: badge must use the warning color")
+            check(badge.place_info()["anchor"] == "se",
+                  f"{label}: badge must sit at the bottom right")
+            for call in calls:
+                check(call.kwargs["warning"] == warning
+                      and call.args[2] == "Full editor action description",
+                      f"{label}: tooltip must keep both warning and full description")
+                call.args[0].event_generate("<Button-1>")
+        check(command.call_count == 4, "Clicking either editor icon or badge must run its action")
+        WorkspacesTab._set_restore_available(tab, True)
+        check(not tab.warning_actions, "Editor badges must clear when branches match")
+        with patch.object(toolbar, "ActionTooltip") as tooltips:
+            toolbar.build_action_toolbar(host, sections, tab.disabled_actions,
+                                         tab.warning_actions)
+        check(all(not call.args[0].winfo_children() for call in tooltips.call_args_list),
+              "Matching workspace branches must remove editor badges")
+        tab.action_sections = sections
+        WorkspacesTab._set_restore_available(tab, False, "Disabled because no workspace is selected.")
+        ActionTabBase._update_selection_actions(tab, False, "Disabled because no workspace is selected.")
+        check(all(label in tab.disabled_actions for label in _WORKSPACE_EDITOR_ACTIONS),
+              "Editor actions must still be disabled with no workspace selected")
+    finally:
+        window.destroy()
+
+
 def _check_base_methods():
     for name in BASE_SHARED_METHODS:
         check(callable(getattr(ActionTabBase, name, None)),
@@ -1142,6 +1202,7 @@ def main():
 
             _check_base_methods()
             _check_disabled_toolbar_colors(root)
+            _check_workspace_editor_warnings(root)
             _check_repo_delegation(repo_tab)
             _check_pure_logic()
             _check_workspace_lifecycle(root)
