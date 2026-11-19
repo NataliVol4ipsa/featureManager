@@ -587,14 +587,72 @@ def _check_workspace_lifecycle(root):
                 tab._show_workspace_menu(event)
                 check(tab.workspace_list.get_selected() == "newer",
                       "Context menu must target the right-clicked workspace")
+                check(tab._workspace_menu.entrycget(1, "label") == "Mark special",
+                      "Regular workspaces must offer Mark special")
+                modified = os.stat(os.path.join(base, "newer.code-workspace")).st_mtime_ns
+                tab._workspace_menu.invoke(1)
+                check(gitutils.workspace_is_special("newer"),
+                      "Mark special must persist the workspace flag")
+                check(tab.workspace_list.get_selected() == "newer",
+                      "Mark special must preserve selection")
+                check(tree.item(tree.selection()[0], "tags") == ("special",),
+                      "Special active workspaces must use blue styling")
+                check(str(tree.tag_configure("special", "foreground")) == theme.READY,
+                      "Special workspace text must use the theme's light blue tint")
+                check(os.stat(os.path.join(base, "newer.code-workspace")).st_mtime_ns
+                      == modified, "Mark special must preserve modification time")
+                check(gitutils.read_branch_overrides("newer") == overrides,
+                      "Mark special must preserve workspace branch settings")
+                gitutils.set_workspace_special("older", True)
+                check([name for name, _, _ in gitutils.list_workspaces_detailed()
+                       if not name.startswith("completed/")]
+                      == ["done-old", "newer", "older"],
+                      "Special workspaces must follow regular ones, newest first")
+                gitutils.set_workspace_special("older", False)
+                with patch.object(tree, "identify_row", return_value=tree.selection()[0]):
+                    tab._show_workspace_menu(event)
+                check(tab._workspace_menu.entrycget(1, "label") == "Unmark special",
+                      "Special workspaces must offer Unmark special")
+                tab._workspace_menu.invoke(1)
+                check(not gitutils.workspace_is_special("newer")
+                      and not tree.item(tree.selection()[0], "tags"),
+                      "Unmark special must clear the persisted flag and blue styling")
+                tab._toggle_workspace_special()
                 tab._mark_workspace_completed()
                 check(tab.workspace_list.get_selected() == "completed/newer",
                       "Completion must keep the moved workspace selected")
+                check(gitutils.workspace_is_special("completed/newer")
+                      and tree.item(tree.selection()[0], "tags") == ("completed",),
+                      "Completing a special workspace must preserve its flag but use grey text")
                 row = tree.selection()[0]
                 with patch.object(tree, "identify_row", return_value=row):
                     tab._show_workspace_menu(event)
-                check(tab._workspace_menu.entrycget("Mark completed", "state") == "disabled",
-                      "Completed workspaces must not be completed again")
+                check(tab._workspace_menu.entrycget(0, "label") == "Mark as undone",
+                      "Completed workspaces must offer Mark as undone")
+                check(tab._workspace_menu.entrycget(0, "state") == "normal",
+                      "Completed workspaces must allow undoing completion")
+                tab._workspace_menu.invoke(0)
+                check(tab.workspace_list.get_selected() == "newer"
+                      and tree.item(tree.selection()[0], "tags") == ("special",),
+                      "Undoing completion must restore active selection and special styling")
+                check(gitutils.read_workspace_repos("newer") == (True, repos)
+                      and gitutils.read_branch_overrides("newer") == overrides,
+                      "Undoing completion must preserve repository paths and branch settings")
+                check(os.stat(os.path.join(base, "newer.code-workspace")).st_mtime_ns
+                      == modified, "Undoing completion must preserve modification time")
+                check(not os.path.exists(os.path.join(base, "completed", "newer.code-workspace")),
+                      "Undoing completion must remove the completed workspace file")
+                check(not gitutils.undo_workspace_completion("completed/done-old")[0],
+                      "Undoing completion must not overwrite an existing active workspace")
+                tab._mark_workspace_completed()
+                active_row = next(row for row, name in tab.workspace_list._names.items()
+                                  if name == "older")
+                with patch.object(tree, "identify_row", return_value=active_row):
+                    tab._show_workspace_menu(event)
+                check(tab._workspace_menu.entrycget(0, "label") == "Mark completed"
+                      and tab._workspace_menu.entrycget(0, "state") == "normal",
+                      "Active workspaces must restore the enabled Mark completed action")
+                tab.workspace_list.select("completed/newer")
             path = os.path.join(base, "completed", "newer.code-workspace")
             with patch("workspaces_tab.messagebox.askyesno", return_value=False):
                 tab._delete_workspace()

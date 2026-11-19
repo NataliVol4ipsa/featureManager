@@ -84,7 +84,7 @@ def list_workspaces():
 
 
 def list_workspaces_detailed():
-    """Return active workspaces before completed, newest modified first in each.
+    """Return regular, special, then completed workspaces, newest first in each.
 
     Each item is (name, created_at, modified_at) where the timestamps are
     epoch-second floats. Files that cannot be stat'd are skipped.
@@ -112,7 +112,10 @@ def list_workspaces_detailed():
                 continue
             identifier = f"completed/{name}" if subfolder else name
             items.append((identifier, info.st_ctime, info.st_mtime))
-    items.sort(key=lambda item: (item[0].startswith("completed/"), -item[2]))
+    items.sort(key=lambda item: (
+        2 if item[0].startswith("completed/") else int(workspace_is_special(item[0])),
+        -item[2],
+    ))
     return items
 
 
@@ -120,14 +123,25 @@ def complete_workspace(workspace_name):
     """Move a workspace into completed, preserving folder targets and mtime."""
     if workspace_name.startswith("completed/"):
         return False, "Workspace is already completed."
+    return _move_workspace_file(workspace_name, f"completed/{workspace_name}")
+
+
+def undo_workspace_completion(workspace_name):
+    """Move a completed workspace back into the active workspace folder."""
+    if not workspace_name.startswith("completed/"):
+        return False, "Workspace is not completed."
+    return _move_workspace_file(workspace_name, workspace_name.removeprefix("completed/"))
+
+
+def _move_workspace_file(workspace_name, target_name):
     ok, data = _read_workspace_json(workspace_name)
     if not ok:
         return False, data
     source = os.path.join(WORKSPACES_ROOT, f"{workspace_name}.code-workspace")
-    directory = os.path.join(WORKSPACES_ROOT, "completed")
-    target = os.path.join(directory, f"{workspace_name}.code-workspace")
+    target = os.path.join(WORKSPACES_ROOT, f"{target_name}.code-workspace")
+    directory = os.path.dirname(target)
     if os.path.exists(target):
-        return False, f"a completed workspace named '{workspace_name}' already exists"
+        return False, f"a workspace named '{target_name}' already exists"
     target_created = False
     try:
         info = os.stat(source)
@@ -135,7 +149,7 @@ def complete_workspace(workspace_name):
             path = folder.get("path")
             if path and not os.path.isabs(path):
                 folder["path"] = os.path.relpath(
-                    os.path.join(WORKSPACES_ROOT, path), directory
+                    os.path.join(os.path.dirname(source), path), directory
                 ).replace("\\", "/")
         os.makedirs(directory, exist_ok=True)
         with open(target, "x", encoding="utf-8") as handle:
@@ -143,14 +157,14 @@ def complete_workspace(workspace_name):
             json.dump(data, handle, indent=4)
         os.utime(target, ns=(info.st_atime_ns, info.st_mtime_ns))
         os.remove(source)
-        return True, f"Workspace marked completed: {workspace_name}"
+        return True, f"Workspace moved: {target_name}"
     except (OSError, ValueError, TypeError, AttributeError) as exc:
         if target_created:
             try:
                 os.remove(target)
             except OSError:
                 pass
-        return False, f"could not complete workspace: {exc}"
+        return False, f"could not move workspace: {exc}"
 
 
 def delete_workspace(workspace_name):
@@ -246,6 +260,44 @@ def _read_workspace_json(workspace_name):
             return True, json.load(handle)
     except (OSError, json.JSONDecodeError) as exc:
         return False, f"could not read workspace: {exc}"
+
+
+def workspace_is_special(workspace_name):
+    """Return the persisted special flag, defaulting to False."""
+    ok, data = _read_workspace_json(workspace_name)
+    if not ok or not isinstance(data, dict):
+        return False
+    section = data.get(FM_SETTINGS_KEY)
+    return isinstance(section, dict) and section.get("special") is True
+
+
+def set_workspace_special(workspace_name, special):
+    """Update the special flag without changing the workspace's modified time."""
+    ok, data = _read_workspace_json(workspace_name)
+    if not ok:
+        return False, data
+    if not isinstance(data, dict):
+        return False, "workspace must contain a JSON object"
+    section = data.get(FM_SETTINGS_KEY)
+    if not isinstance(section, dict):
+        section = {}
+    if special:
+        section["special"] = True
+    else:
+        section.pop("special", None)
+    if section:
+        data[FM_SETTINGS_KEY] = section
+    else:
+        data.pop(FM_SETTINGS_KEY, None)
+    path = os.path.join(WORKSPACES_ROOT, f"{workspace_name}.code-workspace")
+    try:
+        info = os.stat(path)
+        with open(path, "w", encoding="utf-8") as handle:
+            json.dump(data, handle, indent=4)
+        os.utime(path, ns=(info.st_atime_ns, info.st_mtime_ns))
+        return True, "Workspace special flag saved."
+    except OSError as exc:
+        return False, f"could not save workspace special flag: {exc}"
 
 
 def read_branch_overrides(workspace_name):

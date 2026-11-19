@@ -828,6 +828,7 @@ class WorkspaceList(ttk.Frame):
             self, columns=column_ids, show="headings", selectmode="browse"
         )
         self.tree.tag_configure("completed", foreground=theme.FG_MUTED)
+        self.tree.tag_configure("special", foreground=theme.READY)
         for col_id, heading, width in self._COLUMNS:
             self.tree.heading(col_id, text=heading)
             # 'name' stretches to fill spare width; the date columns stay fixed.
@@ -868,21 +869,25 @@ class WorkspaceList(ttk.Frame):
         """Replace the table contents (keeps no prior selection).
 
         Each item may be a plain name, or a (name, created, modified) tuple of
-        strings for the three columns. get_selected() always returns the name.
+        strings, optionally followed by a special flag. get_selected() returns
+        the workspace identifier, not the displayed name.
         """
         self.tree.delete(*self.tree.get_children())
         self._names = {}
         for item in items:
+            special = False
             if isinstance(item, (tuple, list)):
                 name = item[0]
-                values = (item[0], *item[1:])
+                values = (item[0], *item[1:3])
+                special = len(item) > 3 and bool(item[3])
             else:
                 name = item
                 values = (item, "", "")
             completed = name.startswith("completed/")
             values = (name.removeprefix("completed/"), *values[1:])
+            tags = ("completed",) if completed else ("special",) if special else ()
             row_id = self.tree.insert(
-                "", "end", values=values, tags=("completed",) if completed else ()
+                "", "end", values=values, tags=tags
             )
             self._names[row_id] = name
 

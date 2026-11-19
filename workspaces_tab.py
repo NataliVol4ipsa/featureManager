@@ -17,6 +17,8 @@ from gitutils import (
     remote_branch_exists, delete_remote_branch,
     set_workspace_folders,
     rename_workspace, complete_workspace, delete_workspace,
+    undo_workspace_completion,
+    workspace_is_special, set_workspace_special,
     SAVEPOS_MSG,
 )
 from parallel import run_in_parallel
@@ -118,6 +120,9 @@ class WorkspacesTab(ActionTabBase):
             label="Mark completed", command=self._mark_workspace_completed
         )
         self._workspace_menu.add_command(
+            label="Mark special", command=self._toggle_workspace_special
+        )
+        self._workspace_menu.add_command(
             label="Delete", command=self._delete_workspace
         )
         self.workspace_list.tree.bind("<Button-3>", self._show_workspace_menu)
@@ -143,9 +148,13 @@ class WorkspacesTab(ActionTabBase):
         tree.selection_set(row)
         tree.focus(row)
         workspace = self.workspace_list.get_selected()
+        completed = workspace.startswith("completed/")
         self._workspace_menu.entryconfigure(
-            "Mark completed",
-            state="disabled" if workspace.startswith("completed/") else "normal",
+            0, label="Mark as undone" if completed else "Mark completed",
+            state="normal",
+        )
+        self._workspace_menu.entryconfigure(
+            1, label="Unmark special" if workspace_is_special(workspace) else "Mark special"
         )
         try:
             self._workspace_menu.tk_popup(event.x_root, event.y_root)
@@ -158,12 +167,28 @@ class WorkspacesTab(ActionTabBase):
         if not workspace:
             return
         self.errors.clear()
-        ok, message = complete_workspace(workspace)
+        completed = workspace.startswith("completed/")
+        action = undo_workspace_completion if completed else complete_workspace
+        ok, message = action(workspace)
         if not ok:
             self.errors.add(message)
             return
         self._refresh()
-        self.workspace_list.select(f"completed/{workspace}")
+        self.workspace_list.select(
+            workspace.removeprefix("completed/") if completed else f"completed/{workspace}"
+        )
+
+    def _toggle_workspace_special(self):
+        workspace = self.workspace_list.get_selected()
+        if not workspace:
+            return
+        self.errors.clear()
+        ok, message = set_workspace_special(workspace, not workspace_is_special(workspace))
+        if not ok:
+            self.errors.add(message)
+            return
+        self._refresh()
+        self.workspace_list.select(workspace)
 
     def _delete_workspace(self):
         workspace = self.workspace_list.get_selected()
@@ -294,10 +319,12 @@ class WorkspacesTab(ActionTabBase):
         self._restore_check_job = self.after(2000, self._refresh_restore_availability)
 
     def _workspace_items(self):
-        """Build active-then-completed rows, newest modified first in each."""
+        """Build regular, special, then completed rows with special-state metadata."""
         items = []
         for name, created, modified in list_workspaces_detailed():
-            items.append((name, _fmt_time(created), _fmt_time(modified)))
+            items.append((
+                name, _fmt_time(created), _fmt_time(modified), workspace_is_special(name)
+            ))
         return items
 
     def _sections(self):

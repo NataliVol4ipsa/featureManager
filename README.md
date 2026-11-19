@@ -17,6 +17,16 @@ appear first, followed by completed workspaces; each group is sorted by modified
 date, newest first. Completion preserves repository paths, branch settings,
 and the workspace's modified date.
 
+For completed workspaces, **Mark as undone** moves the file back into the active
+folder, preserving paths, settings, special status, and modified date. An
+existing active workspace with the same name is never overwritten.
+
+**Mark special** / **Unmark special** in the same context menu toggles a saved
+workspace flag. Special active workspaces use pale-blue text and appear below
+regular active workspaces, above completed workspaces. Each group remains sorted
+by modified date, newest first; toggling special does not change that date.
+Completed workspaces keep their muted grey text even when flagged special.
+
 **Delete** permanently removes the workspace file after confirmation. It does
 not delete repositories or branches.
 
