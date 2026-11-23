@@ -8,6 +8,14 @@ Run it with:
 python featureManager.py
 ```
 
+## Rebase on master
+
+**Rebase current branch on master** works with mixed selections in Services
+and Workspaces. Feature branches are rebased onto updated master; repositories
+already on master are only fast-forwarded. If local and remote master have
+diverged, the update reports an error instead of merging or rebasing master.
+Uncommitted changes are handled according to your per-repository choice.
+
 ## Workspace completion and deletion
 
 Right-click a workspace in the **Workspaces** tab for **Mark completed** or

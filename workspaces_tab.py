@@ -448,7 +448,7 @@ class WorkspacesTab(ActionTabBase):
                 "For the selected workspace's repositories (excluding skipped "
                 "repos): updates master (checkout + pull), returns to the "
                 "current feature branch and rebases it onto master. Repos "
-                "configured to use master are only pulled. Uncommitted changes "
+                "configured to use master are only fast-forwarded. Uncommitted changes "
                 "are checked first and handled according to your choice.",
             ),
             (

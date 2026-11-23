@@ -527,6 +527,42 @@ def _check_rebase_on_master(work):
                  cwd=work)
     check(rc != 0, "pull-only should not rebase the feature branch")
 
+    _run(["git", "reset", "--hard", "HEAD~1"], cwd=work)
+    ok, err = gitutils.rebase_on_master(
+        "repo", work, "save changes before rebase", None
+    )
+    check(ok, f"automatic fast-forward on master failed: {err}")
+    check(gitutils.git_current_branch(work) == "master",
+          "automatic fast-forward should leave the repo on master")
+    _, head = _run(["git", "rev-parse", "HEAD"], cwd=work)
+    _, remote = _run(["git", "rev-parse", "origin/master"], cwd=work)
+    check(head == remote, "master should fast-forward exactly to origin/master")
+
+    _run(["git", "reset", "--hard", "HEAD~1"], cwd=work)
+    with open(os.path.join(work, "local.txt"), "w", encoding="utf-8") as handle:
+        handle.write("local master change\n")
+    _run(["git", "add", "local.txt"], cwd=work)
+    _run(["git", "commit", "-m", "Local master"], cwd=work)
+    _, before = _run(["git", "rev-parse", "HEAD"], cwd=work)
+    for pull_only in (False, True):
+        ok, err = gitutils.rebase_on_master(
+            "repo", work, "save changes before rebase", None, pull_only=pull_only
+        )
+        check(not ok and bool(err),
+              "diverged master should report a fast-forward failure")
+        _, after = _run(["git", "rev-parse", "HEAD"], cwd=work)
+        check(after == before, "diverged master must not be merged or rebased")
+        check(not gitutils.git_rebase_in_progress(work)
+              and not gitutils.git_merge_in_progress(work),
+              "failed fast-forward should not leave a merge or rebase in progress")
+
+    _run(["git", "checkout", "feature/rb"], cwd=work)
+    ok, err = gitutils.rebase_on_master(
+        "repo", work, "save changes before rebase", None, pull_only=True
+    )
+    check(not ok and "switch to master" in err,
+          "workspace master-only guard should still reject a feature branch")
+
 
 def _check_workspace_lifecycle(root):
     with tempfile.TemporaryDirectory() as base, \

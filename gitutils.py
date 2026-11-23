@@ -1666,8 +1666,9 @@ def rebase_on_master(name, path, save_msg, decision, pull_only=False):
         restored exactly after a clean rebase.
       * "delete" - uncommitted work is discarded before the rebase.
 
-    When *pull_only* is true, the repo must already be on master; its uncommitted
-    work is handled as usual, then master is pulled without starting a rebase.
+    Repos already on master are fast-forwarded without starting a rebase.
+    When *pull_only* is true, the repo must already be on master.
+    Uncommitted work is handled as usual before pulling.
     """
     if not is_git_repo(path):
         return False, f"{name}: not a git repository"
@@ -1684,11 +1685,12 @@ def rebase_on_master(name, path, save_msg, decision, pull_only=False):
             f"{name}: configured for master but currently on "
             f"'{branch or '?'}'; switch to master before pulling"
         )
-    if not pull_only and (not branch or branch == "master"):
+    if not branch:
         return False, (
             f"{name}: not on a feature branch (currently '{branch or '?'}'); "
             f"nothing to rebase onto master"
         )
+    pull_only = pull_only or branch == "master"
 
     # Handle uncommitted work per the user's decision. The working tree is only
     # restored afterwards for "commit_restore"; "commit" leaves it committed and
@@ -1715,7 +1717,7 @@ def rebase_on_master(name, path, save_msg, decision, pull_only=False):
             restore_after = decision == "commit_restore"
 
     if pull_only:
-        ok, out = run_git(path, ["pull"])
+        ok, out = run_git(path, ["pull", "--ff-only"])
         if not ok:
             return False, f"{name}: {out}"
         if restore_after:

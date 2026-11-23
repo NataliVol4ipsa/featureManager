@@ -110,6 +110,7 @@ class ManualTab(ActionTabBase):
                 self._action_rebase_on_master,
                 "For every selected repository: updates master (checkout + pull), "
                 "returns to the feature branch and rebases it onto master. "
+                "Repos already on master are only fast-forwarded. "
                 "Uncommitted changes are committed first (with confirmation) and "
                 "restored afterwards (staged/unstaged preserved) on a clean rebase.",
             ),
@@ -389,7 +390,8 @@ class ManualTab(ActionTabBase):
         # "commit & restore" (restore the working state afterwards) are offered.
         decisions = self.collect_change_decisions(
             repos, restore_option=True,
-            note="A rebase requires committing the changes first. 'Commit "
+            note="Uncommitted changes must be handled before pulling or "
+                 "rebasing. On a feature branch, 'Commit "
                  "changes' leaves them committed on the branch; 'Commit & "
                  "restore' puts the same changes back as uncommitted work after "
                  "the rebase.",
@@ -401,7 +403,7 @@ class ManualTab(ActionTabBase):
         self.run_repo_action(
             repos,
             lambda n, p: rebase_on_master(n, p, REBASE_SAVE_MSG, decisions.get(n)),
-            "All repositories rebased successfully.",
+            "All repositories updated successfully.",
             parallel=True,
         )
 
